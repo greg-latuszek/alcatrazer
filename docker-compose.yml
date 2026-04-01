@@ -1,0 +1,29 @@
+# All configuration lives in .env (created by initialize_sandbox.sh from .env.example).
+# Docker compose auto-reads .env for variable interpolation and runtime env vars.
+
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SANDBOX_UID: ${SANDBOX_UID:?Run ./initialize_sandbox.sh first}
+    container_name: agent-sandbox
+    volumes:
+      # Mount the inner sandbox repo as the agent workspace
+      - ./sandbox:/workspace
+      # Persistent caches to avoid re-downloading on container restart
+      - mise-cache:/home/agent/.local/share/mise
+      - pip-cache:/home/agent/.cache/pip
+      - npm-cache:/home/agent/.npm
+      - bun-cache:/home/agent/.bun/install/cache
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+
+volumes:
+  mise-cache:
+  pip-cache:
+  npm-cache:
+  bun-cache:
