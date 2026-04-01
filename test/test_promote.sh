@@ -237,6 +237,76 @@ else
     fail "Incremental commit has wrong identity: ${NEW_AUTHOR}"
 fi
 
+# --- Test 8: Dry run — nothing to promote (target is up to date) ---
+
+echo ""
+echo "--- Test 8: Dry run (up to date) ---"
+DRY_OUTPUT=$("${PROMOTE_SCRIPT}" \
+    --source "${SOURCE_REPO}" \
+    --target "${TARGET_REPO}" \
+    --author-name "${PROMOTED_NAME}" \
+    --author-email "${PROMOTED_EMAIL}" \
+    --dry-run)
+
+if echo "${DRY_OUTPUT}" | grep -q "Nothing to promote"; then
+    pass "Dry run reports nothing to promote when up to date"
+else
+    fail "Dry run should report nothing to promote, got: ${DRY_OUTPUT}"
+fi
+
+# Verify dry run didn't modify the target
+TARGET_COUNT_BEFORE_DRY=${TARGET_COUNT_AFTER}
+TARGET_COUNT_AFTER_DRY=$(git -C "${TARGET_REPO}" rev-list --all --count)
+if [ "${TARGET_COUNT_BEFORE_DRY}" = "${TARGET_COUNT_AFTER_DRY}" ]; then
+    pass "Dry run did not modify target repo"
+else
+    fail "Dry run modified target repo: before=${TARGET_COUNT_BEFORE_DRY}, after=${TARGET_COUNT_AFTER_DRY}"
+fi
+
+# --- Test 9: Dry run — with pending commits ---
+
+echo ""
+echo "--- Test 9: Dry run (with pending commits) ---"
+
+# Add new commits to source
+git -C "${SOURCE_REPO}" checkout main
+echo "pending 1" > "${SOURCE_REPO}/pending1.py"
+git -C "${SOURCE_REPO}" add pending1.py
+git -C "${SOURCE_REPO}" commit -m "pending commit 1"
+
+git -C "${SOURCE_REPO}" checkout -b dry-run-test-branch
+echo "pending 2" > "${SOURCE_REPO}/pending2.py"
+git -C "${SOURCE_REPO}" add pending2.py
+git -C "${SOURCE_REPO}" commit -m "pending commit 2 on branch"
+git -C "${SOURCE_REPO}" checkout main
+
+DRY_OUTPUT=$("${PROMOTE_SCRIPT}" \
+    --source "${SOURCE_REPO}" \
+    --target "${TARGET_REPO}" \
+    --author-name "${PROMOTED_NAME}" \
+    --author-email "${PROMOTED_EMAIL}" \
+    --dry-run)
+
+if echo "${DRY_OUTPUT}" | grep -q "2 commit(s) would be promoted"; then
+    pass "Dry run reports correct pending commit count"
+else
+    fail "Dry run commit count wrong, got: ${DRY_OUTPUT}"
+fi
+
+if echo "${DRY_OUTPUT}" | grep -q "${PROMOTED_NAME} <${PROMOTED_EMAIL}>"; then
+    pass "Dry run shows target identity"
+else
+    fail "Dry run doesn't show target identity, got: ${DRY_OUTPUT}"
+fi
+
+# Verify dry run still didn't modify the target
+TARGET_COUNT_STILL=$(git -C "${TARGET_REPO}" rev-list --all --count)
+if [ "${TARGET_COUNT_STILL}" = "${TARGET_COUNT_AFTER_DRY}" ]; then
+    pass "Dry run with pending commits did not modify target repo"
+else
+    fail "Dry run modified target repo: before=${TARGET_COUNT_AFTER_DRY}, after=${TARGET_COUNT_STILL}"
+fi
+
 # --- Cleanup ---
 
 rm -rf "${TEMP_DIR}"

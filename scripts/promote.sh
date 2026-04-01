@@ -11,7 +11,8 @@
 #     --source <path-to-source-repo> \
 #     --target <path-to-target-repo> \
 #     --author-name "Your Name" \
-#     --author-email "your@email.com"
+#     --author-email "your@email.com" \
+#     [--dry-run]
 
 set -euo pipefail
 
@@ -21,6 +22,7 @@ SOURCE_REPO=""
 TARGET_REPO=""
 AUTHOR_NAME=""
 AUTHOR_EMAIL=""
+DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,13 +30,14 @@ while [[ $# -gt 0 ]]; do
         --target)  TARGET_REPO="$2"; shift 2 ;;
         --author-name)  AUTHOR_NAME="$2"; shift 2 ;;
         --author-email) AUTHOR_EMAIL="$2"; shift 2 ;;
+        --dry-run) DRY_RUN=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
 if [ -z "${SOURCE_REPO}" ] || [ -z "${TARGET_REPO}" ] || \
    [ -z "${AUTHOR_NAME}" ] || [ -z "${AUTHOR_EMAIL}" ]; then
-    echo "Usage: promote.sh --source <repo> --target <repo> --author-name <name> --author-email <email>"
+    echo "Usage: promote.sh --source <repo> --target <repo> --author-name <name> --author-email <email> [--dry-run]"
     exit 1
 fi
 
@@ -73,6 +76,37 @@ if [ -f "${IMPORT_MARKS}" ]; then
     IMPORT_ARGS+=(--import-marks="${IMPORT_MARKS}")
 fi
 IMPORT_ARGS+=(--export-marks="${IMPORT_MARKS}")
+
+# --- Dry run: show what would be promoted ---
+
+if [ "${DRY_RUN}" = true ]; then
+    # Build dry-run export args: same as real export but without --export-marks
+    # to avoid overwriting marks as a side effect
+    DRY_EXPORT_ARGS=(--all)
+    if [ -f "${EXPORT_MARKS}" ]; then
+        DRY_EXPORT_ARGS+=(--import-marks="${EXPORT_MARKS}")
+    fi
+
+    STREAM=$(git -C "${SOURCE_REPO}" fast-export "${DRY_EXPORT_ARGS[@]}" 2>/dev/null || true)
+
+    if [ -z "${STREAM}" ]; then
+        COMMIT_COUNT=0
+    else
+        COMMIT_COUNT=$(printf '%s\n' "${STREAM}" | grep -c "^commit " || true)
+    fi
+    BRANCH_REFS=$(printf '%s\n' "${STREAM}" | grep "^commit " | sed 's/^commit //' | sort -u || true)
+
+    if [ "${COMMIT_COUNT}" -eq 0 ]; then
+        echo "Nothing to promote — target is up to date."
+    else
+        echo "Dry run: ${COMMIT_COUNT} commit(s) would be promoted"
+        echo "Branches affected:"
+        echo "${BRANCH_REFS}" | sed 's/^/  /'
+        echo ""
+        echo "Author/committer will be rewritten to: ${AUTHOR_NAME} <${AUTHOR_EMAIL}>"
+    fi
+    exit 0
+fi
 
 # --- Promote: fast-export | rewrite identity | fast-import ---
 
