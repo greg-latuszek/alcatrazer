@@ -1,0 +1,4 @@
+# Inner sandbox repo - agent workspace with its own .git
+# This directory is mounted into Docker containers and managed by agents.
+# Its contents are promoted to the outer repo via the promotion script.
+sandbox/
