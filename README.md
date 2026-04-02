@@ -41,12 +41,18 @@ The container runs as a **phantom UID** — a user ID that does not exist on the
 
 The phantom UID is determined automatically by `initialize_sandbox.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.env` for reuse across container rebuilds.
 
+### What we protect against
+
+The sandbox protects **host filesystem integrity**. The threat model is an agent (intentionally or accidentally) reading local secrets, PII, or credentials and exfiltrating them over the network. The sandbox prevents this by ensuring agents have no access to host files outside the mounted workspace.
+
+Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth credentials are mounted read-only so agents can use your existing Claude subscription.
+
 ### What agents CAN do
 
 - Read and write files inside `sandbox/` (mounted into the container)
 - Create git commits using a throwaway identity (`Sandbox Agent <sandbox@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
-- Access the internet to communicate with LLM APIs (e.g. Anthropic API)
+- Access the internet to communicate with LLM APIs via Claude OAuth or API keys
 - Install packages and run code inside the container
 - Use mise to manage tool versions (Python, Node.js, Bun, etc.)
 
@@ -56,7 +62,7 @@ The phantom UID is determined automatically by `initialize_sandbox.sh`, which sc
 - Access the host user's identity, email, or signing keys
 - Access the host filesystem outside of `sandbox/`
 - Access the Docker socket or spawn new containers
-- Access any host credentials, tokens, or secrets (SSH keys, GPG keys, API keys stored in host environment)
+- Read host files (SSH keys, GPG keys, git config, shell history, environment variables, etc.)
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
 - Delete or modify files outside the mounted workspace
 
@@ -73,14 +79,14 @@ This script:
 2. Finds the first unused UID on the host (>= 1001) and writes `SANDBOX_UID` to `.env`
 3. Creates `sandbox/` with an isolated git repo configured with the sandbox identity
 
-### 2. Configure API keys
+### 2. LLM Authentication
 
-Edit `.env` and fill in the API keys your agents will need:
+**Primary method (recommended):** your existing Claude OAuth credentials (`~/.claude/.credentials.json`) are mounted read-only into the container. If you've already authenticated Claude Code CLI on your host, no additional setup is needed.
+
+**Alternative:** if you prefer API key auth (separate billing, pay-per-use), edit `.env`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=...          # optional
-MINIMAX_API_KEY=...         # optional
 ```
 
 ### 3. Build and run
@@ -134,17 +140,17 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 These rules are enforced by the `docker-compose.yml` configuration:
 
 1. **Mount only `sandbox/`** as the working volume — never the outer repo or the host home directory.
-2. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
-3. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.
-4. **Never pass host environment variables blindly** (e.g. `--env-file` with shell profile). Only explicitly chosen variables from `.env` are passed.
-5. **Allow outbound internet access** so agents can call LLM APIs (Anthropic, etc.).
-6. **Run as phantom UID** — the container user's UID does not exist on the host.
+2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
+3. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
+4. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.
+5. **Never pass host environment variables blindly** (e.g. `--env-file` with shell profile). Only explicitly chosen variables from `.env` are passed.
+6. **Allow outbound internet access** so agents can call LLM APIs (Anthropic, etc.).
+7. **Run as phantom UID** — the container user's UID does not exist on the host.
 
 ## Workflow
 
 1. Human runs `./initialize_sandbox.sh` to create the inner repo and determine the phantom UID.
-2. Human fills in API keys in `.env`.
-3. Human runs `docker compose build` and `docker compose run --rm sandbox`.
+2. Human runs `docker compose build` and `docker compose run --rm sandbox`.
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge — building full branch/merge histories.
 5. Human reviews agent work via Docker: `docker compose run --rm sandbox git log --graph --oneline --all`.
 6. Human runs the promotion script to transfer commits from the inner repo to the outer repo. The script rewrites the author identity and preserves the full branch and merge topology.

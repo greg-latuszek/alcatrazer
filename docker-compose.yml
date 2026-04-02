@@ -12,6 +12,9 @@ services:
     volumes:
       # Mount the inner sandbox repo as the agent workspace
       - ./sandbox:/workspace
+      # Claude Code OAuth credentials (read-only, just the credentials file,
+      # not the whole ~/.claude/ directory which may contain project memories/settings)
+      - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro
       # Persistent caches to avoid re-downloading on container restart
       - mise-cache:/home/agent/.local/share/mise
       - pip-cache:/home/agent/.cache/pip
