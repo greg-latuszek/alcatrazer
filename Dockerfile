@@ -41,8 +41,11 @@ RUN mise use --global python@3.13 && \
 # Activate mise shims so all tools are available on PATH
 ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
+# Install Claude Code CLI
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
 # Verify installations
-RUN python --version && node --version && bun --version && git --version
+RUN python --version && node --version && bun --version && git --version && claude --version
 
 # Set git defaults for sandbox identity (defense in depth — initialize_sandbox.sh
 # also configures this per-repo, but this catches any git operation outside the repo)
