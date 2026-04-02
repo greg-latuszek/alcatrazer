@@ -71,6 +71,8 @@ echo "===SECTION:TMUX==="
 tmux -V 2>&1
 echo "===SECTION:RIPGREP==="
 rg --version 2>&1 | head -1
+echo "===SECTION:CLAUDE==="
+claude --version 2>&1
 echo "===SECTION:MISE_LS==="
 mise ls 2>&1
 echo "===SECTION:WORKSPACE_GIT_CONFIG==="
@@ -190,7 +192,7 @@ fi
 # --- 4. Development tools ---
 echo ""
 echo "--- 4. Development tools ---"
-for TOOL in PYTHON NODE BUN GIT MISE TMUX RIPGREP; do
+for TOOL in PYTHON NODE BUN GIT MISE TMUX RIPGREP CLAUDE; do
     SECTION=$(get_section "${TOOL}")
     if [ -n "$(echo "${SECTION}" | tr -d '[:space:]')" ]; then
         pass "${TOOL}: $(echo "${SECTION}" | head -1)"
