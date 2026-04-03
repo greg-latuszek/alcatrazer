@@ -49,8 +49,8 @@ RUN python --version && node --version && bun --version && git --version && clau
 
 # Set git defaults for sandbox identity (defense in depth — initialize_sandbox.sh
 # also configures this per-repo, but this catches any git operation outside the repo)
-RUN git config --global user.name "Sandbox Agent" && \
-    git config --global user.email "sandbox@localhost" && \
+RUN git config --global user.name "Alcatraz Agent" && \
+    git config --global user.email "alcatraz@localhost" && \
     git config --global commit.gpgsign false && \
     git config --global init.defaultBranch main
 

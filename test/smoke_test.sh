@@ -151,7 +151,7 @@ else
 fi
 
 SECTION=$(get_section "GITCONFIG")
-if echo "${SECTION}" | grep -q "Sandbox Agent" && ! echo "${SECTION}" | grep -qi "signingkey\s*=\s*/."; then
+if echo "${SECTION}" | grep -q "Alcatraz Agent" && ! echo "${SECTION}" | grep -qi "signingkey\s*=\s*/."; then
     pass "Git config has sandbox identity, no host signing key paths"
 else
     fail "Git config may leak host info: ${SECTION}"
@@ -217,13 +217,13 @@ done
 echo ""
 echo "--- 6. Workspace git config ---"
 SECTION=$(get_section "WORKSPACE_GIT_CONFIG")
-if echo "${SECTION}" | grep -q "user.name=Sandbox Agent"; then
-    pass "Workspace git user.name is Sandbox Agent"
+if echo "${SECTION}" | grep -q "user.name=Alcatraz Agent"; then
+    pass "Workspace git user.name is Alcatraz Agent"
 else
     fail "Workspace git user.name mismatch: ${SECTION}"
 fi
-if echo "${SECTION}" | grep -q "user.email=sandbox@localhost"; then
-    pass "Workspace git user.email is sandbox@localhost"
+if echo "${SECTION}" | grep -q "user.email=alcatraz@localhost"; then
+    pass "Workspace git user.email is alcatraz@localhost"
 else
     fail "Workspace git user.email mismatch: ${SECTION}"
 fi
@@ -232,8 +232,8 @@ fi
 echo ""
 echo "--- 7. Git commit ---"
 SECTION=$(get_section "COMMIT_TEST")
-if echo "${SECTION}" | grep -q "Sandbox Agent|sandbox@localhost|Sandbox Agent|sandbox@localhost"; then
-    pass "Commits are authored and committed as Sandbox Agent"
+if echo "${SECTION}" | grep -q "Alcatraz Agent|alcatraz@localhost|Alcatraz Agent|alcatraz@localhost"; then
+    pass "Commits are authored and committed as Alcatraz Agent"
 else
     fail "Commit identity mismatch: $(echo "${SECTION}" | tail -1)"
 fi

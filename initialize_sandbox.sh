@@ -90,8 +90,8 @@ else
     git init "${SANDBOX_DIR}"
 
     # Set sandboxed identity - agents will commit under this throwaway identity
-    git -C "${SANDBOX_DIR}" config user.name "Sandbox Agent"
-    git -C "${SANDBOX_DIR}" config user.email "sandbox@localhost"
+    git -C "${SANDBOX_DIR}" config user.name "Alcatraz Agent"
+    git -C "${SANDBOX_DIR}" config user.email "alcatraz@localhost"
 
     # Disable commit signing - no access to host signing keys
     git -C "${SANDBOX_DIR}" config commit.gpgsign false
@@ -111,7 +111,7 @@ echo ""
 echo "Sandbox configuration:"
 echo "  UID/GID:      ${SANDBOX_UID} (phantom — does not exist on host)"
 echo "  Workspace:    ${SANDBOX_DIR}"
-echo "  Git identity: Sandbox Agent <sandbox@localhost>"
+echo "  Git identity: Alcatraz Agent <alcatraz@localhost>"
 echo ""
 echo "Local git config:"
 git -C "${SANDBOX_DIR}" config --local --list

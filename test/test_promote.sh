@@ -23,8 +23,8 @@ SEED_SCRIPT="${SCRIPT_DIR}/seed_sandbox.sh"
 TEMP_DIR="${SCRIPT_DIR}/promotion_temp_output"
 
 # Expected identities
-SANDBOX_NAME="Sandbox Agent"
-SANDBOX_EMAIL="sandbox@localhost"
+SANDBOX_NAME="Alcatraz Agent"
+SANDBOX_EMAIL="alcatraz@localhost"
 PROMOTED_NAME="Test User"
 PROMOTED_EMAIL="test@example.com"
 

@@ -1,12 +1,36 @@
-# Agents in Sandbox
+# Alcatrazer
 
-This repository is a safe sandbox environment for experimenting with agentic AI development inside Docker containers.
+*Your code gets out. Your secrets don't.*
+
+---
+
+> *The year is 2026. AI agents have become the fastest coders on the planet. They write, test, refactor, and ship — tirelessly, in parallel, around the clock.*
+>
+> *There's just one problem: you gave them the keys to your machine.*
+>
+> *Your SSH keys. Your git credentials. Your browser sessions. That `.env` file with production database passwords. The tax return PDF you forgot in your Downloads folder. All of it — one careless mount, one leaked environment variable, one hallucinated `curl` command away from somewhere it should never be.*
+>
+> *You didn't mean to. Nobody does. You just wanted the agent to scaffold a FastAPI backend. But it runs as you. It sees what you see. And when it phones home to its LLM, it sends whatever context it thinks is relevant.*
+>
+> *Alcatraz was built for a different kind of prisoner. The kind that works hard, produces valuable output, and never — ever — gets to touch the mainland.*
+>
+> *The island is a Docker container. The inmates are your AI agents. They get a workspace, tools, and internet access to talk to their LLM. They write code, create branches, run tests, commit their work. They can even orchestrate swarms of sub-agents, each on their own branch, merging results like a well-run development team.*
+>
+> *But the water around the island is real. No SSH keys exist inside. No git credentials. No host filesystem. The agents don't even know your name — they commit as "Alcatraz Agent", a ghost identity that maps to nobody. They run under a phantom UID that doesn't exist on your machine, so even if they tunnel through the walls, they surface as nobody, owning nothing, permitted nowhere.*
+>
+> *When the work is done, you — the warden — inspect it from the mainland. You review the commits, the branches, the merge history. If you approve, you run the transfer: every commit crosses the water with its topology intact, but the ghost identity is replaced with yours. The code enters your real repository, under your real name, ready to push.*
+>
+> *Your agents built it. You own it. And your secrets never left the mainland.*
+>
+> ***Alcatrazer** — the tool that builds your Alcatraz.*
+
+---
 
 ## Purpose
 
-The goal is to run AI agents (such as Claude Code or other LLM-powered coding agents) inside isolated Docker containers where they can write code and iterate on it, without any risk of compromising the host system's credentials, keys, or identity.
+Alcatrazer is a secure development environment for AI-powered coding agents. It isolates agent work inside Docker containers, protecting your host machine from accidental or intentional credential leakage, while letting agents do their job: write code, commit, branch, merge, and talk to LLMs.
 
-This repo is designed as a reusable template — clone it, run the initialization script, and start experimenting with any agentic framework (os-eco, Claude Code, custom agent swarms, etc.) in any language.
+It is designed as a reusable template — clone it, run the initialization script, and start experimenting with any agentic framework (os-eco, Claude Code, custom agent swarms, etc.) in any language.
 
 ## Repository Structure
 
@@ -25,7 +49,7 @@ agents_in_sandbox/              <-- outer repo (host user's real identity, has G
 ├── scripts/
 │   └── promote.sh              <-- promotes commits from inner to outer repo
 └── sandbox/                    <-- mounted into Docker containers
-    ├── .git/                   <-- inner git (Sandbox Agent identity, no remote)
+    ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
     └── ... agent work ...
 ```
 
@@ -50,7 +74,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 ### What agents CAN do
 
 - Read and write files inside `sandbox/` (mounted into the container)
-- Create git commits using a throwaway identity (`Sandbox Agent <sandbox@localhost>`)
+- Create git commits using a throwaway identity (`Alcatraz Agent <alcatraz@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
 - Access the internet to communicate with LLM APIs via Claude OAuth or API keys
 - Install packages and run code inside the container
@@ -163,6 +187,6 @@ This separation ensures agents can do productive work while the human retains fu
 The promotion script (`scripts/promote.sh`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
 
 - Preserves full branch and merge topology (branches, merge commits, parent chains)
-- Rewrites author/committer from `Sandbox Agent` to the host user's identity
+- Rewrites author/committer from `Alcatraz Agent` to the host user's identity
 - Supports incremental runs — only new commits since the last promotion are transferred
 - Is unidirectional: inner repo to outer repo only
