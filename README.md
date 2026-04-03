@@ -2,6 +2,12 @@
 
 *Your code gets out. Your secrets don't.*
 
+<p align="center">
+  <img src="images/alcatraz.jpg" alt="Alcatraz Island" width="700">
+  <br>
+  <sub>Photo: Javier Branas — <a href="https://commons.wikimedia.org/wiki/File:Alcatraz_-_panoramio.jpg">Wikimedia Commons</a> — <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a></sub>
+</p>
+
 ---
 
 > *The year is 2026. AI agents have become the fastest coders on the planet. They write, test, refactor, and ship — tirelessly, in parallel, around the clock.*
