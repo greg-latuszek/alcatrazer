@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 240" width="280" height="240">
+
+  <!-- Rocky A-shaped island - wide, rounded top enclosing grates -->
+
+  <!-- Main rock body: rounded dome top, A-shaped legs -->
+  <path d="
+    M140,10
+    C100,10 70,35 62,70
+    Q55,100 52,120
+    L48,140
+    Q44,155 40,165
+    L36,178
+    Q30,190 28,198
+    C26,206 28,210 34,210
+    Q42,210 48,204
+    L56,192
+    Q64,178 72,165
+    L80,152
+    Q90,142 100,136
+    L108,132
+
+    L172,132
+
+    L180,136
+    Q190,142 200,152
+    L208,165
+    Q216,178 224,192
+    L232,204
+    Q238,210 246,210
+    C252,210 254,206 252,198
+    Q250,190 244,178
+    L240,165
+    Q236,155 232,140
+    L228,120
+    Q225,100 218,70
+    C210,35 180,10 140,10
+    Z" fill="#4a4a4a"/>
+
+  <!-- Inner rock layer for texture -->
+  <path d="
+    M140,16
+    C106,16 78,38 70,70
+    Q64,98 60,118
+    L56,140
+    Q50,158 44,172
+    L38,190
+    Q34,198 36,202
+    C40,206 46,204 52,196
+    L62,182
+    Q72,166 82,152
+    L92,142
+    Q102,136 112,132
+    L168,132
+    Q178,136 188,142
+    L198,152
+    Q208,166 218,182
+    L228,196
+    C234,204 240,206 244,202
+    Q246,198 242,190
+    L236,172
+    Q230,158 224,140
+    L220,118
+    Q216,98 210,70
+    C202,38 174,16 140,16
+    Z" fill="#525252"/>
+
+  <!-- Highlight dome texture -->
+  <ellipse cx="140" cy="32" rx="50" ry="16" fill="#585858" opacity="0.6"/>
+
+  <!-- Rock bumps -->
+  <circle cx="30" cy="202" r="4" fill="#4a4a4a"/>
+  <circle cx="250" cy="202" r="4" fill="#4a4a4a"/>
+  <ellipse cx="42" cy="185" rx="5" ry="3" fill="#4a4a4a"/>
+  <ellipse cx="238" cy="185" rx="5" ry="3" fill="#4a4a4a"/>
+  <circle cx="55" cy="162" r="3" fill="#4a4a4a"/>
+  <circle cx="225" cy="162" r="3" fill="#4a4a4a"/>
+  <ellipse cx="68" cy="105" rx="4" ry="6" fill="#4a4a4a"/>
+  <ellipse cx="212" cy="105" rx="4" ry="6" fill="#4a4a4a"/>
+
+  <!-- A crossbar carved into rock -->
+  <rect x="100" y="127" width="80" height="8" rx="2" fill="#3a3a3a"/>
+
+  <!-- Prison window carved into dome -->
+  <rect x="92" y="44" width="96" height="80" rx="4" fill="#1a1a1a"/>
+
+  <!-- Prison bars (vertical) -->
+  <line x1="105" y1="44" x2="105" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="118" y1="44" x2="118" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="131" y1="44" x2="131" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="144" y1="44" x2="144" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="157" y1="44" x2="157" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="170" y1="44" x2="170" y2="124" stroke="#707070" stroke-width="2.5"/>
+  <line x1="183" y1="44" x2="183" y2="124" stroke="#707070" stroke-width="2.5"/>
+
+  <!-- Prison bars (horizontal) -->
+  <line x1="92" y1="64" x2="188" y2="64" stroke="#707070" stroke-width="2"/>
+  <line x1="92" y1="84" x2="188" y2="84" stroke="#707070" stroke-width="2"/>
+  <line x1="92" y1="104" x2="188" y2="104" stroke="#707070" stroke-width="2"/>
+
+  <!-- Terminal prompt glowing behind bars -->
+  <text x="121" y="92" font-family="monospace" font-size="20" font-weight="bold" fill="#00dd66" opacity="0.95">&gt;_</text>
+
+  <!-- Searchlight glow at peak of dome -->
+  <circle cx="140" cy="14" r="7" fill="#ffcc00" opacity="0.4"/>
+  <circle cx="140" cy="14" r="3.5" fill="#ffee66" opacity="0.7"/>
+
+  <!-- Water waves (short legs barely visible) -->
+  <path d="M0 196 Q17 188 35 196 Q52 204 70 196 Q87 188 105 196 Q122 204 140 196 Q157 188 175 196 Q192 204 210 196 Q227 188 245 196 Q262 204 280 196 L280 240 L0 240 Z" fill="#1a6fa0" opacity="0.35"/>
+  <path d="M0 205 Q17 197 35 205 Q52 213 70 205 Q87 197 105 205 Q122 213 140 205 Q157 197 175 205 Q192 213 210 205 Q227 197 245 205 Q262 213 280 205 L280 240 L0 240 Z" fill="#1a6fa0" opacity="0.55"/>
+  <path d="M0 214 Q17 207 35 214 Q52 221 70 214 Q87 207 105 214 Q122 221 140 214 Q157 207 175 214 Q192 221 210 214 Q227 207 245 214 Q262 221 280 214 L280 240 L0 240 Z" fill="#1a6fa0" opacity="0.75"/>
+
+</svg>
