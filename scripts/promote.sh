@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Promote commits from a source (sandbox) git repo to a target (outer) git repo.
+# Promote commits from a source (alcatraz) git repo to a target (outer) git repo.
 # Rewrites author/committer identity while preserving full branch and merge topology.
 #
 # Uses git fast-export / fast-import with incremental mark files so only new

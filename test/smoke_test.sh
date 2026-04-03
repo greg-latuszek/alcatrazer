@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# Smoke test for the sandbox Docker infrastructure.
+# Smoke test for the Alcatraz Docker infrastructure.
 #
 # Verifies that the container is properly isolated from the host:
 # - Runs as a phantom UID (no matching host user)
 # - No access to host credentials, SSH keys, or signing keys
 # - Only explicitly passed environment variables are visible
 # - All development tools are available (Python, Node, Bun, Git, Tmux, etc.)
-# - Agents can commit and branch inside the sandbox workspace
+# - Agents can commit and branch inside the Alcatraz workspace
 # - Docker socket is not accessible
 # - No git remotes are configured
 #
 # Prerequisites:
-#   ./initialize_sandbox.sh
+#   ./initialize_alcatraz.sh
 #   docker compose build
 #
 # Usage:
@@ -25,8 +25,8 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected SANDBOX_UID from .env
-EXPECTED_UID=$(grep -oP '^SANDBOX_UID=\K.*' .env)
+# Load expected ALCATRAZ_UID from .env
+EXPECTED_UID=$(grep -oP '^ALCATRAZ_UID=\K.*' .env)
 
 PASS=0
 FAIL=0
@@ -35,11 +35,11 @@ pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 echo "========================================="
-echo "  Sandbox Smoke Test"
+echo "  Alcatraz Smoke Test"
 echo "========================================="
 
 # Run all checks inside a single container invocation and capture output
-OUTPUT=$(docker compose run --rm sandbox bash -c '
+OUTPUT=$(docker compose run --rm alcatraz bash -c '
 # Delimiter-separated sections for reliable parsing
 echo "===SECTION:ID==="
 id
@@ -79,7 +79,7 @@ echo "===SECTION:WORKSPACE_GIT_CONFIG==="
 git -C /workspace config --local --list 2>&1
 echo "===SECTION:COMMIT_TEST==="
 cd /workspace
-echo "print(\"hello from sandbox\")" > _smoke_test.py
+echo "print(\"hello from alcatraz\")" > _smoke_test.py
 git add _smoke_test.py
 git commit -m "smoke test: verify agent can commit" 2>&1
 git log -1 --format="%an|%ae|%cn|%ce" 2>&1
@@ -152,7 +152,7 @@ fi
 
 SECTION=$(get_section "GITCONFIG")
 if echo "${SECTION}" | grep -q "Alcatraz Agent" && ! echo "${SECTION}" | grep -qi "signingkey\s*=\s*/."; then
-    pass "Git config has sandbox identity, no host signing key paths"
+    pass "Git config has Alcatraz identity, no host signing key paths"
 else
     fail "Git config may leak host info: ${SECTION}"
 fi
@@ -175,18 +175,12 @@ fi
 echo ""
 echo "--- 3. Environment variables ---"
 SECTION=$(get_section "ENV_SECRETS")
-if echo "${SECTION}" | grep -q "ANTHROPIC_API_KEY"; then
-    pass "ANTHROPIC_API_KEY is passed to container"
+# Only env vars we explicitly pass should appear — no host secrets leaked
+LEAKED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY|ALCATRAZ_UID" || true)
+if [ -z "${LEAKED}" ]; then
+    pass "No leaked secret-like environment variables from host"
 else
-    fail "ANTHROPIC_API_KEY not found in container environment"
-fi
-
-# Check no unexpected secret-like vars leaked
-UNEXPECTED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY|SANDBOX_UID" || true)
-if [ -z "${UNEXPECTED}" ]; then
-    pass "No unexpected secret-like environment variables"
-else
-    fail "Unexpected env vars found: ${UNEXPECTED}"
+    fail "Unexpected secret-like env vars found: ${LEAKED}"
 fi
 
 # --- 4. Development tools ---
@@ -252,7 +246,7 @@ fi
 echo ""
 echo "--- 9. Code execution ---"
 SECTION=$(get_section "PYTHON_EXEC")
-if echo "${SECTION}" | grep -q "hello from sandbox"; then
+if echo "${SECTION}" | grep -q "hello from alcatraz"; then
     pass "Python execution works"
 else
     fail "Python execution failed: ${SECTION}"

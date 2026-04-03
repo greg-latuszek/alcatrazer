@@ -26,11 +26,11 @@
 #   * initial commit
 #
 # Usage:
-#   ./test/seed_sandbox.sh <path-to-git-repo>
+#   ./test/seed_alcatraz.sh <path-to-git-repo>
 
 set -euo pipefail
 
-REPO_DIR="${1:?Usage: seed_sandbox.sh <path-to-git-repo>}"
+REPO_DIR="${1:?Usage: seed_alcatraz.sh <path-to-git-repo>}"
 
 if [ ! -d "${REPO_DIR}/.git" ]; then
     echo "ERROR: ${REPO_DIR} is not a git repository"

@@ -43,24 +43,24 @@ It is designed as a reusable template — clone it, run the initialization scrip
 This project uses a nested git architecture — a git repo inside a git repo:
 
 ```
-agents_in_sandbox/              <-- outer repo (host user's real identity, has GitHub remote)
+your_repo/                      <-- outer repo (host user's real identity, has GitHub remote)
 ├── .git/                       <-- outer git
-├── .gitignore                  <-- ignores sandbox/, .env, test/
-├── .env.example                <-- template for API keys and sandbox config
+├── .gitignore                  <-- ignores alcatraz/, .env, test/
+├── .env.example                <-- template for API keys and Alcatraz config
 ├── README.md
-├── Dockerfile                  <-- sandbox container image
+├── Dockerfile                  <-- Alcatraz container image
 ├── docker-compose.yml          <-- container orchestration
 ├── entrypoint.sh               <-- container startup (chown + privilege drop)
-├── initialize_sandbox.sh       <-- creates inner repo + finds phantom UID
+├── initialize_alcatraz.sh      <-- creates inner repo + finds phantom UID
 ├── scripts/
 │   └── promote.sh              <-- promotes commits from inner to outer repo
-└── sandbox/                    <-- mounted into Docker containers
+└── alcatraz/                   <-- mounted into Docker containers
     ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
     └── ... agent work ...
 ```
 
 - The **outer repo** is the host-side control plane. It holds infrastructure (Dockerfiles, scripts, docs) and receives promoted agent work. It has the host user's real identity and a GitHub remote for pushing.
-- The **inner repo** (`sandbox/`) is the agent workspace. It has a throwaway identity, no remote, and no access to host credentials. Only this directory is mounted into Docker containers.
+- The **inner repo** (`alcatraz/`) is the agent workspace. It has a throwaway identity, no remote, and no access to host credentials. Only this directory is mounted into Docker containers.
 - The inner repo is gitignored from the outer repo. Agent work enters the outer repo only through the promotion script.
 
 ## Security Model
@@ -69,17 +69,17 @@ agents_in_sandbox/              <-- outer repo (host user's real identity, has G
 
 The container runs as a **phantom UID** — a user ID that does not exist on the host machine. This provides defense in depth: even if an agent escapes the container, the process cannot write to any host files because no host user matches that UID.
 
-The phantom UID is determined automatically by `initialize_sandbox.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.env` for reuse across container rebuilds.
+The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.env` for reuse across container rebuilds.
 
 ### What we protect against
 
-The sandbox protects **host filesystem integrity**. The threat model is an agent (intentionally or accidentally) reading local secrets, PII, or credentials and exfiltrating them over the network. The sandbox prevents this by ensuring agents have no access to host files outside the mounted workspace.
+Alcatraz protects **host filesystem integrity**. The threat model is an agent (intentionally or accidentally) reading local secrets, PII, or credentials and exfiltrating them over the network. Alcatraz prevents this by ensuring agents have no access to host files outside the mounted workspace.
 
 Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth credentials are mounted read-only so agents can use your existing Claude subscription.
 
 ### What agents CAN do
 
-- Read and write files inside `sandbox/` (mounted into the container)
+- Read and write files inside `alcatraz/` (mounted into the container)
 - Create git commits using a throwaway identity (`Alcatraz Agent <alcatraz@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
 - Access the internet to communicate with LLM APIs via Claude OAuth or API keys
@@ -90,7 +90,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 - Push to GitHub or any remote repository (no git credentials or SSH keys are available)
 - Access the host user's identity, email, or signing keys
-- Access the host filesystem outside of `sandbox/`
+- Access the host filesystem outside of `alcatraz/`
 - Access the Docker socket or spawn new containers
 - Read host files (SSH keys, GPG keys, git config, shell history, environment variables, etc.)
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
@@ -98,16 +98,16 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ## Getting Started
 
-### 1. Initialize the sandbox
+### 1. Initialize Alcatraz
 
 ```bash
-./initialize_sandbox.sh
+./initialize_alcatraz.sh
 ```
 
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
-2. Finds the first unused UID on the host (>= 1001) and writes `SANDBOX_UID` to `.env`
-3. Creates `sandbox/` with an isolated git repo configured with the sandbox identity
+2. Finds the first unused UID on the host (>= 1001) and writes `ALCATRAZ_UID` to `.env`
+3. Creates `alcatraz/` with an isolated git repo configured with the Alcatraz Agent identity
 
 ### 2. LLM Authentication
 
@@ -123,20 +123,20 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ```bash
 docker compose build
-docker compose run --rm sandbox
+docker compose run --rm alcatraz
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
 
-### Resetting the sandbox
+### Resetting Alcatraz
 
 Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
 
 ```bash
-./initialize_sandbox.sh --reset
+./initialize_alcatraz.sh --reset
 ```
 
-This removes all sandbox contents and reinitializes a fresh inner git repo.
+This removes all Alcatraz contents and reinitializes a fresh inner git repo.
 
 ## Container Details
 
@@ -169,7 +169,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 These rules are enforced by the `docker-compose.yml` configuration:
 
-1. **Mount only `sandbox/`** as the working volume — never the outer repo or the host home directory.
+1. **Mount only `alcatraz/`** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
 3. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
 4. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.
@@ -179,10 +179,10 @@ These rules are enforced by the `docker-compose.yml` configuration:
 
 ## Workflow
 
-1. Human runs `./initialize_sandbox.sh` to create the inner repo and determine the phantom UID.
-2. Human runs `docker compose build` and `docker compose run --rm sandbox`.
+1. Human runs `./initialize_alcatraz.sh` to create the inner repo and determine the phantom UID.
+2. Human runs `docker compose build` and `docker compose run --rm alcatraz`.
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge — building full branch/merge histories.
-5. Human reviews agent work via Docker: `docker compose run --rm sandbox git log --graph --oneline --all`.
+5. Human reviews agent work via Docker: `docker compose run --rm alcatraz git log --graph --oneline --all`.
 6. Human runs the promotion script to transfer commits from the inner repo to the outer repo. The script rewrites the author identity and preserves the full branch and merge topology.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 

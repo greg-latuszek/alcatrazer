@@ -3,10 +3,10 @@
 # TDD test for scripts/promote.sh
 #
 # This test:
-# 1. Creates a temporary sandbox git repo (simulating the inner repo)
+# 1. Creates a temporary alcatraz git repo (simulating the inner repo)
 # 2. Seeds it with realistic branch/merge history
 # 3. Creates a temporary target git repo (simulating the outer repo)
-# 4. Runs promote.sh to transfer commits from sandbox to target
+# 4. Runs promote.sh to transfer commits from alcatraz to target
 # 5. Compares both repos: same topology, same content, different author identity
 #
 # All temporary repos are created under test/promotion_temp_output/ (gitignored).
@@ -19,12 +19,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 PROMOTE_SCRIPT="${PROJECT_DIR}/scripts/promote.sh"
-SEED_SCRIPT="${SCRIPT_DIR}/seed_sandbox.sh"
+SEED_SCRIPT="${SCRIPT_DIR}/seed_alcatraz.sh"
 TEMP_DIR="${SCRIPT_DIR}/promotion_temp_output"
 
 # Expected identities
-SANDBOX_NAME="Alcatraz Agent"
-SANDBOX_EMAIL="alcatraz@localhost"
+ALCATRAZ_NAME="Alcatraz Agent"
+ALCATRAZ_EMAIL="alcatraz@localhost"
 PROMOTED_NAME="Test User"
 PROMOTED_EMAIL="test@example.com"
 
@@ -47,13 +47,13 @@ mkdir -p "${TEMP_DIR}"
 SOURCE_REPO="${TEMP_DIR}/source"
 TARGET_REPO="${TEMP_DIR}/target"
 
-# Create and seed the source repo (simulates inner/sandbox repo)
+# Create and seed the source repo (simulates inner/alcatraz repo)
 echo ""
 echo "--- Setup: creating and seeding source repo ---"
 mkdir -p "${SOURCE_REPO}"
 git init "${SOURCE_REPO}"
-git -C "${SOURCE_REPO}" config user.name "${SANDBOX_NAME}"
-git -C "${SOURCE_REPO}" config user.email "${SANDBOX_EMAIL}"
+git -C "${SOURCE_REPO}" config user.name "${ALCATRAZ_NAME}"
+git -C "${SOURCE_REPO}" config user.email "${ALCATRAZ_EMAIL}"
 git -C "${SOURCE_REPO}" config commit.gpgsign false
 
 "${SEED_SCRIPT}" "${SOURCE_REPO}"
@@ -171,10 +171,10 @@ fi
 echo ""
 echo "--- Test 6: Author identity ---"
 
-# Source should have sandbox identity
+# Source should have alcatraz identity
 SOURCE_AUTHORS=$(git -C "${SOURCE_REPO}" log --all --format="%an <%ae>" | sort -u)
-if [ "${SOURCE_AUTHORS}" = "${SANDBOX_NAME} <${SANDBOX_EMAIL}>" ]; then
-    pass "Source commits have sandbox identity"
+if [ "${SOURCE_AUTHORS}" = "${ALCATRAZ_NAME} <${ALCATRAZ_EMAIL}>" ]; then
+    pass "Source commits have alcatraz identity"
 else
     fail "Source has unexpected authors: ${SOURCE_AUTHORS}"
 fi

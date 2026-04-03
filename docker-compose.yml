@@ -1,17 +1,17 @@
-# All configuration lives in .env (created by initialize_sandbox.sh from .env.example).
+# All configuration lives in .env (created by initialize_alcatraz.sh from .env.example).
 # Docker compose auto-reads .env for variable interpolation and runtime env vars.
 
 services:
-  sandbox:
+  alcatraz:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        SANDBOX_UID: ${SANDBOX_UID:?Run ./initialize_sandbox.sh first}
-    container_name: agent-sandbox
+        ALCATRAZ_UID: ${ALCATRAZ_UID:?Run ./initialize_alcatraz.sh first}
+    container_name: agent-alcatraz
     volumes:
-      # Mount the inner sandbox repo as the agent workspace
-      - ./sandbox:/workspace
+      # Mount the inner Alcatraz repo as the agent workspace
+      - ./alcatraz:/workspace
       # Claude Code OAuth credentials (read-only, just the credentials file,
       # not the whole ~/.claude/ directory which may contain project memories/settings)
       - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro

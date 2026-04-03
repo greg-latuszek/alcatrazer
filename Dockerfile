@@ -5,8 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Use a UID/GID that does NOT exist on the host — if the container escapes,
 # the process cannot write to host files (no home dir, no owned files, no shell).
-# Value is determined by initialize_sandbox.sh and passed via docker-compose.
-ARG SANDBOX_UID=1001
+# Value is determined by initialize_alcatraz.sh and passed via docker-compose.
+ARG ALCATRAZ_UID=1001
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with the phantom UID
-RUN groupadd --gid ${SANDBOX_UID} agent && \
-    useradd --uid ${SANDBOX_UID} --gid ${SANDBOX_UID} --create-home --shell /bin/bash agent
+RUN groupadd --gid ${ALCATRAZ_UID} agent && \
+    useradd --uid ${ALCATRAZ_UID} --gid ${ALCATRAZ_UID} --create-home --shell /bin/bash agent
 
 # Switch to non-root user for all subsequent steps
 # Install mise as agent user
@@ -47,7 +47,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Verify installations
 RUN python --version && node --version && bun --version && git --version && claude --version
 
-# Set git defaults for sandbox identity (defense in depth — initialize_sandbox.sh
+# Set git defaults for Alcatraz identity (defense in depth — initialize_alcatraz.sh
 # also configures this per-repo, but this catches any git operation outside the repo)
 RUN git config --global user.name "Alcatraz Agent" && \
     git config --global user.email "alcatraz@localhost" && \
