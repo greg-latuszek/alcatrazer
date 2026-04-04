@@ -300,6 +300,16 @@ else
     fail "Cleanup may have failed: ${SECTION}"
 fi
 
+# --- 13. Dockerfile rejects build without ALCATRAZ_UID ---
+echo ""
+echo "--- 13. Dockerfile requires ALCATRAZ_UID ---"
+BUILD_OUTPUT=$(docker build --build-arg ALCATRAZ_UID="" -f "${PROJECT_DIR}/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
+if echo "${BUILD_OUTPUT}" | grep -q "ALCATRAZ_UID build arg is required"; then
+    pass "Dockerfile rejects build without ALCATRAZ_UID"
+else
+    fail "Dockerfile should reject build without ALCATRAZ_UID"
+fi
+
 # --- Summary ---
 echo ""
 echo "========================================="

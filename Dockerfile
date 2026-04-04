@@ -11,7 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Phantom UID — does not exist on the host. If the container escapes,
 # the process cannot write to any host files.
-ARG ALCATRAZ_UID=1001
+ARG ALCATRAZ_UID
+RUN test -n "${ALCATRAZ_UID}" || { echo "ERROR: ALCATRAZ_UID build arg is required. Run ./initialize_alcatraz.sh first."; exit 1; }
 
 # System dependencies for the security/orchestration layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
