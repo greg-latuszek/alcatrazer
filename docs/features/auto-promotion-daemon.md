@@ -40,7 +40,7 @@ To satisfy Principle 2 while keeping tool state colocated, `.alcatraz/` is split
 ├── uid                             <-- phantom UID (currently in .env as ALCATRAZ_UID)
 ├── promote-export-marks            <-- incremental promotion state (currently in outer .git/)
 ├── promote-import-marks            <-- incremental promotion state (currently in outer .git/)
-└── daemon.log                      <-- daemon output (future)
+└── promotion-daemon.log            <-- promotion daemon output (future)
 ```
 
 **Key properties:**
@@ -118,13 +118,17 @@ This lets the user balance between full visibility and clean outer history.
 
 `.alcatraz/workspace/` is owned by the phantom UID, so git on the host refuses to operate on it by default. The `initialize_alcatraz.sh` script adds `.alcatraz/workspace/` to `git config --global safe.directory`. This is safe — the directory is ours, created and controlled by our tool, phantom-UID-owned by design. Native git on the host, zero overhead.
 
-### 5. What should the daemon output?
+### 5. Logging and observability
 
-- **Silent by default** — log to a file, no terminal noise
-- **Status updates on events** — print a line when commits are promoted
-- **Verbose mode** — detailed logging for debugging
+**Silent by default.** The daemon writes to a rotating log file at `.alcatraz/promotion-daemon.log` — no terminal output. The user can inspect activity when needed without the daemon competing for terminal attention.
 
-**Recommendation:** **Status updates on events** by default (one line per promotion: timestamp, commit count, branches). Verbose mode via `--verbose` flag. Log to stdout (user can redirect if they want a file).
+**Rotating log** — the log file is capped at a configurable size. When it reaches the limit, the old log is rotated to `.alcatraz/promotion-daemon.log.1` and a fresh one starts. Only the current and one previous log are kept. This prevents unbounded growth while preserving enough history for troubleshooting.
+
+**Verbosity levels:**
+- `normal` (default) — one line per promotion event: timestamp, commit count, branches affected. Conflicts and errors.
+- `detailed` — full fast-export/fast-import output, branch matching, identity rewrite details. For troubleshooting.
+
+**Live inspection** — `scripts/inspect-promotion.sh` is a thin wrapper around `tail -f .alcatraz/promotion-daemon.log` that the user runs in a separate terminal to watch promotion activity in real time.
 
 ### 6. How is the daemon started/stopped?
 
@@ -180,9 +184,13 @@ branches = "all"
 #   "mirror"        — promote to same branch names, seamless sync (default)
 #   "alcatraz-tree" — promote to alcatraz/* namespace, user merges manually
 mode = "mirror"
-```
 
-Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it's tool state, not a user decision).
+# Logging verbosity: "normal" or "detailed" (for troubleshooting)
+verbosity = "normal"
+
+# Maximum log file size before rotation (in KB)
+max_log_size = 512
+```
 
 ## Implementation Plan
 
