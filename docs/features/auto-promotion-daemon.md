@@ -112,14 +112,7 @@ This lets the user balance between full visibility and clean outer history.
 
 ### 3. Where does the daemon run?
 
-~~**Inside the same container**~~ — **ELIMINATED by Principle 1 and 2**. Would require mounting the outer `.git/` into the container, breaking isolation. Agents could access the outer repo's config, history, and real identity.
-
-Remaining options:
-
-- **Host process** — simplest, direct access to both repos. A bash script with a loop, or a lightweight binary. No extra Docker complexity.
-- **Separate Docker container** — more portable, but needs access to both `.alcatraz/` and `.git/` of the outer repo, complicating volume mounts. Also introduces a second container to manage.
-
-**Recommendation:** **Host process**. It's simplest, has direct access to the outer repo (owned by the host user), and only needs to read `.alcatraz/` (which is world-readable despite phantom UID ownership). The daemon is a host-side tool — it belongs on the host.
+**Host process.** Simplest, direct access to the outer repo (owned by the host user), only needs to read `.alcatraz/workspace/` (world-readable despite phantom UID ownership). A bash script with a polling loop. The daemon is a host-side tool — it belongs on the host.
 
 ### 4. How does the daemon handle the "dubious ownership" problem?
 
@@ -237,6 +230,7 @@ Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it'
 ## Possible Future Improvements
 
 - **File watcher trigger** — replace polling with `inotifywait` (Linux) or `fswatch` (macOS) watching `.alcatraz/workspace/.git/refs/` for immediate reaction. Lower latency, but adds an external dependency.
+- **Daemon in a separate Docker container** — more portable across host OSes, but needs access to both `.alcatraz/` and the outer `.git/`, complicating volume mounts. Introduces a second container to manage.
 
 ## Open Items
 
