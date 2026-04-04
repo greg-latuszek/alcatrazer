@@ -1,14 +1,19 @@
-FROM ubuntu:24.04
+# =============================================================================
+# Stage 1: alcatraz-base
+# The security layer — reusable across any project, any language.
+# Provides: phantom UID, gosu, git, mise, Claude Code CLI, hardcoded
+# Alcatraz Agent identity. No language-specific tools here.
+# =============================================================================
 
-# Avoid interactive prompts during package installation
+FROM ubuntu:24.04 AS alcatraz-base
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Use a UID/GID that does NOT exist on the host — if the container escapes,
-# the process cannot write to host files (no home dir, no owned files, no shell).
-# Value is determined by initialize_alcatraz.sh and passed via docker-compose.
+# Phantom UID — does not exist on the host. If the container escapes,
+# the process cannot write to any host files.
 ARG ALCATRAZ_UID=1001
 
-# Install system dependencies
+# System dependencies for the security/orchestration layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     tmux \
@@ -24,37 +29,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid ${ALCATRAZ_UID} agent && \
     useradd --uid ${ALCATRAZ_UID} --gid ${ALCATRAZ_UID} --create-home --shell /bin/bash agent
 
-# Switch to non-root user for all subsequent steps
-# Install mise as agent user
+# Install mise and Claude Code CLI as agent user
 USER agent
 ENV HOME=/home/agent
-
-RUN curl https://mise.run | sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
 
-# Configure default tool versions via global mise config
-# These serve as defaults; agents can override via mise.toml in their project
-RUN mise use --global python@3.13 && \
-    mise use --global node@22 && \
-    mise use --global bun@latest
-
-# Activate mise shims so all tools are available on PATH
-ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
-
-# Install Claude Code CLI
+RUN curl https://mise.run | sh
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Verify installations
-RUN python --version && node --version && bun --version && git --version && claude --version
+# Activate mise shims
+ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
-# Set git defaults for Alcatraz identity (defense in depth — initialize_alcatraz.sh
-# also configures this per-repo, but this catches any git operation outside the repo)
+# Hardcoded Alcatraz Agent identity — not configurable by design.
+# This prevents users from accidentally leaking real credentials.
 RUN git config --global user.name "Alcatraz Agent" && \
     git config --global user.email "alcatraz@localhost" && \
     git config --global commit.gpgsign false && \
     git config --global init.defaultBranch main
 
-# Switch back to root for entrypoint (it drops to agent after chown)
+# =============================================================================
+# Stage 2: alcatraz-dev
+# Language-specific tools — configured per project via alcatrazer.toml [tools].
+# This stage is what end users customize for their stack.
+# =============================================================================
+
+FROM alcatraz-base AS alcatraz-dev
+
+USER agent
+
+# Tool versions from alcatrazer.toml [tools] — passed as build args
+ARG PYTHON_VERSION=3.13
+ARG NODE_VERSION=22
+ARG BUN_VERSION=latest
+
+RUN mise use --global python@${PYTHON_VERSION} && \
+    mise use --global node@${NODE_VERSION} && \
+    mise use --global bun@${BUN_VERSION}
+
+# Verify all tools
+RUN python --version && node --version && bun --version && \
+    git --version && claude --version && mise --version
+
+# Back to root for entrypoint (drops to agent after chown)
 USER root
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh

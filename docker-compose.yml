@@ -6,8 +6,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: alcatraz-dev
       args:
         ALCATRAZ_UID: ${ALCATRAZ_UID:?Run ./initialize_alcatraz.sh first}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
+        NODE_VERSION: ${NODE_VERSION:-22}
+        BUN_VERSION: ${BUN_VERSION:-latest}
     container_name: agent-alcatraz
     volumes:
       # Mount the inner Alcatraz repo as the agent workspace
