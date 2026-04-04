@@ -100,15 +100,15 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 
 **Polling** — runs promotion check on a configurable interval (default 5 seconds) from the host side. No external dependencies, no footprint inside the container, satisfies Principle 2. The interval is configurable via `alcatrazer.toml`.
 
-### 2. What gets promoted and when?
+### 2. Which branches get promoted?
 
-Options:
+Configurable via `alcatrazer.toml`. The user chooses which branches cross the water:
 
-- **Every commit on every branch** — most granular, human sees everything in real time
-- **Only merges to main** — cleaner outer history, but delays visibility of in-progress work
-- **Configurable** — let the user choose via `alcatrazer.toml`
+- `"all"` — every branch, full git tree with all work-in-progress visible (default)
+- `"main"` — only the main branch, just the final merged results
+- A list of glob patterns — fine-grained control, e.g. `["main", "feature/*"]`
 
-**Recommendation:** **Configurable**, defaulting to **every commit on every branch**. Full visibility by default, user can restrict if they prefer cleaner history.
+This lets the user balance between full visibility and clean outer history.
 
 ### 3. Where does the daemon run?
 
@@ -184,8 +184,11 @@ The conflict strategy depends on how the user works. Two modes:
 # Polling interval in seconds
 interval = 5
 
-# What gets promoted: "all" (every commit on every branch) or "main" (only main branch)
-promote = "all"
+# Which branches to promote from the inner repo:
+#   "all"    — every branch (full git tree with all history)
+#   "main"   — only the main branch (final merged results)
+#   Or a list of glob patterns: ["main", "feature/*"]
+branches = "all"
 
 # Conflict handling mode:
 #   "mirror"        — promote to same branch names, seamless sync (default)
