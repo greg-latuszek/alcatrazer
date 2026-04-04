@@ -98,16 +98,7 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 
 ### 1. What triggers promotion?
 
-~~**Git hook inside container**~~ — **ELIMINATED by Principle 2**. A `post-commit` hook in `.alcatraz/workspace/.git/hooks/` would leave an alcatrazer fingerprint inside the workspace. Agents could read the hook, see what it does, and trace it back to the tool.
-
-Remaining options:
-
-- **File watcher (inotifywait)** — watches `.alcatraz/workspace/.git/refs/` for changes from the host side. Immediate reaction, low overhead. Requires `inotify-tools` on Linux. No footprint inside the container. On macOS, would use `fswatch` instead.
-- **Polling** — runs promotion check on an interval (e.g. every 5-10 seconds) from the host side. Simpler, no extra dependencies, slightly delayed. No footprint inside the container.
-
-Both options satisfy Principle 2 — they observe from outside, never touch inside.
-
-**Recommendation:** Start with **polling** for simplicity and zero dependencies. Add inotifywait/fswatch support later as an optimization. The interval is configurable via `alcatrazer.toml`.
+**Polling** — runs promotion check on a configurable interval (default 5 seconds) from the host side. No external dependencies, no footprint inside the container, satisfies Principle 2. The interval is configurable via `alcatrazer.toml`.
 
 ### 2. What gets promoted and when?
 
@@ -239,6 +230,10 @@ Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it'
 - Tool state (marks, logs) lives under `.alcatraz/` but outside `workspace/`
 - Must work on Linux (primary) and macOS (secondary)
 - Should add minimal dependencies to the host system
+
+## Possible Future Improvements
+
+- **File watcher trigger** — replace polling with `inotifywait` (Linux) or `fswatch` (macOS) watching `.alcatraz/workspace/.git/refs/` for immediate reaction. Lower latency, but adds an external dependency.
 
 ## Open Items
 
