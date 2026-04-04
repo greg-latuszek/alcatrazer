@@ -13,6 +13,7 @@
 #
 # Prerequisites:
 #   ./initialize_alcatraz.sh
+#   alcatrazer.toml must exist in project root
 #   docker compose build
 #
 # Usage:

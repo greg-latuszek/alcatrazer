@@ -12,12 +12,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALCATRAZ_DIR="${SCRIPT_DIR}/alcatraz"
+ALCATRAZ_DIR="${SCRIPT_DIR}/.alcatraz"
 ENV_FILE="${SCRIPT_DIR}/.env"
 ENV_EXAMPLE="${SCRIPT_DIR}/.env.example"
 
 # --- Handle --reset flag ---
-# Files inside alcatraz/ are owned by the phantom UID and cannot be deleted
+# Files inside .alcatraz/ are owned by the phantom UID and cannot be deleted
 # by the host user directly. We use a disposable Docker container to clean up.
 
 if [ "${1:-}" = "--reset" ]; then

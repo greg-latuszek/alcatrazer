@@ -11,7 +11,7 @@ services:
     container_name: agent-alcatraz
     volumes:
       # Mount the inner Alcatraz repo as the agent workspace
-      - ./alcatraz:/workspace
+      - ./.alcatraz:/workspace
       # Claude Code OAuth credentials (read-only, just the credentials file,
       # not the whole ~/.claude/ directory which may contain project memories/settings)
       - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro

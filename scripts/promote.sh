@@ -6,38 +6,46 @@
 # Uses git fast-export / fast-import with incremental mark files so only new
 # commits are transferred on subsequent runs.
 #
+# Author identity priority (lowest to highest):
+#   1. git config (local first, then global — same as git does)
+#   2. alcatrazer.toml [promotion] section
+#   3. --author-name / --author-email CLI flags
+#
 # Usage:
 #   scripts/promote.sh \
 #     --source <path-to-source-repo> \
 #     --target <path-to-target-repo> \
-#     --author-name "Your Name" \
-#     --author-email "your@email.com" \
+#     [--author-name "Your Name"] \
+#     [--author-email "your@email.com"] \
 #     [--dry-run]
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+TOML_FILE="${PROJECT_DIR}/alcatrazer.toml"
 
 # --- Parse arguments ---
 
 SOURCE_REPO=""
 TARGET_REPO=""
-AUTHOR_NAME=""
-AUTHOR_EMAIL=""
+CLI_AUTHOR_NAME=""
+CLI_AUTHOR_EMAIL=""
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source)  SOURCE_REPO="$2"; shift 2 ;;
         --target)  TARGET_REPO="$2"; shift 2 ;;
-        --author-name)  AUTHOR_NAME="$2"; shift 2 ;;
-        --author-email) AUTHOR_EMAIL="$2"; shift 2 ;;
+        --author-name)  CLI_AUTHOR_NAME="$2"; shift 2 ;;
+        --author-email) CLI_AUTHOR_EMAIL="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
-if [ -z "${SOURCE_REPO}" ] || [ -z "${TARGET_REPO}" ] || \
-   [ -z "${AUTHOR_NAME}" ] || [ -z "${AUTHOR_EMAIL}" ]; then
-    echo "Usage: promote.sh --source <repo> --target <repo> --author-name <name> --author-email <email> [--dry-run]"
+if [ -z "${SOURCE_REPO}" ] || [ -z "${TARGET_REPO}" ]; then
+    echo "Usage: promote.sh --source <repo> --target <repo> [--author-name <name>] [--author-email <email>] [--dry-run]"
     exit 1
 fi
 
@@ -52,6 +60,31 @@ fi
 
 if [ ! -d "${TARGET_REPO}/.git" ]; then
     echo "ERROR: ${TARGET_REPO} is not a git repository"
+    exit 1
+fi
+
+# --- Resolve author identity (priority: git config < toml < CLI) ---
+
+# Layer 1: git config (local > global, same as git does)
+AUTHOR_NAME=$(git -C "${TARGET_REPO}" config user.name 2>/dev/null || true)
+AUTHOR_EMAIL=$(git -C "${TARGET_REPO}" config user.email 2>/dev/null || true)
+
+# Layer 2: alcatrazer.toml [promotion] section
+if [ -f "${TOML_FILE}" ]; then
+    TOML_NAME=$(grep -A5 '^\[promotion\]' "${TOML_FILE}" | grep '^name' | sed 's/^name *= *"\(.*\)"/\1/' || true)
+    TOML_EMAIL=$(grep -A5 '^\[promotion\]' "${TOML_FILE}" | grep '^email' | sed 's/^email *= *"\(.*\)"/\1/' || true)
+    [ -n "${TOML_NAME}" ] && AUTHOR_NAME="${TOML_NAME}"
+    [ -n "${TOML_EMAIL}" ] && AUTHOR_EMAIL="${TOML_EMAIL}"
+fi
+
+# Layer 3: CLI flags (highest priority)
+[ -n "${CLI_AUTHOR_NAME}" ] && AUTHOR_NAME="${CLI_AUTHOR_NAME}"
+[ -n "${CLI_AUTHOR_EMAIL}" ] && AUTHOR_EMAIL="${CLI_AUTHOR_EMAIL}"
+
+# Validate we have an identity
+if [ -z "${AUTHOR_NAME}" ] || [ -z "${AUTHOR_EMAIL}" ]; then
+    echo "ERROR: Could not determine promotion identity."
+    echo "Set it in alcatrazer.toml [promotion], git config, or --author-name/--author-email flags."
     exit 1
 fi
 

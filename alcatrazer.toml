@@ -1,0 +1,17 @@
+# Alcatrazer configuration
+# This file is version controlled — it captures decisions about how
+# Alcatrazer is used in this repository.
+
+[promotion]
+# Identity used when promoting commits from the Alcatraz workspace
+# to the outer repository. Overrides git config (local > global).
+# Can be further overridden by --author-name / --author-email CLI flags.
+name = "Grzegorz Latuszek"
+email = "latuszek.grzegorz@gmail.com"
+
+[tools]
+# Default tool versions installed in the container.
+# Agents can override these via mise.toml in their workspace.
+python = "3.13"
+node = "22"
+bun = "latest"
