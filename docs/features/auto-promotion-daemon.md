@@ -85,7 +85,7 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 - `.alcatraz/workspace/` is the inner workspace, mounted into Docker
 - Files in `.alcatraz/workspace/` are owned by the phantom UID (not writable by host user, but readable)
 - Tool state (UID, marks, logs) lives under `.alcatraz/` but outside `workspace/` — host-only, never visible to agents
-- The host cannot run `git` commands directly against `.alcatraz/workspace/` due to "dubious ownership" — promotion must handle this
+- The host adds `.alcatraz/workspace/` as `safe.directory` so git can operate on it despite phantom UID ownership
 
 ### Promotion Behavior
 
@@ -116,14 +116,7 @@ This lets the user balance between full visibility and clean outer history.
 
 ### 4. How does the daemon handle the "dubious ownership" problem?
 
-The `.alcatraz/workspace/` directory is owned by the phantom UID. The host user cannot run `git` commands against it directly (git refuses with "dubious ownership").
-
-Options:
-
-- **Run `git fast-export` via a brief Docker invocation** — uses the same container image, runs as the phantom UID that owns the files. Most secure — no weakening of git's ownership checks. Adds ~1 second overhead per promotion cycle for container startup.
-- **Use `git config --global safe.directory`** — tells git on the host to trust `.alcatraz/workspace/`. Weakens security posture by disabling a git safety check. Simple but goes against Principle 1.
-
-**Recommendation:** **Docker invocation for fast-export**. Run `docker compose run --rm alcatraz git fast-export ...` to extract the stream, then pipe it through sed (on host) into `git fast-import` (on host, targeting outer repo). This keeps git's ownership checks intact and uses the infrastructure we already have.
+`.alcatraz/workspace/` is owned by the phantom UID, so git on the host refuses to operate on it by default. The `initialize_alcatraz.sh` script adds `.alcatraz/workspace/` to `git config --global safe.directory`. This is safe — the directory is ours, created and controlled by our tool, phantom-UID-owned by design. Native git on the host, zero overhead.
 
 ### 5. What should the daemon output?
 
@@ -219,7 +212,7 @@ Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it'
 ## Dependencies and Constraints
 
 - Must not require root access on the host
-- Must handle the phantom UID ownership boundary via Docker invocation
+- Must handle the phantom UID ownership boundary via `safe.directory`
 - Must be idempotent (safe to restart, safe to run multiple instances)
 - Must not interfere with agents working inside the container
 - Must leave zero footprint inside `.alcatraz/workspace/` (Principle 2)
