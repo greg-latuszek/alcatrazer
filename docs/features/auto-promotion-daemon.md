@@ -22,17 +22,50 @@ Agents working inside the container must not be able to discover that their envi
 Therefore: **zero footprint inside the workspace**. No alcatrazer-specific files, no branded hooks, no recognizable configuration patterns, no environment variables that hint at the tool's name. The workspace must look like an ordinary git repository in an ordinary container.
 
 This means:
-- **Nothing from Alcatrazer may exist inside `.alcatraz/`** — no hooks, no config files, no markers
+- **Nothing from Alcatrazer may exist inside `.alcatraz/workspace/`** — no hooks, no config files, no markers
 - **Nothing from Alcatrazer may be visible in the container environment** — no branded env vars, no identifiable process names
 - **The daemon must operate entirely from the host side** — it observes the workspace from outside, never touches the inside
 
 ---
 
+## Directory Structure: `.alcatraz/` Redesign
+
+To satisfy Principle 2 while keeping tool state colocated, `.alcatraz/` is split into two zones:
+
+```
+.alcatraz/                          <-- gitignored, entire tool state
+├── workspace/                      <-- mounted into Docker as /workspace
+│   ├── .git/                       <-- inner git (agent work, clean — no tool traces)
+│   └── ... agent files ...
+├── uid                             <-- phantom UID (currently in .env as ALCATRAZ_UID)
+├── promote-export-marks            <-- incremental promotion state (currently in outer .git/)
+├── promote-import-marks            <-- incremental promotion state (currently in outer .git/)
+└── daemon.log                      <-- daemon output (future)
+```
+
+**Key properties:**
+
+- **`workspace/`** is the only thing mounted into Docker. Agents see a vanilla git repo — nothing else. Principle 2 is satisfied.
+- **Tool state** (UID, marks, logs) lives alongside the workspace but is never visible to agents — it is outside the mount boundary.
+- **One gitignore entry** (`.alcatraz/`) covers everything — workspace, tool state, daemon logs.
+- **`.env` becomes simpler** — only API keys, no tool state like `ALCATRAZ_UID`. The UID moves to `.alcatraz/uid`.
+- **Promotion marks move** from the outer `.git/` to `.alcatraz/` — keeps the outer repo's `.git/` clean of tool artifacts.
+
+**Migration needed** (prerequisite, separate from daemon work):
+- `docker-compose.yml`: mount `.alcatraz/workspace/` instead of `.alcatraz/`
+- `initialize_alcatraz.sh`: create `workspace/` subdirectory, write UID to `.alcatraz/uid`
+- `promote.sh`: read/write marks from `.alcatraz/` instead of target `.git/`
+- `.env`: remove `ALCATRAZ_UID`, read from `.alcatraz/uid` instead
+- Smoke test: update paths
+- Promotion test: update mark file expectations
+
+---
+
 ## Feature Description
 
-The auto-promotion daemon is a background process that watches the inner git repository (`.alcatraz/`) for new commits and automatically promotes them to the outer git repository using `promote.sh`. This eliminates the need for the human operator to manually run the promotion script — agent work appears in the outer repo in near real-time as it is produced.
+The auto-promotion daemon is a background process that watches the inner git repository (`.alcatraz/workspace/`) for new commits and automatically promotes them to the outer git repository using `promote.sh`. This eliminates the need for the human operator to manually run the promotion script — agent work appears in the outer repo in near real-time as it is produced.
 
-The daemon runs on the **host** side (not inside the Docker container), watching the `.alcatraz/.git/` directory for changes. When it detects new commits, it runs the promotion pipeline (fast-export | identity rewrite | fast-import) to transfer them to the outer repo.
+The daemon runs on the **host** side (not inside the Docker container), watching `.alcatraz/workspace/.git/` for changes. When it detects new commits, it runs the promotion pipeline (fast-export | identity rewrite | fast-import) to transfer them to the outer repo.
 
 ## Origin
 
@@ -49,14 +82,15 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 - `promote.sh` already works with incremental promotion via fast-export/fast-import mark files
 - Identity rewrite is handled (agent identity -> real identity from `alcatrazer.toml`)
 - The priority chain for author identity is: git config < alcatrazer.toml < CLI flags
-- `.alcatraz/` is the inner workspace, mounted into Docker
-- Files in `.alcatraz/` are owned by the phantom UID (not writable by host user, but readable)
-- The host cannot run `git` commands directly against `.alcatraz/` due to "dubious ownership" — promotion must handle this
+- `.alcatraz/workspace/` is the inner workspace, mounted into Docker
+- Files in `.alcatraz/workspace/` are owned by the phantom UID (not writable by host user, but readable)
+- Tool state (UID, marks, logs) lives under `.alcatraz/` but outside `workspace/` — host-only, never visible to agents
+- The host cannot run `git` commands directly against `.alcatraz/workspace/` due to "dubious ownership" — promotion must handle this
 
 ### Promotion Behavior
 
 - `promote.sh` supports `--dry-run` to check for pending commits without modifying anything
-- Mark files (`promote-export-marks`, `promote-import-marks`) are stored in the target repo's `.git/` directory
+- Mark files (`promote-export-marks`, `promote-import-marks`) will move to `.alcatraz/` (currently in target repo's `.git/`)
 - Promotion is idempotent — running it when there's nothing new is a no-op
 - Full branch and merge topology is preserved
 
@@ -64,11 +98,11 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 
 ### 1. What triggers promotion?
 
-~~**Git hook inside container**~~ — **ELIMINATED by Principle 2**. A `post-commit` hook in `.alcatraz/.git/hooks/` would leave an alcatrazer fingerprint inside the workspace. Agents could read the hook, see what it does, and trace it back to the tool.
+~~**Git hook inside container**~~ — **ELIMINATED by Principle 2**. A `post-commit` hook in `.alcatraz/workspace/.git/hooks/` would leave an alcatrazer fingerprint inside the workspace. Agents could read the hook, see what it does, and trace it back to the tool.
 
 Remaining options:
 
-- **File watcher (inotifywait)** — watches `.alcatraz/.git/refs/` for changes from the host side. Immediate reaction, low overhead. Requires `inotify-tools` on Linux. No footprint inside the container. On macOS, would use `fswatch` instead.
+- **File watcher (inotifywait)** — watches `.alcatraz/workspace/.git/refs/` for changes from the host side. Immediate reaction, low overhead. Requires `inotify-tools` on Linux. No footprint inside the container. On macOS, would use `fswatch` instead.
 - **Polling** — runs promotion check on an interval (e.g. every 5-10 seconds) from the host side. Simpler, no extra dependencies, slightly delayed. No footprint inside the container.
 
 Both options satisfy Principle 2 — they observe from outside, never touch inside.
@@ -98,12 +132,12 @@ Remaining options:
 
 ### 4. How does the daemon handle the "dubious ownership" problem?
 
-The `.alcatraz/` directory is owned by the phantom UID. The host user cannot run `git` commands against it directly (git refuses with "dubious ownership").
+The `.alcatraz/workspace/` directory is owned by the phantom UID. The host user cannot run `git` commands against it directly (git refuses with "dubious ownership").
 
 Options:
 
 - **Run `git fast-export` via a brief Docker invocation** — uses the same container image, runs as the phantom UID that owns the files. Most secure — no weakening of git's ownership checks. Adds ~1 second overhead per promotion cycle for container startup.
-- **Use `git config --global safe.directory`** — tells git on the host to trust `.alcatraz/`. Weakens security posture by disabling a git safety check. Simple but goes against Principle 1.
+- **Use `git config --global safe.directory`** — tells git on the host to trust `.alcatraz/workspace/`. Weakens security posture by disabling a git safety check. Simple but goes against Principle 1.
 
 **Recommendation:** **Docker invocation for fast-export**. Run `docker compose run --rm alcatraz git fast-export ...` to extract the stream, then pipe it through sed (on host) into `git fast-import` (on host, targeting outer repo). This keeps git's ownership checks intact and uses the infrastructure we already have.
 
@@ -144,11 +178,9 @@ promote = "all"
 
 # Branch namespace prefix in the outer repo
 namespace = "alcatraz"
-
-# Output
-log = ".alcatraz/daemon.log"
-verbose = false
 ```
+
+Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it's tool state, not a user decision).
 
 ## Implementation Plan
 
@@ -177,7 +209,8 @@ verbose = false
 - Must handle the phantom UID ownership boundary via Docker invocation
 - Must be idempotent (safe to restart, safe to run multiple instances)
 - Must not interfere with agents working inside the container
-- Must leave zero footprint inside `.alcatraz/` (Principle 2)
+- Must leave zero footprint inside `.alcatraz/workspace/` (Principle 2)
+- Tool state (marks, logs) lives under `.alcatraz/` but outside `workspace/`
 - Must work on Linux (primary) and macOS (secondary)
 - Should add minimal dependencies to the host system
 
