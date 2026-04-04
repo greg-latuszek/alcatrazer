@@ -156,28 +156,50 @@ Options:
 
 **Recommendation:** **Manual start** for now. The daemon is a host-side process, so tying it to `docker compose up` is not straightforward. A simple script that the user runs in a terminal tab. Future: could be a docker compose service with host networking.
 
-### 7. What about conflicts?
+### 7. Conflict handling
 
-The promotion is unidirectional (inner -> outer). The outer repo should never have commits that don't come from promotion. But if the human manually commits to the outer repo between promotions, the fast-import could conflict.
+The promotion is unidirectional (inner -> outer). But the human may also commit to the outer repo — either occasionally or continuously. This creates potential merge conflicts during promotion.
 
-- **Separate branch namespace** — promote into `alcatraz/*` branches (e.g. `alcatraz/main`, `alcatraz/feature/auth`). The outer repo's own `main` stays untouched. Human merges from `alcatraz/*` when ready. This is the safest option and makes the boundary explicit.
-- **Detect and warn** — check if outer repo has unpromoted commits, warn and skip if diverged.
-- **Always force** — overwrite promoted branches. Risky if human has local work.
+The conflict strategy depends on how the user works. Two modes:
 
-**Recommendation:** **Separate branch namespace** (`alcatraz/*`). This eliminates conflict entirely — promotion writes to its own namespace, human merges when ready. It also makes it clear in the outer repo which commits came from agents.
+#### Mode: `mirror` (default)
+
+**Use case:** The user develops via Alcatraz agents, with occasional manual commits possible. The outer repo is a live mirror of the inner repo with rewritten identity.
+
+**Behavior:** Promote directly to the same branch names (inner `main` -> outer `main`, inner `feature/x` -> outer `feature/x`). No namespace, no manual merges — seamless sync.
+
+**On conflict:** Daemon pauses promotion on the affected branch, creates a `conflict/resolve-<branch>-<timestamp>` branch with the promoted state, logs a warning explaining what happened, and waits for the user to resolve. Non-conflicting branches continue to promote normally.
+
+#### Mode: `alcatraz-tree`
+
+**Use case:** The user actively codes alongside Alcatraz agents — both parties are committing frequently. Conflicts are expected and frequent.
+
+**Behavior:** Promote into `alcatraz/*` namespace (inner `main` -> outer `alcatraz/main`, inner `feature/x` -> outer `alcatraz/feature/x`). The user takes responsibility for merging from `alcatraz/*` branches into their own branches when ready.
+
+**On conflict:** Not applicable — separate namespace means no conflicts.
+
+#### Conflict resolution flow (for `mirror` mode)
+
+1. Daemon detects fast-import failure on branch `X`
+2. Daemon creates branch `conflict/resolve-X-<timestamp>` with the promoted commits
+3. Daemon logs: `CONFLICT on branch X — promoted state saved to conflict/resolve-X-<timestamp>. Resolve manually, then the daemon will resume.`
+4. Daemon stops promoting branch `X` but continues promoting other branches
+5. Once the conflict branch is merged or deleted, the daemon resumes promoting `X`
 
 ### 8. Configuration in alcatrazer.toml
 
 ```toml
-[daemon]
+[promotion-daemon]
 # Polling interval in seconds
 interval = 5
 
 # What gets promoted: "all" (every commit on every branch) or "main" (only main branch)
 promote = "all"
 
-# Branch namespace prefix in the outer repo
-namespace = "alcatraz"
+# Conflict handling mode:
+#   "mirror"        — promote to same branch names, seamless sync (default)
+#   "alcatraz-tree" — promote to alcatraz/* namespace, user merges manually
+mode = "mirror"
 ```
 
 Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it's tool state, not a user decision).
@@ -186,22 +208,26 @@ Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it'
 
 1. **`scripts/watch.sh`** — the daemon script
    - Polling loop with configurable interval
-   - Reads config from `alcatrazer.toml`
+   - Reads config from `alcatrazer.toml` (`[promotion-daemon]` section)
    - Runs `git fast-export` via Docker to handle ownership
    - Pipes through identity rewrite sed
    - Runs `git fast-import` on host targeting outer repo
-   - Writes to `alcatraz/*` branch namespace
-   - Status output on promotion events
+   - Handles `mirror`/`alcatraz-tree` conflict modes
+   - Creates conflict resolution branches on failure (`mirror` mode)
+   - Status output on promotion events, summary on Ctrl+C
 
-2. **Update `promote.sh`** — add `--namespace` flag for branch prefix support
+2. **Update `promote.sh`** — add `--namespace` flag for `alcatraz-tree` mode branch prefix support
 
-3. **Update `alcatrazer.toml`** — add `[daemon]` section
+3. **Update `alcatrazer.toml`** — add `[promotion-daemon]` section
 
 4. **Tests**
-   - Test daemon detects new commits and promotes them
-   - Test branch namespace mapping (inner `main` -> outer `alcatraz/main`)
+   - Test daemon detects new commits and promotes them (mirror mode)
+   - Test mirror mode with no conflicts
+   - Test mirror mode conflict detection and resolution branch creation
+   - Test alcatraz-tree mode namespace mapping (inner `main` -> outer `alcatraz/main`)
    - Test idempotency (running when nothing new is a no-op)
    - Test daemon handles container not running gracefully
+   - Test daemon resumes after conflict branch is resolved
 
 ## Dependencies and Constraints
 
@@ -216,7 +242,7 @@ Daemon log is always written to `.alcatraz/daemon.log` (not configurable — it'
 
 ## Open Items
 
-- [ ] Decide: should `promote.sh` be refactored to support namespaced branches, or should `watch.sh` handle the namespace mapping separately?
 - [ ] Decide: should the daemon auto-stop when the container stops?
 - [ ] Consider: graceful handling of Docker not running / container not built
-- [ ] Consider: should the daemon show a summary on Ctrl+C (total commits promoted, duration, etc.)?
+- [ ] Consider: how does the daemon detect that a conflict resolution branch has been resolved?
+- [ ] Consider: in `mirror` mode, should the daemon attempt auto-merge before creating a conflict branch?
