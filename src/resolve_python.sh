@@ -65,6 +65,21 @@ validate_python() {
     return 0
 }
 
+# --- Helper: resolve shims to the real interpreter path ---
+# pyenv/mise shims delegate to the real binary — sys.executable gives
+# the actual path so we're immune to version switches later.
+
+resolve_real_path() {
+    local py="$1"
+    local real
+    real=$("${py}" -c "import sys; print(sys.executable)" 2>/dev/null) || true
+    if [ -n "${real}" ] && [ -x "${real}" ]; then
+        echo "${real}"
+    else
+        echo "${py}"
+    fi
+}
+
 # --- Check for previously resolved Python ---
 
 if [ -f "${PYTHON_FILE}" ]; then
@@ -86,13 +101,14 @@ mkdir -p "${ALCATRAZ_DIR}"
 PYTHON3_PATH=$(command -v python3 2>/dev/null || true)
 
 if [ -n "${PYTHON3_PATH}" ]; then
-    # Resolve to absolute path (handles pyenv shims, symlinks, etc.)
-    PYTHON3_ABS=$(readlink -f "${PYTHON3_PATH}" 2>/dev/null || realpath "${PYTHON3_PATH}" 2>/dev/null || echo "${PYTHON3_PATH}")
-
     if validate_python "${PYTHON3_PATH}"; then
-        VERSION=$("${PYTHON3_PATH}" --version 2>&1)
-        echo "Found ${VERSION} at ${PYTHON3_PATH}"
-        echo "${PYTHON3_PATH}" > "${PYTHON_FILE}"
+        REAL_PATH=$(resolve_real_path "${PYTHON3_PATH}")
+        VERSION=$("${REAL_PATH}" --version 2>&1)
+        echo "Found ${VERSION} at ${REAL_PATH}"
+        if [ "${REAL_PATH}" != "${PYTHON3_PATH}" ]; then
+            echo "  (resolved from shim ${PYTHON3_PATH})"
+        fi
+        echo "${REAL_PATH}" > "${PYTHON_FILE}"
         echo "Python path saved to .alcatraz/python"
         exit 0
     else
@@ -115,9 +131,10 @@ if [ -n "${MISE_PATH}" ]; then
 
         MISE_PYTHON=$("${MISE_PATH}" which python3 2>/dev/null || true)
         if [ -n "${MISE_PYTHON}" ] && validate_python "${MISE_PYTHON}"; then
-            VERSION=$("${MISE_PYTHON}" --version 2>&1)
-            echo "Installed ${VERSION} via mise at ${MISE_PYTHON}"
-            echo "${MISE_PYTHON}" > "${PYTHON_FILE}"
+            REAL_PATH=$(resolve_real_path "${MISE_PYTHON}")
+            VERSION=$("${REAL_PATH}" --version 2>&1)
+            echo "Installed ${VERSION} via mise at ${REAL_PATH}"
+            echo "${REAL_PATH}" > "${PYTHON_FILE}"
             echo "Python path saved to .alcatraz/python"
             exit 0
         else
@@ -146,9 +163,10 @@ if [ -z "${MISE_PATH}" ]; then
 
             MISE_PYTHON=$("${MISE_PATH}" which python3 2>/dev/null || true)
             if [ -n "${MISE_PYTHON}" ] && validate_python "${MISE_PYTHON}"; then
-                VERSION=$("${MISE_PYTHON}" --version 2>&1)
-                echo "Installed ${VERSION} via mise at ${MISE_PYTHON}"
-                echo "${MISE_PYTHON}" > "${PYTHON_FILE}"
+                REAL_PATH=$(resolve_real_path "${MISE_PYTHON}")
+                VERSION=$("${REAL_PATH}" --version 2>&1)
+                echo "Installed ${VERSION} via mise at ${REAL_PATH}"
+                echo "${REAL_PATH}" > "${PYTHON_FILE}"
                 echo "Python path saved to .alcatraz/python"
                 exit 0
             else
@@ -167,9 +185,10 @@ echo "Could not automatically resolve Python ${MIN_MAJOR}.${MIN_MINOR}+."
 read -rp "Provide path to Python ${MIN_MAJOR}.${MIN_MINOR}+ binary (or leave empty to abort): " MANUAL_PATH
 
 if [ -n "${MANUAL_PATH}" ] && validate_python "${MANUAL_PATH}"; then
-    VERSION=$("${MANUAL_PATH}" --version 2>&1)
-    echo "Validated ${VERSION} at ${MANUAL_PATH}"
-    echo "${MANUAL_PATH}" > "${PYTHON_FILE}"
+    REAL_PATH=$(resolve_real_path "${MANUAL_PATH}")
+    VERSION=$("${REAL_PATH}" --version 2>&1)
+    echo "Validated ${VERSION} at ${REAL_PATH}"
+    echo "${REAL_PATH}" > "${PYTHON_FILE}"
     echo "Python path saved to .alcatraz/python"
     exit 0
 fi
