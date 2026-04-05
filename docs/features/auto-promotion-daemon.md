@@ -52,12 +52,29 @@ To satisfy Principle 2 while keeping tool state colocated, `.alcatraz/` is split
 - **Promotion marks move** from the outer `.git/` to `.alcatraz/` — keeps the outer repo's `.git/` clean of tool artifacts.
 
 **Migration needed** (prerequisite, separate from daemon work):
+
+Directory restructuring — tool source code moves to `src/`, Docker files move to `container/`:
+
+```
+src/                            <-- tool source code
+├── initialize_alcatraz.sh
+├── watch_alcatraz.sh           <-- new (daemon)
+├── inspect_promotion.sh        <-- new (daemon)
+└── promote.sh
+
+container/                      <-- Docker infrastructure
+├── Dockerfile
+├── docker-compose.yml
+└── entrypoint.sh
+```
+
+Other migrations:
 - `docker-compose.yml`: mount `.alcatraz/workspace/` instead of `.alcatraz/`
 - `initialize_alcatraz.sh`: create `workspace/` subdirectory, write UID to `.alcatraz/uid`
 - `promote.sh`: read/write marks from `.alcatraz/` instead of target `.git/`
 - `.env`: remove `ALCATRAZ_UID`, read from `.alcatraz/uid` instead
 - Smoke test: update paths
-- Promotion test: update mark file expectations
+- Promotion test: update paths
 
 ---
 
@@ -128,14 +145,11 @@ This lets the user balance between full visibility and clean outer history.
 - `normal` (default) — one line per promotion event: timestamp, commit count, branches affected. Conflicts and errors.
 - `detailed` — full fast-export/fast-import output, branch matching, identity rewrite details. For troubleshooting.
 
-**Live inspection** — `scripts/inspect-promotion.sh` is a thin wrapper around `tail -f .alcatraz/promotion-daemon.log` that the user runs in a separate terminal to watch promotion activity in real time.
+**Live inspection** — `inspect_promotion.sh` is a thin wrapper around `tail -f .alcatraz/promotion-daemon.log` that the user runs in a separate terminal to watch promotion activity in real time.
 
 ### 6. How is the daemon started/stopped?
 
-- **Manual** — `alcatrazer watch` (or `./scripts/watch.sh`) to start, Ctrl+C to stop
-- **Automatic** — started alongside `docker compose up`
-
-**Recommendation:** **Manual start** for now. The daemon is a host-side process, so tying it to `docker compose up` is not straightforward. A simple script that the user runs in a terminal tab. Future: could be a docker compose service with host networking.
+**Manual.** The user runs `./watch_alcatraz.sh` in a terminal tab, Ctrl+C to stop. Consistent naming with `initialize_alcatraz.sh`.
 
 ### 7. Conflict handling
 
@@ -194,21 +208,22 @@ max_log_size = 512
 
 ## Implementation Plan
 
-1. **`scripts/watch.sh`** — the daemon script
+1. **`src/watch_alcatraz.sh`** — the daemon script
    - Polling loop with configurable interval
    - Reads config from `alcatrazer.toml` (`[promotion-daemon]` section)
-   - Runs `git fast-export` via Docker to handle ownership
+   - Runs `git fast-export` / `git fast-import` natively on host (via `safe.directory`)
    - Pipes through identity rewrite sed
-   - Runs `git fast-import` on host targeting outer repo
    - Handles `mirror`/`alcatraz-tree` conflict modes
    - Creates conflict resolution branches on failure (`mirror` mode)
-   - Status output on promotion events, summary on Ctrl+C
+   - Writes to `.alcatraz/promotion-daemon.log` (rotating)
 
-2. **Update `promote.sh`** — add `--namespace` flag for `alcatraz-tree` mode branch prefix support
+2. **`src/inspect_promotion.sh`** — live log viewer (`tail -f .alcatraz/promotion-daemon.log`)
 
-3. **Update `alcatrazer.toml`** — add `[promotion-daemon]` section
+3. **Update `src/promote.sh`** — add `--namespace` flag for `alcatraz-tree` mode branch prefix support
 
-4. **Tests**
+4. **Update `alcatrazer.toml`** — add `[promotion-daemon]` section
+
+5. **Tests**
    - Test daemon detects new commits and promotes them (mirror mode)
    - Test mirror mode with no conflicts
    - Test mirror mode conflict detection and resolution branch creation
@@ -232,6 +247,7 @@ max_log_size = 512
 
 - **File watcher trigger** — replace polling with `inotifywait` (Linux) or `fswatch` (macOS) watching `.alcatraz/workspace/.git/refs/` for immediate reaction. Lower latency, but adds an external dependency.
 - **Daemon in a separate Docker container** — more portable across host OSes, but needs access to both `.alcatraz/` and the outer `.git/`, complicating volume mounts. Introduces a second container to manage.
+- **Automatic start/stop** — daemon starts alongside `docker compose up` and stops with `docker compose down`.
 
 ## Open Items
 
