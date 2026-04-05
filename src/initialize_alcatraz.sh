@@ -6,6 +6,8 @@
 # 1. Finds a UID/GID that does not exist on the host (for container isolation)
 # 2. Writes UID to .alcatraz/uid, ensures .env exists for API keys
 # 3. Creates the inner git repo at .alcatraz/workspace/ with Alcatraz Agent identity
+# 4. Adds workspace to safe.directory so host git can read it
+# 5. Resolves Python 3.11+ for the promotion daemon
 #
 # Run this once from the host before starting any Docker containers.
 
@@ -126,12 +128,19 @@ else
     echo "Added ${WORKSPACE_ABS} to git safe.directory"
 fi
 
+# --- Step 5: Resolve Python 3.11+ for the daemon ---
+
+"${SCRIPT_DIR}/resolve_python.sh" --alcatraz-dir "${ALCATRAZ_DIR}"
+
 # --- Summary ---
+
+PYTHON_PATH=$(cat "${ALCATRAZ_DIR}/python" 2>/dev/null || echo "not resolved")
 
 echo ""
 echo "Alcatraz configuration:"
 echo "  UID/GID:      ${ALCATRAZ_UID} (phantom — does not exist on host)"
 echo "  Workspace:    ${WORKSPACE_DIR}"
+echo "  Python:       ${PYTHON_PATH}"
 echo "  Git identity: Alcatraz Agent <alcatraz@localhost>"
 echo ""
 echo "Local git config:"

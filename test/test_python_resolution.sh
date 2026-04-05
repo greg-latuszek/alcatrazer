@@ -34,6 +34,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Minimal system PATH for essential binaries (bash, grep, sed, readlink, etc.)
+# Fakebin goes FIRST so our stubs shadow system python3/mise.
+SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+
 echo "========================================="
 echo "  Python Resolution Test"
 echo "========================================="
@@ -56,12 +60,12 @@ if [ "${1:-}" = "--version" ]; then
     echo "Python 3.12.0"
 elif [ "${1:-}" = "-c" ]; then
     # Handle version check and tomllib import test
-    eval "$2"
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
 chmod +x "${TEMP_DIR}/t1/fakebin/python3"
 
-OUTPUT=$(PATH="${TEMP_DIR}/t1/fakebin" \
+OUTPUT=$(PATH="${TEMP_DIR}/t1/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t1/alcatraz" 2>&1) || true
 
 PYTHON_FILE="${TEMP_DIR}/t1/alcatraz/python"
@@ -91,8 +95,14 @@ echo "--- Test 2: No python3, mise installs Python ---"
 
 mkdir -p "${TEMP_DIR}/t2/alcatraz" "${TEMP_DIR}/t2/fakebin"
 
-# No python3 on PATH, but mise is available
-# After "mise use", python3 becomes available — simulate this with a state file
+# Shadow system python3 — simulate "not installed"
+cat > "${TEMP_DIR}/t2/fakebin/python3" << 'PYEOF'
+#!/bin/bash
+exit 127
+PYEOF
+chmod +x "${TEMP_DIR}/t2/fakebin/python3"
+
+# mise is available; after "mise use", python3 becomes available
 cat > "${TEMP_DIR}/t2/fakebin/mise" << 'MEOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -104,7 +114,7 @@ case "$1" in
 if [ "${1:-}" = "--version" ]; then
     echo "Python 3.11.9"
 elif [ "${1:-}" = "-c" ]; then
-    eval "$2"
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
         chmod +x "${FAKEBIN}/python3"
@@ -123,7 +133,7 @@ MEOF
 chmod +x "${TEMP_DIR}/t2/fakebin/mise"
 
 # Simulate user answering "y" to "Install Python via mise?"
-OUTPUT=$(echo "y" | PATH="${TEMP_DIR}/t2/fakebin" \
+OUTPUT=$(echo "y" | PATH="${TEMP_DIR}/t2/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t2/alcatraz" 2>&1) || true
 
 PYTHON_FILE="${TEMP_DIR}/t2/alcatraz/python"
@@ -148,87 +158,63 @@ echo "--- Test 3: No python3, no mise — bootstrap both ---"
 
 mkdir -p "${TEMP_DIR}/t3/alcatraz" "${TEMP_DIR}/t3/fakebin" "${TEMP_DIR}/t3/home/.local/bin"
 
-# Empty fakebin — no python3, no mise
-# We need a fake curl that "installs" mise
-cat > "${TEMP_DIR}/t3/fakebin/curl" << CEOF
-#!/usr/bin/env bash
-# Fake curl that simulates mise installer — creates a mise binary
-MISE_BIN="${TEMP_DIR}/t3/home/.local/bin/mise"
-cat > "\${MISE_BIN}" << 'MEOF'
-#!/usr/bin/env bash
-case "\$1" in
-    use)
-        FAKEBIN="${TEMP_DIR}/t3/home/.local/bin"
-        cat > "\${FAKEBIN}/python3" << 'PYEOF'
-#!/usr/bin/env bash
-if [ "\${1:-}" = "--version" ]; then
-    echo "Python 3.11.11"
-elif [ "\${1:-}" = "-c" ]; then
-    eval "\$2"
-fi
+# Shadow system python3 — simulate not installed (exits non-zero on --version)
+cat > "${TEMP_DIR}/t3/fakebin/python3" << 'PYEOF'
+#!/bin/bash
+exit 127
 PYEOF
-        chmod +x "\${FAKEBIN}/python3"
-        echo "mise: installing python@3.11..."
-        ;;
-    which)
-        FAKEBIN="${TEMP_DIR}/t3/home/.local/bin"
-        if [ -x "\${FAKEBIN}/python3" ]; then
-            echo "\${FAKEBIN}/python3"
-        else
-            exit 1
-        fi
-        ;;
-esac
-MEOF
-chmod +x "\${MISE_BIN}"
-CEOF
-chmod +x "${TEMP_DIR}/t3/fakebin/curl"
+chmod +x "${TEMP_DIR}/t3/fakebin/python3"
+# mise is NOT on the restricted PATH (lives in ~/.local/bin, not in /usr/bin)
 
-# Fake bash to execute the piped installer (curl | sh pattern)
-# The resolve script will do: curl https://mise.run | sh
-# With our fake curl, it outputs nothing, but we need sh to run it
-# Actually, let's make our fake curl output a script that creates mise:
-cat > "${TEMP_DIR}/t3/fakebin/curl" << CEOF
+# Create fake mise binary that will be "installed" by the fake curl|sh
+# We pre-create it as a helper script, then the fake curl outputs a shell
+# script that copies it into place.
+MISE_TARGET="${TEMP_DIR}/t3/home/.local/bin/mise"
+MISE_HELPER="${TEMP_DIR}/t3/mise_helper.sh"
+
+cat > "${MISE_HELPER}" << 'MEOF'
 #!/usr/bin/env bash
-# Output a shell script that creates mise
-cat << 'INSTALLER'
-#!/usr/bin/env bash
-MISE_BIN="${TEMP_DIR}/t3/home/.local/bin/mise"
-mkdir -p "${TEMP_DIR}/t3/home/.local/bin"
-cat > "\${MISE_BIN}" << 'MEOF'
-#!/usr/bin/env bash
-case "\$1" in
+case "$1" in
     use)
-        FAKEBIN="\$(dirname "\$0")"
-        cat > "\${FAKEBIN}/python3" << 'PYEOF'
+        FAKEBIN="$(dirname "$0")"
+        cat > "${FAKEBIN}/python3" << 'PYEOF'
 #!/usr/bin/env bash
-if [ "\${1:-}" = "--version" ]; then
+if [ "${1:-}" = "--version" ]; then
     echo "Python 3.11.11"
-elif [ "\${1:-}" = "-c" ]; then
-    eval "\$2"
+elif [ "${1:-}" = "-c" ]; then
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
-        chmod +x "\${FAKEBIN}/python3"
+        chmod +x "${FAKEBIN}/python3"
         echo "mise: installing python@3.11..."
         ;;
     which)
-        FAKEBIN="\$(dirname "\$0")"
-        if [ -x "\${FAKEBIN}/python3" ]; then
-            echo "\${FAKEBIN}/python3"
+        FAKEBIN="$(dirname "$0")"
+        if [ -x "${FAKEBIN}/python3" ]; then
+            echo "${FAKEBIN}/python3"
         else
             exit 1
         fi
         ;;
 esac
 MEOF
-chmod +x "\${MISE_BIN}"
+chmod +x "${MISE_HELPER}"
+
+# Fake curl: outputs a shell script that "installs" mise by copying the helper
+cat > "${TEMP_DIR}/t3/fakebin/curl" << CEOF
+#!/usr/bin/env bash
+cat << INSTALLER
+#!/bin/sh
+mkdir -p "${TEMP_DIR}/t3/home/.local/bin"
+cp "${MISE_HELPER}" "${MISE_TARGET}"
+chmod +x "${MISE_TARGET}"
 INSTALLER
 CEOF
 chmod +x "${TEMP_DIR}/t3/fakebin/curl"
 
 # Simulate user answering "y" twice (install mise, then install python)
 OUTPUT=$(printf "y\ny\n" | \
-    PATH="${TEMP_DIR}/t3/fakebin" \
+    PATH="${TEMP_DIR}/t3/fakebin:${SYSTEM_PATH}" \
     HOME="${TEMP_DIR}/t3/home" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t3/alcatraz" 2>&1) || true
 
@@ -239,7 +225,7 @@ else
     fail "No .alcatraz/python after mise bootstrap. Output: ${OUTPUT}"
 fi
 
-if echo "${OUTPUT}" | grep -qi "install mise"; then
+if echo "${OUTPUT}" | grep -qi "install.*mise"; then
     pass "Output mentions mise installation"
 else
     fail "Output should mention mise installation, got: ${OUTPUT}"
@@ -254,21 +240,28 @@ echo "--- Test 4: User provides manual Python path ---"
 
 mkdir -p "${TEMP_DIR}/t4/alcatraz" "${TEMP_DIR}/t4/fakebin" "${TEMP_DIR}/t4/custom"
 
+# Shadow system python3 — simulate not installed
+cat > "${TEMP_DIR}/t4/fakebin/python3" << 'PYEOF'
+#!/bin/bash
+exit 127
+PYEOF
+chmod +x "${TEMP_DIR}/t4/fakebin/python3"
+
 # Create python at a custom path (not on PATH)
 cat > "${TEMP_DIR}/t4/custom/my-python" << 'PYEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "--version" ]; then
     echo "Python 3.13.0"
 elif [ "${1:-}" = "-c" ]; then
-    eval "$2"
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
 chmod +x "${TEMP_DIR}/t4/custom/my-python"
 
-# Simulate user declining all auto-options, then providing manual path
-# "n" to mise install, "n" to mise bootstrap, then the path
-OUTPUT=$(printf "n\nn\n${TEMP_DIR}/t4/custom/my-python\n" | \
-    PATH="${TEMP_DIR}/t4/fakebin" \
+# Simulate: Tier 1 fails (python3 shadow), Tier 2 skipped (no mise),
+# Tier 3 asks "Install mise?" → "n", Tier 4 asks for path → provide it
+OUTPUT=$(printf "n\n${TEMP_DIR}/t4/custom/my-python\n" | \
+    PATH="${TEMP_DIR}/t4/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t4/alcatraz" 2>&1) || true
 
 PYTHON_FILE="${TEMP_DIR}/t4/alcatraz/python"
@@ -298,13 +291,13 @@ cat > "${TEMP_DIR}/t5/fakebin/mypython" << 'PYEOF'
 if [ "${1:-}" = "--version" ]; then
     echo "Python 3.11.9"
 elif [ "${1:-}" = "-c" ]; then
-    eval "$2"
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
 chmod +x "${TEMP_DIR}/t5/fakebin/mypython"
 echo "${TEMP_DIR}/t5/fakebin/mypython" > "${TEMP_DIR}/t5/alcatraz/python"
 
-OUTPUT=$(PATH="${TEMP_DIR}/t5/fakebin" \
+OUTPUT=$(PATH="${TEMP_DIR}/t5/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t5/alcatraz" 2>&1) || true
 
 if echo "${OUTPUT}" | grep -qi "reusing\|already"; then
@@ -331,16 +324,16 @@ elif [ "${1:-}" = "-c" ]; then
         echo "ModuleNotFoundError: No module named 'tomllib'" >&2
         exit 1
     fi
-    eval "$2"
+    exit 0  # Stub: pretend all -c commands succeed (including "import tomllib")
 fi
 PYEOF
 chmod +x "${TEMP_DIR}/t6/fakebin/python3"
 
 # No mise either, user provides nothing — should fail
-OUTPUT=$(printf "n\n\n" | PATH="${TEMP_DIR}/t6/fakebin" \
+OUTPUT=$(printf "n\n\n" | PATH="${TEMP_DIR}/t6/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t6/alcatraz" 2>&1) || true
 EXIT_CODE=0
-printf "n\n\n" | PATH="${TEMP_DIR}/t6/fakebin" \
+printf "n\n\n" | PATH="${TEMP_DIR}/t6/fakebin:${SYSTEM_PATH}" \
     "${RESOLVE_SCRIPT}" --alcatraz-dir "${TEMP_DIR}/t6/alcatraz" >/dev/null 2>&1 || EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -ne 0 ]; then
