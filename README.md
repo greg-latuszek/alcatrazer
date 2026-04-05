@@ -64,13 +64,14 @@ your_repo/                      <-- outer repo (host user's real identity, has G
 ├── src/
 │   ├── initialize_alcatraz.sh  <-- creates inner repo + finds phantom UID
 │   └── promote.sh              <-- promotes commits from inner to outer repo
-└── .alcatraz/                  <-- mounted into Docker containers (gitignored)
-    ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
-    └── ... agent work ...
+└── .alcatraz/                  <-- gitignored, entire tool state
+    └── workspace/              <-- mounted into Docker as /workspace
+        ├── .git/               <-- inner git (Alcatraz Agent identity, no remote)
+        └── ... agent work ...
 ```
 
 - The **outer repo** is the host-side control plane. It holds infrastructure (Dockerfiles, scripts, docs) and receives promoted agent work. It has the host user's real identity and a GitHub remote for pushing.
-- The **inner repo** (`.alcatraz/`) is the agent workspace. It has a hardcoded throwaway identity, no remote, and no access to host credentials. Only this directory is mounted into Docker containers.
+- The **inner repo** (`.alcatraz/workspace/`) is the agent workspace. It has a hardcoded throwaway identity, no remote, and no access to host credentials. Only this subdirectory is mounted into Docker containers — tool state (UID, marks, logs) lives in `.alcatraz/` but outside `workspace/`, invisible to agents.
 - `alcatrazer.toml` captures configuration decisions (promotion identity, tool versions) and is version controlled.
 - The inner repo is gitignored from the outer repo. Agent work enters the outer repo only through the promotion script.
 
@@ -90,7 +91,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ### What agents CAN do
 
-- Read and write files inside `.alcatraz/` (mounted into the container)
+- Read and write files inside `.alcatraz/workspace/` (mounted into the container)
 - Create git commits using a throwaway identity (`Alcatraz Agent <alcatraz@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
 - Access the internet to communicate with LLM APIs via Claude OAuth or API keys
@@ -101,7 +102,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 - Push to GitHub or any remote repository (no git credentials or SSH keys are available)
 - Access the host user's identity, email, or signing keys
-- Access the host filesystem outside of `.alcatraz/`
+- Access the host filesystem outside of `.alcatraz/workspace/`
 - Access the Docker socket or spawn new containers
 - Read host files (SSH keys, GPG keys, git config, shell history, environment variables, etc.)
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
@@ -118,7 +119,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
 2. Finds the first unused UID on the host (>= 1001) and writes `ALCATRAZ_UID` to `.env`
-3. Creates `.alcatraz/` with an isolated git repo configured with the Alcatraz Agent identity
+3. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
 
 ### 2. LLM Authentication
 
@@ -180,7 +181,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 These rules are enforced by the `container/docker-compose.yml` configuration:
 
-1. **Mount only `.alcatraz/`** as the working volume — never the outer repo or the host home directory.
+1. **Mount only `.alcatraz/workspace/`** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
 3. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
 4. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.

@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 ALCATRAZ_DIR="${PROJECT_DIR}/.alcatraz"
+WORKSPACE_DIR="${ALCATRAZ_DIR}/workspace"
 ENV_FILE="${PROJECT_DIR}/.env"
 ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
 
@@ -80,30 +81,32 @@ fi
 
 # --- Step 3: Initialize inner git repo ---
 
-if [ -d "${ALCATRAZ_DIR}/.git" ]; then
-    echo "Alcatraz git repo already exists at ${ALCATRAZ_DIR}/.git"
-    echo "To reinitialize, run: ./initialize_alcatraz.sh --reset"
+if [ -d "${WORKSPACE_DIR}/.git" ]; then
+    echo "Alcatraz git repo already exists at ${WORKSPACE_DIR}/.git"
+    echo "To reinitialize, run: ./src/initialize_alcatraz.sh --reset"
 else
-    # Create alcatraz directory if it doesn't exist
-    mkdir -p "${ALCATRAZ_DIR}"
+    # Create workspace directory inside .alcatraz/
+    # .alcatraz/workspace/ is the only thing mounted into Docker (Principle 2)
+    # Tool state (UID, marks, logs) lives in .alcatraz/ but outside workspace/
+    mkdir -p "${WORKSPACE_DIR}"
 
     # Initialize a fresh git repo
-    git init "${ALCATRAZ_DIR}"
+    git init "${WORKSPACE_DIR}"
 
     # Set Alcatraz identity - agents will commit under this throwaway identity
-    git -C "${ALCATRAZ_DIR}" config user.name "Alcatraz Agent"
-    git -C "${ALCATRAZ_DIR}" config user.email "alcatraz@localhost"
+    git -C "${WORKSPACE_DIR}" config user.name "Alcatraz Agent"
+    git -C "${WORKSPACE_DIR}" config user.email "alcatraz@localhost"
 
     # Disable commit signing - no access to host signing keys
-    git -C "${ALCATRAZ_DIR}" config commit.gpgsign false
+    git -C "${WORKSPACE_DIR}" config commit.gpgsign false
 
     # Override signing key paths with empty values to prevent leaking host paths
     # (in case global gitconfig somehow becomes visible)
-    git -C "${ALCATRAZ_DIR}" config user.signingkey ""
-    git -C "${ALCATRAZ_DIR}" config gpg.ssh.allowedSignersFile ""
+    git -C "${WORKSPACE_DIR}" config user.signingkey ""
+    git -C "${WORKSPACE_DIR}" config gpg.ssh.allowedSignersFile ""
 
     echo ""
-    echo "Alcatraz git repo initialized at: ${ALCATRAZ_DIR}"
+    echo "Alcatraz git repo initialized at: ${WORKSPACE_DIR}"
 fi
 
 # --- Summary ---
@@ -111,13 +114,13 @@ fi
 echo ""
 echo "Alcatraz configuration:"
 echo "  UID/GID:      ${ALCATRAZ_UID} (phantom — does not exist on host)"
-echo "  Workspace:    ${ALCATRAZ_DIR}"
+echo "  Workspace:    ${WORKSPACE_DIR}"
 echo "  Git identity: Alcatraz Agent <alcatraz@localhost>"
 echo ""
 echo "Local git config:"
-git -C "${ALCATRAZ_DIR}" config --local --list
+git -C "${WORKSPACE_DIR}" config --local --list
 echo ""
 echo "Next steps:"
 echo "  1. Fill in API keys in .env"
-echo "  2. Run: docker compose build"
-echo "  3. Run: docker compose run --rm alcatraz"
+echo "  2. Run: docker compose -f container/docker-compose.yml build"
+echo "  3. Run: docker compose -f container/docker-compose.yml run --rm alcatraz"

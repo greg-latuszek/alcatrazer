@@ -16,8 +16,9 @@ services:
         BUN_VERSION: ${BUN_VERSION:-latest}
     container_name: agent-alcatraz
     volumes:
-      # Mount the inner Alcatraz repo as the agent workspace
-      - ../.alcatraz:/workspace
+      # Mount only the workspace subdirectory — tool state in .alcatraz/
+      # stays on the host, invisible to agents (Principle 2)
+      - ../.alcatraz/workspace:/workspace
       # Claude Code OAuth credentials (read-only, just the credentials file,
       # not the whole ~/.claude/ directory which may contain project memories/settings)
       - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro
