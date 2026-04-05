@@ -1,11 +1,13 @@
 # All configuration lives in .env (created by initialize_alcatraz.sh from .env.example).
 # Docker compose auto-reads .env for variable interpolation and runtime env vars.
+#
+# Run from project root: docker compose -f container/docker-compose.yml ...
 
 services:
   alcatraz:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: container/Dockerfile
       target: alcatraz-dev
       args:
         ALCATRAZ_UID: ${ALCATRAZ_UID:?Run ./src/initialize_alcatraz.sh first}
@@ -15,7 +17,7 @@ services:
     container_name: agent-alcatraz
     volumes:
       # Mount the inner Alcatraz repo as the agent workspace
-      - ./.alcatraz:/workspace
+      - ../.alcatraz:/workspace
       # Claude Code OAuth credentials (read-only, just the credentials file,
       # not the whole ~/.claude/ directory which may contain project memories/settings)
       - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro
@@ -25,7 +27,7 @@ services:
       - npm-cache:/home/agent/.npm
       - bun-cache:/home/agent/.bun/install/cache
     env_file:
-      - .env
+      - ../.env
     stdin_open: true
     tty: true
 

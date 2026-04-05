@@ -57,9 +57,10 @@ your_repo/                      <-- outer repo (host user's real identity, has G
 ├── alcatrazer.toml             <-- tool configuration (version controlled)
 ├── .env.example                <-- template for API keys
 ├── README.md
-├── Dockerfile                  <-- Alcatraz container image
-├── docker-compose.yml          <-- container orchestration
-├── entrypoint.sh               <-- container startup (chown + privilege drop)
+├── container/
+│   ├── Dockerfile              <-- Alcatraz container image
+│   ├── docker-compose.yml      <-- container orchestration
+│   └── entrypoint.sh           <-- container startup (chown + privilege drop)
 ├── src/
 │   ├── initialize_alcatraz.sh  <-- creates inner repo + finds phantom UID
 │   └── promote.sh              <-- promotes commits from inner to outer repo
@@ -132,8 +133,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Build and run
 
 ```bash
-docker compose build
-docker compose run --rm alcatraz
+docker compose -f container/docker-compose.yml build
+docker compose -f container/docker-compose.yml run --rm alcatraz
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
@@ -177,7 +178,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 ## Docker Container Rules
 
-These rules are enforced by the `docker-compose.yml` configuration:
+These rules are enforced by the `container/docker-compose.yml` configuration:
 
 1. **Mount only `.alcatraz/`** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
@@ -190,9 +191,9 @@ These rules are enforced by the `docker-compose.yml` configuration:
 ## Workflow
 
 1. Human runs `./src/initialize_alcatraz.sh` to create the inner repo and determine the phantom UID.
-2. Human runs `docker compose build` and `docker compose run --rm alcatraz`.
+2. Human runs `docker compose -f container/docker-compose.yml build` and `docker compose -f container/docker-compose.yml run --rm alcatraz`.
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge — building full branch/merge histories.
-5. Human reviews agent work via Docker: `docker compose run --rm alcatraz git log --graph --oneline --all`.
+5. Human reviews agent work via Docker: `docker compose -f container/docker-compose.yml run --rm alcatraz git log --graph --oneline --all`.
 6. Human runs the promotion script to transfer commits from the inner repo to the outer repo. The script rewrites the author identity and preserves the full branch and merge topology.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 
