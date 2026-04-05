@@ -111,6 +111,21 @@ else
     echo "Alcatraz git repo initialized at: ${WORKSPACE_DIR}"
 fi
 
+# --- Step 4: Add safe.directory so host git can read the workspace ---
+# The workspace is owned by the phantom UID, so git refuses to operate on it
+# by default ("dubious ownership"). Adding it to safe.directory is safe —
+# the directory is ours, created and controlled by our tool.
+
+WORKSPACE_ABS="$(cd "${WORKSPACE_DIR}" && pwd)"
+EXISTING_SAFE=$(git config --global --get-all safe.directory 2>/dev/null || true)
+
+if echo "${EXISTING_SAFE}" | grep -qxF "${WORKSPACE_ABS}"; then
+    echo "safe.directory already configured for ${WORKSPACE_ABS}"
+else
+    git config --global --add safe.directory "${WORKSPACE_ABS}"
+    echo "Added ${WORKSPACE_ABS} to git safe.directory"
+fi
+
 # --- Summary ---
 
 echo ""
