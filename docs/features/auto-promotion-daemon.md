@@ -251,7 +251,8 @@ max_log_size = 512
 
 ## Open Items
 
-- [ ] Decide: should the daemon auto-stop when the container stops?
-- [ ] Consider: graceful handling of Docker not running / container not built
-- [ ] Consider: how does the daemon detect that a conflict resolution branch has been resolved?
-- [ ] Consider: in `mirror` mode, should the daemon attempt auto-merge before creating a conflict branch?
+- [ ] How does the daemon detect that a conflict resolution branch has been resolved? (branch deleted? merged?)
+- [ ] What if `.alcatraz/workspace/.git/` doesn't exist when the daemon starts? (exit with message? wait and retry?)
+- [ ] Should the daemon write a `.alcatraz/promotion-daemon.pid` to prevent multiple instances?
+- [ ] Prerequisite: directory restructuring (`src/`, `container/`, `.alcatraz/workspace/`) — on which branch?
+- [ ] Prerequisite: identity leak fixes (remove alcatraz branding from inside container) — does daemon depend on this?
