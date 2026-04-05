@@ -206,32 +206,6 @@ verbosity = "normal"
 max_log_size = 512
 ```
 
-## Implementation Plan
-
-1. **`src/watch_alcatraz.sh`** — the daemon script
-   - Polling loop with configurable interval
-   - Reads config from `alcatrazer.toml` (`[promotion-daemon]` section)
-   - Runs `git fast-export` / `git fast-import` natively on host (via `safe.directory`)
-   - Pipes through identity rewrite sed
-   - Handles `mirror`/`alcatraz-tree` conflict modes
-   - Creates conflict resolution branches on failure (`mirror` mode)
-   - Writes to `.alcatraz/promotion-daemon.log` (rotating)
-
-2. **`src/inspect_promotion.sh`** — live log viewer (`tail -f .alcatraz/promotion-daemon.log`)
-
-3. **Update `src/promote.sh`** — add `--namespace` flag for `alcatraz-tree` mode branch prefix support
-
-4. **Update `alcatrazer.toml`** — add `[promotion-daemon]` section
-
-5. **Tests**
-   - Test daemon detects new commits and promotes them (mirror mode)
-   - Test mirror mode with no conflicts
-   - Test mirror mode conflict detection and resolution branch creation
-   - Test alcatraz-tree mode namespace mapping (inner `main` -> outer `alcatraz/main`)
-   - Test idempotency (running when nothing new is a no-op)
-   - Test daemon handles container not running gracefully
-   - Test daemon resumes after conflict branch is resolved
-
 ## Dependencies and Constraints
 
 - Must not require root access on the host
@@ -274,6 +248,13 @@ Identity leak fixes (removing alcatraz branding from inside the container) are a
 ## Detailed Implementation Plan
 
 Each step is one commit, small enough for human review. Dependencies flow top to bottom — each step may require previous steps to be in place.
+
+**TDD discipline:** Starting from Phase 2 onward, each step follows the RED/GREEN/BLUE cycle where possible:
+- `[RED]` commit — failing test for the planned functionality
+- `[GREEN]` commit — implementation that makes the test pass
+- `[BLUE]` commit — improvements/cleanup if applicable
+
+Phase 1 (migrations) is exempt — it works with already existing tests that must keep passing after each migration step.
 
 ### Phase 1: Migrations (prerequisites)
 
