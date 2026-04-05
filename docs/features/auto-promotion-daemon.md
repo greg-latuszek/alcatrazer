@@ -215,7 +215,9 @@ max_log_size = 512
 - Must leave zero footprint inside `.alcatraz/workspace/` (Principle 2)
 - Tool state (marks, logs) lives under `.alcatraz/` but outside `workspace/`
 - Must work on Linux (primary) and macOS (secondary)
-- Should add minimal dependencies to the host system
+- Daemon requires Python 3.11+ (for `tomllib`); resolved during init with four-tier fallback
+- Init and promote scripts remain bash-only (no Python dependency)
+- Daemon uses Python stdlib only — no pip packages required
 
 ## Possible Future Improvements
 
@@ -283,24 +285,42 @@ These restructure the codebase to the target layout. No new functionality — ex
 **Step 2.1** — `Add [promotion-daemon] section to alcatrazer.toml`
 > Add the `[promotion-daemon]` section with all config keys (interval, branches, mode, verbosity, max_log_size) and default values. No code reads it yet — config only.
 
+### Phase 2.5: Python resolution for daemon
+
+The daemon is written in Python (stdlib only — `tomllib`, `pathlib`, `subprocess`, `logging`). This avoids fragile bash TOML parsing and makes complex logic (branch glob matching, conflict detection, log rotation) maintainable. Init and promote scripts stay bash.
+
+Python 3.11+ is required (for `tomllib`). The resolution happens during `initialize_alcatraz.sh` with a four-tier fallback:
+
+1. Detect `python3` on PATH that is 3.11+ → use it
+2. Detect `mise` → offer to install Python 3.11 via mise
+3. No mise → offer to install mise (single curl, no root), then Python 3.11 via mise
+4. User declines everything → ask for manual path to Python 3.11+
+
+The resolved interpreter path is stored in `.alcatraz/python` so the daemon can use it without re-detection. A thin `src/watch_alcatraz.sh` wrapper reads this file and execs the Python daemon.
+
+**Step 2.5.1** — `Add Python 3.11+ resolution to initialize_alcatraz.sh`
+> New step in `src/initialize_alcatraz.sh` after UID resolution: four-tier Python detection (system python3, mise install, mise bootstrap, manual path). Validate version >= 3.11 and `tomllib` importable. Write resolved path to `.alcatraz/python`. Test: verify `.alcatraz/python` contains a working Python 3.11+ path after init. Test: verify error when no Python found and user declines all options.
+
+**Step 2.5.2** — `Rewrite watch_alcatraz.sh as Python with bash wrapper`
+> Replace the bash daemon loop with `src/watch_alcatraz.py`. The existing `src/watch_alcatraz.sh` becomes a thin wrapper that reads `.alcatraz/python` and execs the Python script. Port existing functionality: PID guard, workspace check, signal handling, configurable interval from `alcatrazer.toml` (now via `tomllib`). Existing daemon startup tests must continue to pass.
+
 ### Phase 3: Daemon core
 
-Each step adds one piece of daemon functionality. Tests are written alongside (or before, TDD style).
+Each step adds one piece of daemon functionality in Python. Tests are written alongside (or before, TDD style).
 
-**Step 3.1** — `Daemon startup: PID guard and workspace existence check`
-> `src/watch_alcatraz.sh` — script skeleton with: argument parsing, PID file write/check/cleanup on exit, `.alcatraz/workspace/.git/` existence check, trap for clean shutdown. Test: verify PID file prevents double start. Test: verify exit message when workspace missing.
+**Step 3.1** — ~~`Daemon startup: PID guard and workspace existence check`~~ (done — implemented in Phase 2.5.2)
 
 **Step 3.2** — `Daemon polling loop with configurable interval`
-> Add the main loop: sleep for configured interval, invoke promotion check. Reads `interval` from `alcatrazer.toml`. No actual promotion yet — just the loop structure with a placeholder. Test: verify daemon reads interval from config. Test: verify daemon responds to Ctrl+C (SIGINT/SIGTERM).
+> Main loop: sleep for configured interval, invoke promotion check. Reads `interval` from `alcatrazer.toml` via `tomllib`. No actual promotion yet — just the loop structure with a placeholder. Test: verify daemon reads interval from config. Test: verify daemon responds to Ctrl+C (SIGINT/SIGTERM).
 
 **Step 3.3** — `Daemon promotes new commits in mirror mode`
-> Integrate `promote.sh` into the polling loop. On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
+> Integrate `promote.sh` (via `subprocess`) into the polling loop. On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
 
 **Step 3.4** — `Daemon log rotation`
 > After each log write, check file size against `max_log_size`. Rotate when exceeded (move current to `.1`, start fresh). Test: write enough log entries to trigger rotation, verify old log preserved and new one started.
 
 **Step 3.5** — `Daemon branch filtering via branches config`
-> Read `branches` from config. Filter fast-export output to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists. Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
+> Read `branches` from config via `tomllib`. Filter fast-export output to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists (using `fnmatch`). Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
 
 **Step 3.6** — `Daemon conflict detection and resolution branching in mirror mode`
 > When fast-import fails on a branch, create `conflict/resolve-<branch>-<timestamp>`, log the conflict, pause promotion for that branch. Continue promoting other branches. Test: create diverged outer repo, run daemon, verify conflict branch created and other branches still promoted.
