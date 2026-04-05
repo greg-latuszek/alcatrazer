@@ -60,8 +60,8 @@ your_repo/                      <-- outer repo (host user's real identity, has G
 ├── Dockerfile                  <-- Alcatraz container image
 ├── docker-compose.yml          <-- container orchestration
 ├── entrypoint.sh               <-- container startup (chown + privilege drop)
-├── initialize_alcatraz.sh      <-- creates inner repo + finds phantom UID
-├── scripts/
+├── src/
+│   ├── initialize_alcatraz.sh  <-- creates inner repo + finds phantom UID
 │   └── promote.sh              <-- promotes commits from inner to outer repo
 └── .alcatraz/                  <-- mounted into Docker containers (gitignored)
     ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
@@ -111,7 +111,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 ### 1. Initialize Alcatraz
 
 ```bash
-./initialize_alcatraz.sh
+./src/initialize_alcatraz.sh
 ```
 
 This script:
@@ -143,7 +143,7 @@ You are now inside the container as a non-root agent user. All tools are availab
 Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
 
 ```bash
-./initialize_alcatraz.sh --reset
+./src/initialize_alcatraz.sh --reset
 ```
 
 This removes all Alcatraz contents and reinitializes a fresh inner git repo.
@@ -189,7 +189,7 @@ These rules are enforced by the `docker-compose.yml` configuration:
 
 ## Workflow
 
-1. Human runs `./initialize_alcatraz.sh` to create the inner repo and determine the phantom UID.
+1. Human runs `./src/initialize_alcatraz.sh` to create the inner repo and determine the phantom UID.
 2. Human runs `docker compose build` and `docker compose run --rm alcatraz`.
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge — building full branch/merge histories.
 5. Human reviews agent work via Docker: `docker compose run --rm alcatraz git log --graph --oneline --all`.
@@ -200,7 +200,7 @@ This separation ensures agents can do productive work while the human retains fu
 
 ## Promoting Agent Work
 
-The promotion script (`scripts/promote.sh`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+The promotion script (`src/promote.sh`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
 
 - Preserves full branch and merge topology (branches, merge commits, parent chains)
 - Rewrites author/committer from `Alcatraz Agent` to the host user's identity

@@ -12,9 +12,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALCATRAZ_DIR="${SCRIPT_DIR}/.alcatraz"
-ENV_FILE="${SCRIPT_DIR}/.env"
-ENV_EXAMPLE="${SCRIPT_DIR}/.env.example"
+PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+ALCATRAZ_DIR="${PROJECT_DIR}/.alcatraz"
+ENV_FILE="${PROJECT_DIR}/.env"
+ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
 
 # --- Handle --reset flag ---
 # Files inside .alcatraz/ are owned by the phantom UID and cannot be deleted

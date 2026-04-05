@@ -12,7 +12,7 @@
 #   3. --author-name / --author-email CLI flags
 #
 # Usage:
-#   scripts/promote.sh \
+#   src/promote.sh \
 #     --source <path-to-source-repo> \
 #     --target <path-to-target-repo> \
 #     [--author-name "Your Name"] \

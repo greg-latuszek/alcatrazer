@@ -12,7 +12,7 @@
 # - No git remotes are configured
 #
 # Prerequisites:
-#   ./initialize_alcatraz.sh
+#   ./src/initialize_alcatraz.sh
 #   alcatrazer.toml must exist in project root
 #   docker compose build
 #

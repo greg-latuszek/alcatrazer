@@ -18,7 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
-PROMOTE_SCRIPT="${PROJECT_DIR}/scripts/promote.sh"
+PROMOTE_SCRIPT="${PROJECT_DIR}/src/promote.sh"
 SEED_SCRIPT="${SCRIPT_DIR}/seed_alcatraz.sh"
 TEMP_DIR="${SCRIPT_DIR}/promotion_temp_output"
 
