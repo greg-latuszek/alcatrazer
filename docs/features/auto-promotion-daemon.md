@@ -268,3 +268,77 @@ The daemon writes a PID file to `.alcatraz/promotion-daemon.pid` on startup. If 
 All migrations (directory restructuring to `src/` and `container/`, `.alcatraz/workspace/` split, marks relocation, `safe.directory` setup) are done on this branch (`auto-promotion-daemon`) as initial steps before daemon implementation.
 
 Identity leak fixes (removing alcatraz branding from inside the container) are a separate feature on a separate branch. The daemon does not depend on it — implementing it later may cause minor refactoring in the daemon but nothing blocking.
+
+---
+
+## Detailed Implementation Plan
+
+Each step is one commit, small enough for human review. Dependencies flow top to bottom — each step may require previous steps to be in place.
+
+### Phase 1: Migrations (prerequisites)
+
+These restructure the codebase to the target layout. No new functionality — existing tests must continue to pass after each step.
+
+**Step 1.1** — `Move scripts to src/ directory`
+> `git mv scripts/promote.sh src/promote.sh`, `git mv initialize_alcatraz.sh src/initialize_alcatraz.sh`. Update all references in tests, README, docker-compose.yml. Run all tests.
+
+**Step 1.2** — `Move Docker files to container/ directory`
+> `git mv Dockerfile container/Dockerfile`, `git mv docker-compose.yml container/docker-compose.yml`, `git mv entrypoint.sh container/entrypoint.sh`. Update build context path in docker-compose.yml. Update test references. Run all tests.
+
+**Step 1.3** — `Split .alcatraz/ into workspace/ and tool state`
+> Update `src/initialize_alcatraz.sh` to create `.alcatraz/workspace/` and init git there. Update `container/docker-compose.yml` to mount `.alcatraz/workspace/`. Update `.gitignore`. Run all tests.
+
+**Step 1.4** — `Move phantom UID from .env to .alcatraz/uid`
+> Update `src/initialize_alcatraz.sh` to write UID to `.alcatraz/uid` instead of `.env`. Update `container/docker-compose.yml` to read UID from `.alcatraz/uid`. Remove `ALCATRAZ_UID` from `.env.example`. Update smoke test. Run all tests.
+
+**Step 1.5** — `Move promotion marks from outer .git/ to .alcatraz/`
+> Update `src/promote.sh` to read/write marks from `.alcatraz/promote-export-marks` and `.alcatraz/promote-import-marks`. Update promotion tests. Run all tests.
+
+**Step 1.6** — `Add safe.directory for workspace in initialize_alcatraz.sh`
+> `src/initialize_alcatraz.sh` adds `.alcatraz/workspace/` absolute path to `git config --global --add safe.directory`. Add smoke test verifying host git can read workspace. Run all tests.
+
+### Phase 2: TOML config extension
+
+**Step 2.1** — `Add [promotion-daemon] section to alcatrazer.toml`
+> Add the `[promotion-daemon]` section with all config keys (interval, branches, mode, verbosity, max_log_size) and default values. No code reads it yet — config only.
+
+### Phase 3: Daemon core
+
+Each step adds one piece of daemon functionality. Tests are written alongside (or before, TDD style).
+
+**Step 3.1** — `Daemon startup: PID guard and workspace existence check`
+> `src/watch_alcatraz.sh` — script skeleton with: argument parsing, PID file write/check/cleanup on exit, `.alcatraz/workspace/.git/` existence check, trap for clean shutdown. Test: verify PID file prevents double start. Test: verify exit message when workspace missing.
+
+**Step 3.2** — `Daemon polling loop with configurable interval`
+> Add the main loop: sleep for configured interval, invoke promotion check. Reads `interval` from `alcatrazer.toml`. No actual promotion yet — just the loop structure with a placeholder. Test: verify daemon reads interval from config. Test: verify daemon responds to Ctrl+C (SIGINT/SIGTERM).
+
+**Step 3.3** — `Daemon promotes new commits in mirror mode`
+> Integrate `promote.sh` into the polling loop. On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
+
+**Step 3.4** — `Daemon log rotation`
+> After each log write, check file size against `max_log_size`. Rotate when exceeded (move current to `.1`, start fresh). Test: write enough log entries to trigger rotation, verify old log preserved and new one started.
+
+**Step 3.5** — `Daemon branch filtering via branches config`
+> Read `branches` from config. Filter fast-export output to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists. Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
+
+**Step 3.6** — `Daemon conflict detection and resolution branching in mirror mode`
+> When fast-import fails on a branch, create `conflict/resolve-<branch>-<timestamp>`, log the conflict, pause promotion for that branch. Continue promoting other branches. Test: create diverged outer repo, run daemon, verify conflict branch created and other branches still promoted.
+
+**Step 3.7** — `Daemon resumes promotion after conflict branch resolved`
+> On each poll cycle, check if any paused branches have their conflict branch deleted or merged. If so, resume promotion. Test: create conflict, delete conflict branch, verify daemon resumes.
+
+**Step 3.8** — `Daemon alcatraz-tree mode with namespace mapping`
+> When `mode = "alcatraz-tree"`, promote into `alcatraz/*` namespace. Update `src/promote.sh` with `--namespace` flag. Test: configure alcatraz-tree mode, verify inner `main` becomes outer `alcatraz/main`.
+
+### Phase 4: Inspection tool
+
+**Step 4.1** — `Add inspect_promotion.sh for live log viewing`
+> `src/inspect_promotion.sh` — thin wrapper: check log file exists, `tail -f .alcatraz/promotion-daemon.log`. Informative message if log doesn't exist yet.
+
+### Phase 5: Documentation
+
+**Step 5.1** — `Update README with daemon usage and new directory layout`
+> Document: new `src/` and `container/` layout, `watch_alcatraz.sh` usage, `inspect_promotion.sh`, `[promotion-daemon]` config section, mirror vs alcatraz-tree modes.
+
+**Step 5.2** — `Update plan status from Planning to Complete`
+> Mark this document as implemented. Add any notes from implementation experience.
