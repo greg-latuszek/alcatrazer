@@ -249,10 +249,22 @@ max_log_size = 512
 - **Daemon in a separate Docker container** — more portable across host OSes, but needs access to both `.alcatraz/` and the outer `.git/`, complicating volume mounts. Introduces a second container to manage.
 - **Automatic start/stop** — daemon starts alongside `docker compose up` and stops with `docker compose down`.
 
-## Open Items
+## Additional Decisions
 
-- [ ] How does the daemon detect that a conflict resolution branch has been resolved? (branch deleted? merged?)
-- [ ] What if `.alcatraz/workspace/.git/` doesn't exist when the daemon starts? (exit with message? wait and retry?)
-- [ ] Should the daemon write a `.alcatraz/promotion-daemon.pid` to prevent multiple instances?
-- [ ] Prerequisite: directory restructuring (`src/`, `container/`, `.alcatraz/workspace/`) — on which branch?
-- [ ] Prerequisite: identity leak fixes (remove alcatraz branding from inside container) — does daemon depend on this?
+### Conflict resolution detection
+
+In `mirror` mode, after creating a `conflict/resolve-<branch>-<timestamp>` branch, the daemon watches for that branch being deleted or merged. Once gone, the daemon resumes promoting the affected branch automatically. No user intervention needed beyond resolving the conflict itself.
+
+### Startup guard
+
+If `.alcatraz/workspace/.git/` does not exist when the daemon starts, it exits immediately with an informative message directing the user to run `src/initialize_alcatraz.sh` first.
+
+### Single instance protection
+
+The daemon writes a PID file to `.alcatraz/promotion-daemon.pid` on startup. If the PID file exists and the process is still running, the daemon exits with a message. The PID file is removed on clean shutdown.
+
+### Prerequisites
+
+All migrations (directory restructuring to `src/` and `container/`, `.alcatraz/workspace/` split, marks relocation, `safe.directory` setup) are done on this branch (`auto-promotion-daemon`) as initial steps before daemon implementation.
+
+Identity leak fixes (removing alcatraz branding from inside the container) are a separate feature on a separate branch. The daemon does not depend on it — implementing it later may cause minor refactoring in the daemon but nothing blocking.
