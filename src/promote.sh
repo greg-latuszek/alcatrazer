@@ -17,6 +17,7 @@
 #     --target <path-to-target-repo> \
 #     [--author-name "Your Name"] \
 #     [--author-email "your@email.com"] \
+#     [--marks-dir <dir>] \
 #     [--dry-run]
 
 set -euo pipefail
@@ -31,6 +32,7 @@ SOURCE_REPO=""
 TARGET_REPO=""
 CLI_AUTHOR_NAME=""
 CLI_AUTHOR_EMAIL=""
+MARKS_DIR=""
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -39,13 +41,14 @@ while [[ $# -gt 0 ]]; do
         --target)  TARGET_REPO="$2"; shift 2 ;;
         --author-name)  CLI_AUTHOR_NAME="$2"; shift 2 ;;
         --author-email) CLI_AUTHOR_EMAIL="$2"; shift 2 ;;
+        --marks-dir) MARKS_DIR="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
 if [ -z "${SOURCE_REPO}" ] || [ -z "${TARGET_REPO}" ]; then
-    echo "Usage: promote.sh --source <repo> --target <repo> [--author-name <name>] [--author-email <email>] [--dry-run]"
+    echo "Usage: promote.sh --source <repo> --target <repo> [--author-name <name>] [--author-email <email>] [--marks-dir <dir>] [--dry-run]"
     exit 1
 fi
 
@@ -89,10 +92,16 @@ if [ -z "${AUTHOR_NAME}" ] || [ -z "${AUTHOR_EMAIL}" ]; then
 fi
 
 # --- Mark files for incremental promotion ---
-# Stored in the target repo's .git directory so they persist across runs
+# Default: stored in .alcatraz/ (tool state, outside workspace)
+# Override with --marks-dir for standalone use or testing
 
-EXPORT_MARKS="${TARGET_REPO}/.git/promote-export-marks"
-IMPORT_MARKS="${TARGET_REPO}/.git/promote-import-marks"
+if [ -z "${MARKS_DIR}" ]; then
+    MARKS_DIR="${PROJECT_DIR}/.alcatraz"
+fi
+mkdir -p "${MARKS_DIR}"
+
+EXPORT_MARKS="${MARKS_DIR}/promote-export-marks"
+IMPORT_MARKS="${MARKS_DIR}/promote-import-marks"
 
 # Build fast-export arguments
 EXPORT_ARGS=(--all)

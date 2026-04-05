@@ -46,6 +46,7 @@ mkdir -p "${TEMP_DIR}"
 
 SOURCE_REPO="${TEMP_DIR}/source"
 TARGET_REPO="${TEMP_DIR}/target"
+MARKS_DIR="${TEMP_DIR}/marks"
 
 # Create and seed the source repo (simulates inner/alcatraz repo)
 echo ""
@@ -75,7 +76,8 @@ if ! "${PROMOTE_SCRIPT}" \
     --source "${SOURCE_REPO}" \
     --target "${TARGET_REPO}" \
     --author-name "${PROMOTED_NAME}" \
-    --author-email "${PROMOTED_EMAIL}"; then
+    --author-email "${PROMOTED_EMAIL}" \
+    --marks-dir "${MARKS_DIR}"; then
     echo ""
     echo "ERROR: promote.sh failed"
     rm -rf "${TEMP_DIR}"
@@ -211,7 +213,8 @@ git -C "${SOURCE_REPO}" commit -m "add new feature after first promotion"
     --source "${SOURCE_REPO}" \
     --target "${TARGET_REPO}" \
     --author-name "${PROMOTED_NAME}" \
-    --author-email "${PROMOTED_EMAIL}"
+    --author-email "${PROMOTED_EMAIL}" \
+    --marks-dir "${MARKS_DIR}"
 
 # Check the new commit appeared
 TARGET_COUNT_AFTER=$(git -C "${TARGET_REPO}" rev-list --all --count)
@@ -246,6 +249,7 @@ DRY_OUTPUT=$("${PROMOTE_SCRIPT}" \
     --target "${TARGET_REPO}" \
     --author-name "${PROMOTED_NAME}" \
     --author-email "${PROMOTED_EMAIL}" \
+    --marks-dir "${MARKS_DIR}" \
     --dry-run)
 
 if echo "${DRY_OUTPUT}" | grep -q "Nothing to promote"; then
@@ -285,6 +289,7 @@ DRY_OUTPUT=$("${PROMOTE_SCRIPT}" \
     --target "${TARGET_REPO}" \
     --author-name "${PROMOTED_NAME}" \
     --author-email "${PROMOTED_EMAIL}" \
+    --marks-dir "${MARKS_DIR}" \
     --dry-run)
 
 if echo "${DRY_OUTPUT}" | grep -q "2 commit(s) would be promoted"; then
