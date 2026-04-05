@@ -4,8 +4,8 @@
 #
 # This script:
 # 1. Finds a UID/GID that does not exist on the host (for container isolation)
-# 2. Writes ALCATRAZ_UID into .env (creating from .env.example if needed)
-# 3. Creates the inner git repo with an Alcatraz Agent identity
+# 2. Writes UID to .alcatraz/uid, ensures .env exists for API keys
+# 3. Creates the inner git repo at .alcatraz/workspace/ with Alcatraz Agent identity
 #
 # Run this once from the host before starting any Docker containers.
 
@@ -49,12 +49,13 @@ fi
 
 # --- Step 2: Determine alcatraz UID/GID ---
 
-# Check if ALCATRAZ_UID is already set in .env
-EXISTING_UID=$(grep -oP '^ALCATRAZ_UID=\K.*' "${ENV_FILE}" 2>/dev/null || true)
+UID_FILE="${ALCATRAZ_DIR}/uid"
 
-if [ -n "${EXISTING_UID}" ]; then
-    ALCATRAZ_UID="${EXISTING_UID}"
-    echo "Reusing stored alcatraz UID: ${ALCATRAZ_UID} (from .env)"
+if [ -f "${UID_FILE}" ]; then
+    ALCATRAZ_UID=$(cat "${UID_FILE}")
+    # Regenerate uid.env in case it was lost (e.g. after reset)
+    echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
+    echo "Reusing stored alcatraz UID: ${ALCATRAZ_UID} (from .alcatraz/uid)"
 else
     # Find the first UID >= 1001 that does not exist on the host.
     # This ensures the container user has no matching host account,
@@ -66,16 +67,17 @@ else
         ALCATRAZ_UID=$((ALCATRAZ_UID + 1))
     done
 
-    echo "" >> "${ENV_FILE}"
-    echo "# Alcatraz container UID/GID (phantom — does not exist on host)" >> "${ENV_FILE}"
-    echo "ALCATRAZ_UID=${ALCATRAZ_UID}" >> "${ENV_FILE}"
-    echo "Selected alcatraz UID/GID: ${ALCATRAZ_UID} (written to .env)"
+    mkdir -p "${ALCATRAZ_DIR}"
+    echo "${ALCATRAZ_UID}" > "${UID_FILE}"
+    # Also write as env var for docker-compose consumption
+    echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
+    echo "Selected alcatraz UID/GID: ${ALCATRAZ_UID} (written to .alcatraz/uid)"
 fi
 
 # Verify the UID still doesn't exist on this host (in case of machine change)
 if getent passwd "${ALCATRAZ_UID}" >/dev/null 2>&1; then
     echo "WARNING: UID ${ALCATRAZ_UID} now exists on this host!"
-    echo "Remove the ALCATRAZ_UID line from .env and re-run this script to pick a new UID."
+    echo "Delete .alcatraz/uid and re-run this script to pick a new UID."
     exit 1
 fi
 

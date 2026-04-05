@@ -26,8 +26,8 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected ALCATRAZ_UID from .env
-EXPECTED_UID=$(grep -oP '^ALCATRAZ_UID=\K.*' .env)
+# Load expected ALCATRAZ_UID from .alcatraz/uid
+EXPECTED_UID=$(cat .alcatraz/uid)
 
 PASS=0
 FAIL=0

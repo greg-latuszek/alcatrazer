@@ -81,7 +81,7 @@ your_repo/                      <-- outer repo (host user's real identity, has G
 
 The container runs as a **phantom UID** — a user ID that does not exist on the host machine. This provides defense in depth: even if an agent escapes the container, the process cannot write to any host files because no host user matches that UID.
 
-The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.env` for reuse across container rebuilds.
+The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.alcatraz/uid` for reuse across container rebuilds.
 
 ### What we protect against
 
@@ -118,7 +118,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
-2. Finds the first unused UID on the host (>= 1001) and writes `ALCATRAZ_UID` to `.env`
+2. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatraz/uid`
 3. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
 
 ### 2. LLM Authentication
