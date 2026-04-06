@@ -1,6 +1,6 @@
 # Auto-Promotion Daemon
 
-## Status: In Progress (Phase 3 next)
+## Status: Complete
 
 ## The Iceberg Principles
 
@@ -311,41 +311,48 @@ The resolved interpreter is stored as `.alcatraz/python` — a **symlink** to th
 > - Promotion tests call `promote.py` functions directly instead of subprocess
 > - Added unit tests for `rewrite_identity` and `resolve_identity` with mocking
 
-### Phase 3: Daemon core
+### Phase 3: Daemon core ✅
 
-Each step adds one piece of daemon functionality in Python. Tests use unittest with direct function calls and mocking where appropriate.
+**Step 3.1** — ~~`Daemon startup`~~ ✅ (PID guard, workspace check, signal handling, config loading)
 
-**Step 3.1** — ~~`Daemon startup`~~ ✅ (done — PID guard, workspace check, signal handling, config loading all implemented in Phase 2.5.2)
+**Step 3.2** — ~~`Daemon polling loop`~~ ✅ (`threading.Event.wait(timeout=interval)` loop, config tests)
 
-**Step 3.2** — ~~`Daemon polling loop with configurable interval`~~ ✅ (done — `threading.Event.wait(timeout=interval)` loop implemented in Phase 2.5.2, config tests verify interval is read from TOML)
+**Step 3.3** — `Daemon promotes new commits in mirror mode` ✅
+> Calls `promote.promote()` directly each cycle, logs to `.alcatraz/promotion-daemon.log`.
 
-**Step 3.3** — `Daemon promotes new commits in mirror mode`
-> Call `promote.promote()` directly from the polling loop (same process, no subprocess). On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
+**Step 3.4** — `Daemon log rotation` ✅
+> `RotatingFileHandler` rotates at `max_log_size` KB, keeps one backup.
 
-**Step 3.4** — `Daemon log rotation`
-> After each log write, check file size against `max_log_size`. Rotate when exceeded (move current to `.1`, start fresh). Test: write enough log entries to trigger rotation, verify old log preserved and new one started.
+**Step 3.5** — `Daemon branch filtering` ✅
+> `resolve_branches()` supports `"all"`, `"main"`, and glob lists via `fnmatch`.
 
-**Step 3.5** — `Daemon branch filtering via branches config`
-> Read `branches` from config via `tomllib`. Filter fast-export to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists (using `fnmatch`). Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
+**Step 3.6** — `Conflict detection and resolution branching` ✅
+> Tracks promoted tips in `promoted-tips.json`. Diverged branches get `conflict/resolve-*` branches. Paused branches persisted in `paused-branches.json`.
 
-**Step 3.6** — `Daemon conflict detection and resolution branching in mirror mode`
-> When fast-import fails on a branch, create `conflict/resolve-<branch>-<timestamp>`, log the conflict, pause promotion for that branch. Continue promoting other branches. Test: create diverged outer repo, run daemon, verify conflict branch created and other branches still promoted.
+**Step 3.7** — `Resume after conflict resolved` ✅
+> Checks if conflict branches have been deleted. Unpauses and updates tips. State persists across daemon restarts.
 
-**Step 3.7** — `Daemon resumes promotion after conflict branch resolved`
-> On each poll cycle, check if any paused branches have their conflict branch deleted or merged. If so, resume promotion. Test: create conflict, delete conflict branch, verify daemon resumes.
+**Step 3.8** — `alcatraz-tree mode with namespace mapping` ✅
+> `rewrite_refs()` prefixes branch names in fast-export stream. No conflict handling needed.
 
-**Step 3.8** — `Daemon alcatraz-tree mode with namespace mapping`
-> When `mode = "alcatraz-tree"`, promote into `alcatraz/*` namespace. Add `--namespace` flag to `promote.py`. Test: configure alcatraz-tree mode, verify inner `main` becomes outer `alcatraz/main`.
+### Phase 4: Inspection tool ✅
 
-### Phase 4: Inspection tool
+**Step 4.1** — `Add inspect_promotion.py` ✅
+> Tails `.alcatraz/promotion-daemon.log`. Helpful message if log doesn't exist yet.
 
-**Step 4.1** — `Add inspect_promotion.py for live log viewing`
-> `src/inspect_promotion.py` — check log file exists, `tail -f .alcatraz/promotion-daemon.log`. Informative message if log doesn't exist yet.
+### Phase 5: Documentation ✅
 
-### Phase 5: Documentation
+**Step 5.1** — `Update README` ✅
+> Full rewrite: new directory layout, Python requirement, daemon usage, config reference, promotion modes, conflict resolution, branch filtering, manual promotion, running tests.
 
-**Step 5.1** — `Update README with daemon usage and new directory layout`
-> Document: `src/` and `container/` layout, Python requirement, `.alcatraz/python` symlink, `watch_alcatraz.py` usage, `inspect_promotion.py`, `[promotion-daemon]` config section, mirror vs alcatraz-tree modes.
+**Step 5.2** — `Mark plan complete` ✅
 
-**Step 5.2** — `Update plan status from Planning to Complete`
-> Mark this document as implemented. Add any notes from implementation experience.
+### Implementation Notes
+
+Deviations from original plan discovered during implementation:
+- **Python for all tools** — `promote.sh` was rewritten to `promote.py` (not planned, but fragile bash TOML parsing forced the move). Only `initialize_alcatraz.sh` and `resolve_python.sh` stay bash.
+- **No bash wrapper** — `watch_alcatraz.sh` was created then removed. The daemon is invoked directly via `.alcatraz/python src/watch_alcatraz.py`.
+- **Symlink** — `.alcatraz/python` is a symlink to the resolved interpreter, not a text file containing a path. Simpler invocation.
+- **test/ → tests/** — renamed to avoid conflict with Python's stdlib `test` package.
+- **All tests in Python** — bash tests migrated to `unittest`. 65 tests total covering promotion, daemon, Python resolution, and inspection tool.
+- **Conflict detection via tips tracking** — instead of catching fast-import failures (original plan), we track promoted branch tips in JSON and detect divergence proactively. Cleaner than error-based detection.
