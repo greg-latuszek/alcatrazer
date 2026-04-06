@@ -22,7 +22,7 @@ interval = 5
 
 # Which branches to promote from the inner repo:
 #   "all"    — every branch (full git tree with all history)
-#   "main"   — only the main branch (final merged results)
+#   A branch name — only that branch, e.g. "main" or "master"
 #   Or a list of glob patterns: ["main", "feature/*"]
 branches = "all"
 

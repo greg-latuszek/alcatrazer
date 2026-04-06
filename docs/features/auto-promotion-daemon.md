@@ -121,7 +121,7 @@ The user's vision is that promotion should not be a manual step. The daemon shou
 Configurable via `alcatrazer.toml`. The user chooses which branches cross the water:
 
 - `"all"` — every branch, full git tree with all work-in-progress visible (default)
-- `"main"` — only the main branch, just the final merged results
+- A branch name (e.g. `"main"` or `"master"`) — only that branch, just the final merged results
 - A list of glob patterns — fine-grained control, e.g. `["main", "feature/*"]`
 
 This lets the user balance between full visibility and clean outer history.
@@ -189,7 +189,7 @@ interval = 5
 
 # Which branches to promote from the inner repo:
 #   "all"    — every branch (full git tree with all history)
-#   "main"   — only the main branch (final merged results)
+#   A branch name — only that branch, e.g. "main" or "master"
 #   Or a list of glob patterns: ["main", "feature/*"]
 branches = "all"
 

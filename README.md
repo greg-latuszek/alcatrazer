@@ -206,8 +206,8 @@ bun = "latest"
 # Polling interval in seconds
 interval = 5
 
-# Which branches to promote: "all", "main", or a list of glob patterns
-branches = "all"           # or "main" or ["main", "feature/*"]
+# Which branches to promote: "all", a single branch name, or a list of glob patterns
+branches = "all"           # or "main" or "master" or ["main", "feature/*"]
 
 # Conflict handling mode: "mirror" or "alcatraz-tree"
 mode = "mirror"
@@ -276,8 +276,8 @@ Control which branches cross the water:
 ```toml
 [promotion-daemon]
 branches = "all"                    # every branch (default)
-branches = "main"                   # only the main branch
-branches = ["main", "feature/*"]    # main + glob patterns
+branches = "main"                   # a single branch (use your branch name: "main", "master", etc.)
+branches = ["main", "feature/*"]    # branch names and glob patterns
 ```
 
 ## Container Details
