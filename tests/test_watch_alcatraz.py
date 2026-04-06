@@ -634,5 +634,181 @@ class TestBranchFiltering(unittest.TestCase):
             proc.wait(timeout=5)
 
 
+class TestConflictDetection(unittest.TestCase):
+    """Integration test: daemon handles conflicts when outer repo diverges."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_project = self.tmpdir
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+
+        # Create outer repo
+        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        git(self.test_project, "config", "user.name", PROMOTED_NAME)
+        git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
+        git(self.test_project, "config", "commit.gpgsign", "false")
+        Path(self.test_project, ".gitkeep").write_text("")
+        git(self.test_project, "add", ".gitkeep")
+        git(self.test_project, "commit", "-m", "init outer repo")
+
+        # Create workspace with seeded history
+        os.makedirs(self.workspace)
+        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        git(self.workspace, "config", "commit.gpgsign", "false")
+        subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
+
+        # Write toml
+        Path(self.test_project, "alcatrazer.toml").write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+        )
+        os.makedirs(self.alcatraz_dir, exist_ok=True)
+
+    def tearDown(self):
+        pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                pid = int(Path(pid_file).read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+            except (ProcessLookupError, ValueError):
+                pass
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _start_daemon(self):
+        return subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def test_conflict_branch_created_on_divergence(self):
+        """When outer repo diverges, daemon creates a conflict/resolve-* branch."""
+        # First: do an initial promotion so outer repo has workspace's main
+        proc = self._start_daemon()
+        time.sleep(3)
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        # Verify initial promotion worked
+        target_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+        self.assertIn("initial commit", target_msgs)
+
+        # Now: human commits directly to main in the outer repo (divergence)
+        Path(self.test_project, "human_change.txt").write_text("human work\n")
+        git(self.test_project, "add", "human_change.txt")
+        git(self.test_project, "commit", "-m", "human commit on outer main")
+
+        # Also add a new commit in workspace so there's something to promote
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "agent_new.py").write_text("agent work\n")
+        git(self.workspace, "add", "agent_new.py")
+        git(self.workspace, "commit", "-m", "agent commit after divergence")
+
+        # Restart daemon — should detect conflict on main
+        proc2 = self._start_daemon()
+        try:
+            time.sleep(3)
+
+            # Check that a conflict branch was created
+            all_branches = git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+            conflict_branches = [b for b in all_branches if b.startswith("conflict/resolve-")]
+            self.assertTrue(
+                len(conflict_branches) > 0,
+                f"Expected conflict branch, got branches: {all_branches}",
+            )
+
+            # The conflict branch should mention 'main'
+            self.assertTrue(
+                any("main" in b for b in conflict_branches),
+                f"Conflict branch should reference 'main', got: {conflict_branches}",
+            )
+
+            # Human's commit on main should NOT be lost
+            main_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+            self.assertIn("human commit on outer main", main_msgs)
+        finally:
+            proc2.send_signal(signal.SIGTERM)
+            proc2.wait(timeout=5)
+
+    def test_conflict_logged(self):
+        """Conflict should be logged to the daemon log."""
+        # Initial promotion
+        proc = self._start_daemon()
+        time.sleep(3)
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        # Create divergence
+        Path(self.test_project, "human.txt").write_text("human\n")
+        git(self.test_project, "add", "human.txt")
+        git(self.test_project, "commit", "-m", "human divergence")
+
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "new.py").write_text("new\n")
+        git(self.workspace, "add", "new.py")
+        git(self.workspace, "commit", "-m", "agent new commit")
+
+        # Restart
+        proc2 = self._start_daemon()
+        try:
+            time.sleep(3)
+            log_content = Path(self.alcatraz_dir, "promotion-daemon.log").read_text()
+            self.assertRegex(log_content, r"(?i)conflict.*main")
+        finally:
+            proc2.send_signal(signal.SIGTERM)
+            proc2.wait(timeout=5)
+
+    def test_non_conflicting_branches_still_promoted(self):
+        """Branches without conflicts should still be promoted normally."""
+        # Initial promotion
+        proc = self._start_daemon()
+        time.sleep(3)
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        # Diverge only on main
+        Path(self.test_project, "human.txt").write_text("human\n")
+        git(self.test_project, "add", "human.txt")
+        git(self.test_project, "commit", "-m", "human divergence")
+
+        # Add new work on a non-main branch in workspace
+        git(self.workspace, "checkout", "-b", "feature/new-work")
+        Path(self.workspace, "new_work.py").write_text("new work\n")
+        git(self.workspace, "add", "new_work.py")
+        git(self.workspace, "commit", "-m", "new work on feature branch")
+
+        # Configure to promote all branches
+        Path(self.test_project, "alcatrazer.toml").write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+            f'branches = "all"\n'
+        )
+
+        # Restart daemon
+        proc2 = self._start_daemon()
+        try:
+            time.sleep(3)
+            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            # The new feature branch should be promoted despite main being conflicted
+            self.assertIn("feature/new-work", branches)
+        finally:
+            proc2.send_signal(signal.SIGTERM)
+            proc2.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()
