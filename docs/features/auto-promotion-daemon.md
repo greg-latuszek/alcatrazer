@@ -1,6 +1,6 @@
 # Auto-Promotion Daemon
 
-## Status: Planning
+## Status: In Progress (Phase 3 next)
 
 ## The Iceberg Principles
 
@@ -57,10 +57,11 @@ Directory restructuring — tool source code moves to `src/`, Docker files move 
 
 ```
 src/                            <-- tool source code
-├── initialize_alcatraz.sh
-├── watch_alcatraz.sh           <-- new (daemon)
-├── inspect_promotion.sh        <-- new (daemon)
-└── promote.sh
+├── initialize_alcatraz.sh      <-- bash (bootstrap — runs before Python exists)
+├── resolve_python.sh           <-- bash (finds/installs Python 3.11+)
+├── watch_alcatraz.py           <-- Python (daemon)
+├── inspect_promotion.py        <-- Python (daemon, future)
+└── promote.py                  <-- Python (promotion pipeline)
 
 container/                      <-- Docker infrastructure
 ├── Dockerfile
@@ -68,19 +69,17 @@ container/                      <-- Docker infrastructure
 └── entrypoint.sh
 ```
 
-Other migrations:
-- `docker-compose.yml`: mount `.alcatraz/workspace/` instead of `.alcatraz/`
-- `initialize_alcatraz.sh`: create `workspace/` subdirectory, write UID to `.alcatraz/uid`
-- `promote.sh`: read/write marks from `.alcatraz/` instead of target `.git/`
-- `.env`: remove `ALCATRAZ_UID`, read from `.alcatraz/uid` instead
-- Smoke test: update paths
-- Promotion test: update paths
+Other migrations (all completed in Phase 1):
+- `docker-compose.yml`: mount `.alcatraz/workspace/` instead of `.alcatraz/`, read UID from `.alcatraz/uid.env`
+- `initialize_alcatraz.sh`: create `workspace/` subdirectory, write UID to `.alcatraz/uid`, add `safe.directory`, resolve Python 3.11+
+- `promote.py`: marks stored in `.alcatraz/` (not target `.git/`), `--marks-dir` flag for testing
+- `.env`: API keys only — `ALCATRAZ_UID` moved to `.alcatraz/uid`
 
 ---
 
 ## Feature Description
 
-The auto-promotion daemon is a background process that watches the inner git repository (`.alcatraz/workspace/`) for new commits and automatically promotes them to the outer git repository using `promote.sh`. This eliminates the need for the human operator to manually run the promotion script — agent work appears in the outer repo in near real-time as it is produced.
+The auto-promotion daemon is a background process that watches the inner git repository (`.alcatraz/workspace/`) for new commits and automatically promotes them to the outer git repository using `promote.py`. This eliminates the need for the human operator to manually run the promotion script — agent work appears in the outer repo in near real-time as it is produced.
 
 The daemon runs on the **host** side (not inside the Docker container), watching `.alcatraz/workspace/.git/` for changes. When it detects new commits, it runs the promotion pipeline (fast-export | identity rewrite | fast-import) to transfer them to the outer repo.
 
@@ -90,14 +89,14 @@ From the initial design discussion:
 
 > "What if after installation tool runs in background and decides by itself when to export git 'new increment' from within docker and pull it into outside-docker git."
 
-The user's vision is that `promote.sh` should not be a manual step. The daemon should autonomously decide when to promote, making the experience seamless: agents commit inside Docker, and the human sees those commits appear in their real repo automatically.
+The user's vision is that promotion should not be a manual step. The daemon should autonomously decide when to promote, making the experience seamless: agents commit inside Docker, and the human sees those commits appear in their real repo automatically.
 
 ## What We Know
 
 ### Existing Infrastructure
 
-- `promote.sh` already works with incremental promotion via fast-export/fast-import mark files
-- Identity rewrite is handled (agent identity -> real identity from `alcatrazer.toml`)
+- `promote.py` handles incremental promotion via fast-export/fast-import mark files
+- Identity rewrite is handled via regex (agent identity -> real identity from `alcatrazer.toml`)
 - The priority chain for author identity is: git config < alcatrazer.toml < CLI flags
 - `.alcatraz/workspace/` is the inner workspace, mounted into Docker
 - Files in `.alcatraz/workspace/` are owned by the phantom UID (not writable by host user, but readable)
@@ -106,8 +105,8 @@ The user's vision is that `promote.sh` should not be a manual step. The daemon s
 
 ### Promotion Behavior
 
-- `promote.sh` supports `--dry-run` to check for pending commits without modifying anything
-- Mark files (`promote-export-marks`, `promote-import-marks`) will move to `.alcatraz/` (currently in target repo's `.git/`)
+- `promote.py` supports `--dry-run` to check for pending commits without modifying anything
+- Mark files (`promote-export-marks`, `promote-import-marks`) live in `.alcatraz/`
 - Promotion is idempotent — running it when there's nothing new is a no-op
 - Full branch and merge topology is preserved
 
@@ -258,7 +257,7 @@ Each step is one commit, small enough for human review. Dependencies flow top to
 
 Phase 1 (migrations) is exempt — it works with already existing tests that must keep passing after each migration step.
 
-### Phase 1: Migrations (prerequisites)
+### Phase 1: Migrations (prerequisites) ✅
 
 These restructure the codebase to the target layout. No new functionality — existing tests must continue to pass after each step.
 
@@ -280,47 +279,54 @@ These restructure the codebase to the target layout. No new functionality — ex
 **Step 1.6** — `Add safe.directory for workspace in initialize_alcatraz.sh`
 > `src/initialize_alcatraz.sh` adds `.alcatraz/workspace/` absolute path to `git config --global --add safe.directory`. Add smoke test verifying host git can read workspace. Run all tests.
 
-### Phase 2: TOML config extension
+### Phase 2: TOML config extension ✅
 
-**Step 2.1** — `Add [promotion-daemon] section to alcatrazer.toml`
-> Add the `[promotion-daemon]` section with all config keys (interval, branches, mode, verbosity, max_log_size) and default values. No code reads it yet — config only.
+**Step 2.1** — `Add [promotion-daemon] section to alcatrazer.toml` ✅
+> Added the `[promotion-daemon]` section with all config keys (interval, branches, mode, verbosity, max_log_size) and default values.
 
-### Phase 2.5: Python resolution for daemon
+### Phase 2.5: Python resolution and migration ✅
 
-The daemon is written in Python (stdlib only — `tomllib`, `pathlib`, `subprocess`, `logging`). This avoids fragile bash TOML parsing and makes complex logic (branch glob matching, conflict detection, log rotation) maintainable. Init and promote scripts stay bash.
+All tool code beyond bootstrap is Python (stdlib only — `tomllib`, `pathlib`, `subprocess`, `re`, `threading`). Only `initialize_alcatraz.sh` and `resolve_python.sh` remain bash (they run before Python exists).
 
 Python 3.11+ is required (for `tomllib`). The resolution happens during `initialize_alcatraz.sh` with a four-tier fallback:
 
-1. Detect `python3` on PATH that is 3.11+ → use it
+1. Detect `python3` on PATH that is 3.11+ → use it (pyenv/mise shims resolved via `sys.executable`)
 2. Detect `mise` → offer to install Python 3.11 via mise
 3. No mise → offer to install mise (single curl, no root), then Python 3.11 via mise
 4. User declines everything → ask for manual path to Python 3.11+
 
-The resolved interpreter path is stored in `.alcatraz/python` so the daemon can use it without re-detection. A thin `src/watch_alcatraz.sh` wrapper reads this file and execs the Python daemon.
+The resolved interpreter is stored as `.alcatraz/python` — a **symlink** to the real binary. The daemon is invoked directly: `.alcatraz/python src/watch_alcatraz.py`.
 
-**Step 2.5.1** — `Add Python 3.11+ resolution to initialize_alcatraz.sh`
-> New step in `src/initialize_alcatraz.sh` after UID resolution: four-tier Python detection (system python3, mise install, mise bootstrap, manual path). Validate version >= 3.11 and `tomllib` importable. Write resolved path to `.alcatraz/python`. Test: verify `.alcatraz/python` contains a working Python 3.11+ path after init. Test: verify error when no Python found and user declines all options.
+**Step 2.5.1** — `Add Python 3.11+ resolution to initialize_alcatraz.sh` ✅
+> `src/resolve_python.sh`: four-tier Python detection, shim resolution via `sys.executable`, stores result as `.alcatraz/python` symlink. Called by `initialize_alcatraz.sh` as Step 5. 9 unittest tests.
 
-**Step 2.5.2** — `Rewrite watch_alcatraz.sh as Python with bash wrapper`
-> Replace the bash daemon loop with `src/watch_alcatraz.py`. The existing `src/watch_alcatraz.sh` becomes a thin wrapper that reads `.alcatraz/python` and execs the Python script. Port existing functionality: PID guard, workspace check, signal handling, configurable interval from `alcatrazer.toml` (now via `tomllib`). Existing daemon startup tests must continue to pass.
+**Step 2.5.2** — `Rewrite daemon and promote in Python` ✅
+> `src/watch_alcatraz.py`: PID guard, workspace check, signal handling via `threading.Event`, `tomllib` config. Direct entry point (no bash wrapper). 13 unittest tests.
+>
+> Beyond-plan refactoring done during this step:
+> - `src/promote.sh` → `src/promote.py` (argparse, tomllib, regex identity rewrite)
+> - `.alcatraz/python` changed from text file to symlink (simpler wrapper, then wrapper removed entirely)
+> - `test/` renamed to `tests/` (Python stdlib `test` package conflict)
+> - All bash tests migrated to Python unittest (46 tests total)
+> - Promotion tests call `promote.py` functions directly instead of subprocess
+> - Added unit tests for `rewrite_identity` and `resolve_identity` with mocking
 
 ### Phase 3: Daemon core
 
-Each step adds one piece of daemon functionality in Python. Tests are written alongside (or before, TDD style).
+Each step adds one piece of daemon functionality in Python. Tests use unittest with direct function calls and mocking where appropriate.
 
-**Step 3.1** — ~~`Daemon startup: PID guard and workspace existence check`~~ (done — implemented in Phase 2.5.2)
+**Step 3.1** — ~~`Daemon startup`~~ ✅ (done — PID guard, workspace check, signal handling, config loading all implemented in Phase 2.5.2)
 
-**Step 3.2** — `Daemon polling loop with configurable interval`
-> Main loop: sleep for configured interval, invoke promotion check. Reads `interval` from `alcatrazer.toml` via `tomllib`. No actual promotion yet — just the loop structure with a placeholder. Test: verify daemon reads interval from config. Test: verify daemon responds to Ctrl+C (SIGINT/SIGTERM).
+**Step 3.2** — ~~`Daemon polling loop with configurable interval`~~ ✅ (done — `threading.Event.wait(timeout=interval)` loop implemented in Phase 2.5.2, config tests verify interval is read from TOML)
 
 **Step 3.3** — `Daemon promotes new commits in mirror mode`
-> Integrate `promote.sh` (via `subprocess`) into the polling loop. On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
+> Call `promote.promote()` directly from the polling loop (same process, no subprocess). On each cycle: run promotion, log result to `.alcatraz/promotion-daemon.log`. Test: seed inner repo, start daemon, verify commits appear in outer repo with rewritten identity.
 
 **Step 3.4** — `Daemon log rotation`
 > After each log write, check file size against `max_log_size`. Rotate when exceeded (move current to `.1`, start fresh). Test: write enough log entries to trigger rotation, verify old log preserved and new one started.
 
 **Step 3.5** — `Daemon branch filtering via branches config`
-> Read `branches` from config via `tomllib`. Filter fast-export output to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists (using `fnmatch`). Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
+> Read `branches` from config via `tomllib`. Filter fast-export to only include matching branches. Support `"all"`, `"main"`, and glob pattern lists (using `fnmatch`). Test: seed inner repo with multiple branches, configure `branches = "main"`, verify only main is promoted. Test: glob pattern `["main", "feature/*"]`.
 
 **Step 3.6** — `Daemon conflict detection and resolution branching in mirror mode`
 > When fast-import fails on a branch, create `conflict/resolve-<branch>-<timestamp>`, log the conflict, pause promotion for that branch. Continue promoting other branches. Test: create diverged outer repo, run daemon, verify conflict branch created and other branches still promoted.
@@ -329,17 +335,17 @@ Each step adds one piece of daemon functionality in Python. Tests are written al
 > On each poll cycle, check if any paused branches have their conflict branch deleted or merged. If so, resume promotion. Test: create conflict, delete conflict branch, verify daemon resumes.
 
 **Step 3.8** — `Daemon alcatraz-tree mode with namespace mapping`
-> When `mode = "alcatraz-tree"`, promote into `alcatraz/*` namespace. Update `src/promote.sh` with `--namespace` flag. Test: configure alcatraz-tree mode, verify inner `main` becomes outer `alcatraz/main`.
+> When `mode = "alcatraz-tree"`, promote into `alcatraz/*` namespace. Add `--namespace` flag to `promote.py`. Test: configure alcatraz-tree mode, verify inner `main` becomes outer `alcatraz/main`.
 
 ### Phase 4: Inspection tool
 
-**Step 4.1** — `Add inspect_promotion.sh for live log viewing`
-> `src/inspect_promotion.sh` — thin wrapper: check log file exists, `tail -f .alcatraz/promotion-daemon.log`. Informative message if log doesn't exist yet.
+**Step 4.1** — `Add inspect_promotion.py for live log viewing`
+> `src/inspect_promotion.py` — check log file exists, `tail -f .alcatraz/promotion-daemon.log`. Informative message if log doesn't exist yet.
 
 ### Phase 5: Documentation
 
 **Step 5.1** — `Update README with daemon usage and new directory layout`
-> Document: new `src/` and `container/` layout, `watch_alcatraz.sh` usage, `inspect_promotion.sh`, `[promotion-daemon]` config section, mirror vs alcatraz-tree modes.
+> Document: `src/` and `container/` layout, Python requirement, `.alcatraz/python` symlink, `watch_alcatraz.py` usage, `inspect_promotion.py`, `[promotion-daemon]` config section, mirror vs alcatraz-tree modes.
 
 **Step 5.2** — `Update plan status from Planning to Complete`
 > Mark this document as implemented. Add any notes from implementation experience.
