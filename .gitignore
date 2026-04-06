@@ -6,8 +6,11 @@
 # Environment variables with secrets - never commit
 .env
 
-# Test artifacts (temporary repos created during promotion tests)
-test/**/promotion_temp_output/
+# Test artifacts (temporary dirs created during tests)
+tests/**/promotion_temp_output/
+tests/**/daemon_temp_output/
+tests/**/python_resolution_temp/
 
 # Conversation exports
 *.txt
+__pycache__/

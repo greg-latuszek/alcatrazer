@@ -12,12 +12,12 @@
 # - No git remotes are configured
 #
 # Prerequisites:
-#   ./initialize_alcatraz.sh
+#   ./src/initialize_alcatraz.sh
 #   alcatrazer.toml must exist in project root
 #   docker compose build
 #
 # Usage:
-#   ./test/smoke_test.sh
+#   ./tests/smoke_test.sh
 
 set -euo pipefail
 
@@ -26,8 +26,8 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected ALCATRAZ_UID from .env
-EXPECTED_UID=$(grep -oP '^ALCATRAZ_UID=\K.*' .env)
+# Load expected ALCATRAZ_UID from .alcatraz/uid
+EXPECTED_UID=$(cat .alcatraz/uid)
 
 PASS=0
 FAIL=0
@@ -40,7 +40,7 @@ echo "  Alcatraz Smoke Test"
 echo "========================================="
 
 # Run all checks inside a single container invocation and capture output
-OUTPUT=$(docker compose run --rm alcatraz bash -c '
+OUTPUT=$(docker compose -f container/docker-compose.yml run --rm alcatraz bash -c '
 # Delimiter-separated sections for reliable parsing
 echo "===SECTION:ID==="
 id
@@ -303,7 +303,7 @@ fi
 # --- 13. Dockerfile rejects build without ALCATRAZ_UID ---
 echo ""
 echo "--- 13. Dockerfile requires ALCATRAZ_UID ---"
-BUILD_OUTPUT=$(docker build --build-arg ALCATRAZ_UID="" -f "${PROJECT_DIR}/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
+BUILD_OUTPUT=$(docker build --build-arg ALCATRAZ_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
 if echo "${BUILD_OUTPUT}" | grep -q "ALCATRAZ_UID build arg is required"; then
     pass "Dockerfile rejects build without ALCATRAZ_UID"
 else

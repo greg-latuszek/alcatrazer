@@ -51,27 +51,47 @@ It is designed as a reusable template — clone it, run the initialization scrip
 This project uses a nested git architecture — a git repo inside a git repo:
 
 ```
-your_repo/                      <-- outer repo (host user's real identity, has GitHub remote)
-├── .git/                       <-- outer git
-├── .gitignore                  <-- ignores .alcatraz/, .env
-├── alcatrazer.toml             <-- tool configuration (version controlled)
-├── .env.example                <-- template for API keys
+your_repo/                          <-- outer repo (host user's identity, has GitHub remote)
+├── .git/                           <-- outer git
+├── .gitignore                      <-- ignores .alcatraz/, .env
+├── alcatrazer.toml                 <-- tool configuration (version controlled)
+├── .env.example                    <-- template for API keys
 ├── README.md
-├── Dockerfile                  <-- Alcatraz container image
-├── docker-compose.yml          <-- container orchestration
-├── entrypoint.sh               <-- container startup (chown + privilege drop)
-├── initialize_alcatraz.sh      <-- creates inner repo + finds phantom UID
-├── scripts/
-│   └── promote.sh              <-- promotes commits from inner to outer repo
-└── .alcatraz/                  <-- mounted into Docker containers (gitignored)
-    ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
-    └── ... agent work ...
+├── container/                      <-- Docker infrastructure
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── entrypoint.sh
+├── src/                            <-- tool source code
+│   ├── initialize_alcatraz.sh      <-- bash: creates inner repo + finds phantom UID + resolves Python
+│   ├── resolve_python.sh           <-- bash: four-tier Python 3.11+ detection
+│   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
+│   ├── watch_alcatraz.py           <-- Python: auto-promotion daemon
+│   └── inspect_promotion.py        <-- Python: live log viewer
+├── tests/                          <-- Python unittest test suite
+│   ├── test_promote.py
+│   ├── test_watch_alcatraz.py
+│   ├── test_python_resolution.py
+│   ├── seed_alcatraz.sh            <-- helper: seeds a repo with realistic branch history
+│   └── smoke_test.sh               <-- Docker integration test
+└── .alcatraz/                      <-- gitignored, entire tool state
+    ├── workspace/                  <-- mounted into Docker as /workspace
+    │   ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
+    │   └── ... agent work ...
+    ├── python -> /usr/bin/python3  <-- symlink to resolved Python 3.11+
+    ├── uid                         <-- phantom UID
+    ├── uid.env                     <-- UID as env var for docker-compose
+    ├── promote-export-marks        <-- incremental promotion state
+    ├── promote-import-marks
+    ├── promoted-tips.json          <-- branch tips after last promotion (conflict detection)
+    ├── paused-branches.json        <-- branches paused due to conflicts
+    ├── promotion-daemon.pid        <-- daemon PID (single-instance guard)
+    └── promotion-daemon.log        <-- daemon activity log
 ```
 
 - The **outer repo** is the host-side control plane. It holds infrastructure (Dockerfiles, scripts, docs) and receives promoted agent work. It has the host user's real identity and a GitHub remote for pushing.
-- The **inner repo** (`.alcatraz/`) is the agent workspace. It has a hardcoded throwaway identity, no remote, and no access to host credentials. Only this directory is mounted into Docker containers.
-- `alcatrazer.toml` captures configuration decisions (promotion identity, tool versions) and is version controlled.
-- The inner repo is gitignored from the outer repo. Agent work enters the outer repo only through the promotion script.
+- The **inner repo** (`.alcatraz/workspace/`) is the agent workspace. It has a hardcoded throwaway identity, no remote, and no access to host credentials. Only `workspace/` is mounted into Docker — tool state (UID, marks, logs, daemon PID) lives in `.alcatraz/` but outside `workspace/`, invisible to agents.
+- **Bootstrap scripts** (`initialize_alcatraz.sh`, `resolve_python.sh`) are bash — they run before Python exists. Everything else is Python (stdlib only, no pip).
+- `alcatrazer.toml` captures configuration decisions and is version controlled.
 
 ## Security Model
 
@@ -79,7 +99,7 @@ your_repo/                      <-- outer repo (host user's real identity, has G
 
 The container runs as a **phantom UID** — a user ID that does not exist on the host machine. This provides defense in depth: even if an agent escapes the container, the process cannot write to any host files because no host user matches that UID.
 
-The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.env` for reuse across container rebuilds.
+The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.alcatraz/uid` for reuse across container rebuilds.
 
 ### What we protect against
 
@@ -89,7 +109,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ### What agents CAN do
 
-- Read and write files inside `.alcatraz/` (mounted into the container)
+- Read and write files inside `.alcatraz/workspace/` (mounted into the container)
 - Create git commits using a throwaway identity (`Alcatraz Agent <alcatraz@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
 - Access the internet to communicate with LLM APIs via Claude OAuth or API keys
@@ -100,7 +120,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 - Push to GitHub or any remote repository (no git credentials or SSH keys are available)
 - Access the host user's identity, email, or signing keys
-- Access the host filesystem outside of `.alcatraz/`
+- Access the host filesystem outside of `.alcatraz/workspace/`
 - Access the Docker socket or spawn new containers
 - Read host files (SSH keys, GPG keys, git config, shell history, environment variables, etc.)
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
@@ -111,13 +131,15 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 ### 1. Initialize Alcatraz
 
 ```bash
-./initialize_alcatraz.sh
+./src/initialize_alcatraz.sh
 ```
 
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
-2. Finds the first unused UID on the host (>= 1001) and writes `ALCATRAZ_UID` to `.env`
-3. Creates `.alcatraz/` with an isolated git repo configured with the Alcatraz Agent identity
+2. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatraz/uid`
+3. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
+4. Adds the workspace to `git safe.directory` so host git can read it despite phantom UID ownership
+5. Resolves Python 3.11+ for the promotion daemon (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatraz/python` symlink
 
 ### 2. LLM Authentication
 
@@ -132,21 +154,131 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Build and run
 
 ```bash
-docker compose build
-docker compose run --rm alcatraz
+docker compose -f container/docker-compose.yml build
+docker compose -f container/docker-compose.yml run --rm alcatraz
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
+
+### 4. Start the promotion daemon
+
+In a separate terminal:
+
+```bash
+.alcatraz/python src/watch_alcatraz.py
+```
+
+The daemon watches `.alcatraz/workspace/` for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
+
+To watch promotion activity:
+
+```bash
+.alcatraz/python src/inspect_promotion.py
+```
 
 ### Resetting Alcatraz
 
 Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
 
 ```bash
-./initialize_alcatraz.sh --reset
+./src/initialize_alcatraz.sh --reset
 ```
 
 This removes all Alcatraz contents and reinitializes a fresh inner git repo.
+
+## Configuration
+
+All configuration lives in `alcatrazer.toml` (version controlled):
+
+```toml
+[promotion]
+# Identity used when promoting agent commits to the outer repo
+name = "Your Name"
+email = "your@email.com"
+
+[tools]
+# Default tool versions in the container (agents can override via mise.toml)
+python = "3.13"
+node = "22"
+bun = "latest"
+
+[promotion-daemon]
+# Polling interval in seconds
+interval = 5
+
+# Which branches to promote: "all", a single branch name, or a list of glob patterns
+branches = "all"           # or "main" or "master" or ["main", "feature/*"]
+
+# Conflict handling mode: "mirror" or "alcatraz-tree"
+mode = "mirror"
+
+# Logging verbosity: "normal" or "detailed"
+verbosity = "normal"
+
+# Maximum log file size before rotation (in KB)
+max_log_size = 512
+```
+
+## Promoting Agent Work
+
+The promotion script (`src/promote.py`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+
+- Preserves full branch and merge topology (branches, merge commits, parent chains)
+- Rewrites author/committer from `Alcatraz Agent` to the host user's identity
+- Supports incremental runs — only new commits since the last promotion are transferred
+- Is unidirectional: inner repo to outer repo only
+
+### Manual promotion
+
+If you prefer to promote manually instead of using the daemon:
+
+```bash
+.alcatraz/python src/promote.py --source .alcatraz/workspace --target .
+
+# Preview what would be promoted:
+.alcatraz/python src/promote.py --source .alcatraz/workspace --target . --dry-run
+```
+
+### Promotion Modes
+
+The daemon supports two modes, configured via `mode` in `alcatrazer.toml`:
+
+**`mirror` (default)** — Agent branches promote to the same branch names in the outer repo (`main` → `main`). Seamless sync for projects where agents do most of the coding. If the human also commits to the outer repo on a promoted branch, the daemon detects the divergence and creates a conflict branch (see below).
+
+**`alcatraz-tree`** — Agent branches promote into an `alcatraz/*` namespace (`main` → `alcatraz/main`, `feature/auth` → `alcatraz/feature/auth`). The human's branches are never touched. Use this when both human and agents commit frequently to the same branches — the separate namespace means zero conflicts. The human merges from `alcatraz/*` when ready.
+
+### Conflict Resolution (mirror mode)
+
+If you commit directly to the outer repo on a branch that the daemon is also promoting, the daemon detects the divergence and pauses promotion on that branch. It:
+
+1. Creates a `conflict/resolve-<branch>-<timestamp>` branch containing the agent's version of the work
+2. Logs a warning to `.alcatraz/promotion-daemon.log`
+3. Continues promoting other branches normally
+
+**To resolve:**
+
+```bash
+# Option A: Merge the agent's work into your branch
+git merge conflict/resolve-main-20260406-120000
+# Resolve any merge conflicts, then:
+git branch -d conflict/resolve-main-20260406-120000
+
+# Option B: Discard the agent's work on this branch
+git branch -D conflict/resolve-main-20260406-120000
+```
+
+Once the `conflict/resolve-*` branch is deleted (merged or discarded), the daemon automatically resumes promotion on that branch. No daemon restart needed.
+
+### Branch Filtering
+
+Control which branches cross the water:
+
+```toml
+[promotion-daemon]
+branches = "all"                    # every branch (default)
+branches = "main"                   # a single branch (use your branch name: "main", "master", etc.)
+branches = ["main", "feature/*"]    # branch names and glob patterns
+```
 
 ## Container Details
 
@@ -177,9 +309,9 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 ## Docker Container Rules
 
-These rules are enforced by the `docker-compose.yml` configuration:
+These rules are enforced by the `container/docker-compose.yml` configuration:
 
-1. **Mount only `.alcatraz/`** as the working volume — never the outer repo or the host home directory.
+1. **Mount only `.alcatraz/workspace/`** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
 3. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
 4. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.
@@ -189,20 +321,18 @@ These rules are enforced by the `docker-compose.yml` configuration:
 
 ## Workflow
 
-1. Human runs `./initialize_alcatraz.sh` to create the inner repo and determine the phantom UID.
-2. Human runs `docker compose build` and `docker compose run --rm alcatraz`.
-4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge — building full branch/merge histories.
-5. Human reviews agent work via Docker: `docker compose run --rm alcatraz git log --graph --oneline --all`.
-6. Human runs the promotion script to transfer commits from the inner repo to the outer repo. The script rewrites the author identity and preserves the full branch and merge topology.
+1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python.
+2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm alcatraz` — build and enter the container.
+3. `.alcatraz/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
+4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
+5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatraz/python src/inspect_promotion.py`.
+6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 
-This separation ensures agents can do productive work while the human retains full control over what reaches the remote repository.
+## Running Tests
 
-## Promoting Agent Work
+```bash
+.alcatraz/python -m unittest discover -s tests -v
+```
 
-The promotion script (`scripts/promote.sh`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
-
-- Preserves full branch and merge topology (branches, merge commits, parent chains)
-- Rewrites author/committer from `Alcatraz Agent` to the host user's identity
-- Supports incremental runs — only new commits since the last promotion are transferred
-- Is unidirectional: inner repo to outer repo only
+The test suite covers promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.

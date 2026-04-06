@@ -26,7 +26,7 @@
 #   * initial commit
 #
 # Usage:
-#   ./test/seed_alcatraz.sh <path-to-git-repo>
+#   ./tests/seed_alcatraz.sh <path-to-git-repo>
 
 set -euo pipefail
 
