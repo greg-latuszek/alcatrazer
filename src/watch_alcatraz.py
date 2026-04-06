@@ -156,7 +156,7 @@ def main():
     log.addHandler(handler)
     branches = config["branches"]
     mode = config["mode"]
-    paused_branches: set[str] = set()
+    paused_branches = promote_mod.load_paused_branches(marks_dir)
     log.info("Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
              os.getpid(), interval, branches, mode)
 
@@ -167,6 +167,17 @@ def main():
                 break
             try:
                 if mode == "mirror":
+                    # Check if any paused branches have been resolved
+                    if paused_branches:
+                        resolved = promote_mod.check_resolved_conflicts(
+                            target_repo, marks_dir, paused_branches,
+                        )
+                        for branch in resolved:
+                            paused_branches.discard(branch)
+                            log.info("Conflict resolved on branch %s — resuming promotion", branch)
+                        if resolved:
+                            promote_mod.save_paused_branches(marks_dir, paused_branches)
+
                     results = promote_mod.promote_with_conflict_handling(
                         source_repo, target_repo, marks_dir,
                         name, email, branches=branches,

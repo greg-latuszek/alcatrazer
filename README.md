@@ -202,9 +202,31 @@ This separation ensures agents can do productive work while the human retains fu
 
 ## Promoting Agent Work
 
-The promotion script (`src/promote.sh`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+The promotion script (`src/promote.py`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
 
 - Preserves full branch and merge topology (branches, merge commits, parent chains)
 - Rewrites author/committer from `Alcatraz Agent` to the host user's identity
 - Supports incremental runs — only new commits since the last promotion are transferred
 - Is unidirectional: inner repo to outer repo only
+
+### Conflict Resolution
+
+If you commit directly to the outer repo on a branch that the daemon is also promoting (in `mirror` mode), the daemon detects the divergence and pauses promotion on that branch. It:
+
+1. Creates a `conflict/resolve-<branch>-<timestamp>` branch containing the agent's version of the work
+2. Logs a warning to `.alcatraz/promotion-daemon.log`
+3. Continues promoting other branches normally
+
+**To resolve:**
+
+```bash
+# Option A: Merge the agent's work into your branch
+git merge conflict/resolve-main-20260406-120000
+# Resolve any merge conflicts, then:
+git branch -d conflict/resolve-main-20260406-120000
+
+# Option B: Discard the agent's work on this branch
+git branch -D conflict/resolve-main-20260406-120000
+```
+
+Once the `conflict/resolve-*` branch is deleted (merged or discarded), the daemon automatically resumes promotion on that branch. No daemon restart needed.

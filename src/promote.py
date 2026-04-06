@@ -210,6 +210,20 @@ def save_promoted_tips(marks_dir: Path, tips: dict[str, str]) -> None:
     tips_file.write_text(json.dumps(tips, indent=2) + "\n")
 
 
+def load_paused_branches(marks_dir: Path) -> set[str]:
+    """Load paused branches from disk (persists across daemon restarts)."""
+    paused_file = marks_dir / "paused-branches.json"
+    if paused_file.exists():
+        return set(json.loads(paused_file.read_text()))
+    return set()
+
+
+def save_paused_branches(marks_dir: Path, paused: set[str]) -> None:
+    """Save paused branches to disk."""
+    paused_file = marks_dir / "paused-branches.json"
+    paused_file.write_text(json.dumps(sorted(paused), indent=2) + "\n")
+
+
 def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
     """Get current commit hashes for the given branches in a repo."""
     tips = {}
@@ -221,6 +235,37 @@ def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
         if result.returncode == 0:
             tips[branch] = result.stdout.strip()
     return tips
+
+
+def find_conflict_branches(target: Path, branch: str) -> list[str]:
+    """Find conflict/resolve-<branch>-* branches in the target repo."""
+    result = subprocess.run(
+        ["git", "-C", str(target), "branch", "--format=%(refname:short)",
+         "--list", f"conflict/resolve-{branch}-*"],
+        capture_output=True, text=True,
+    )
+    return [b.strip() for b in result.stdout.splitlines() if b.strip()]
+
+
+def check_resolved_conflicts(target: Path, marks_dir: Path,
+                             paused_branches: set) -> set:
+    """Check if any paused branch's conflict branch has been deleted/merged.
+
+    Returns the set of branches that should be unpaused.
+    """
+    resolved = set()
+    for branch in list(paused_branches):
+        conflict_refs = find_conflict_branches(target, branch)
+        if not conflict_refs:
+            # Conflict branch is gone — user resolved it
+            resolved.add(branch)
+            # Update promoted-tips to current outer tip so we don't
+            # re-detect divergence on the next cycle
+            tips = load_promoted_tips(marks_dir)
+            current = get_branch_tips(target, [branch])
+            tips.update(current)
+            save_promoted_tips(marks_dir, tips)
+    return resolved
 
 
 def detect_diverged_branches(target: Path, marks_dir: Path,
@@ -309,6 +354,9 @@ def promote_with_conflict_handling(
         save_promoted_tips(marks_dir, old_tips)
         for b in to_promote:
             results[b] = "promoted"
+
+    # Persist paused state across daemon restarts
+    save_paused_branches(marks_dir, paused_branches)
 
     return results
 
