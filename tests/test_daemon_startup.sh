@@ -49,6 +49,10 @@ echo "========================================="
 rm -rf "${TEMP_DIR}"
 mkdir -p "${TEMP_DIR}/alcatraz"
 
+# Provide resolved Python path for the bash wrapper
+SYSTEM_PYTHON=$(cat "${PROJECT_DIR}/.alcatraz/python" 2>/dev/null || which python3)
+echo "${SYSTEM_PYTHON}" > "${TEMP_DIR}/alcatraz/python"
+
 # --- Test 1: Exits when workspace/.git/ does not exist ---
 
 echo ""
