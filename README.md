@@ -230,3 +230,16 @@ git branch -D conflict/resolve-main-20260406-120000
 ```
 
 Once the `conflict/resolve-*` branch is deleted (merged or discarded), the daemon automatically resumes promotion on that branch. No daemon restart needed.
+
+### Promotion Modes
+
+The daemon supports two modes, configured via `mode` in `alcatrazer.toml`:
+
+**`mirror` (default)** — Agent branches promote to the same branch names in the outer repo (`main` → `main`). Seamless sync for projects where agents do most of the coding. If the human also commits to the outer repo on a promoted branch, the daemon detects the divergence and creates a conflict branch (see above).
+
+**`alcatraz-tree`** — Agent branches promote into an `alcatraz/*` namespace (`main` → `alcatraz/main`, `feature/auth` → `alcatraz/feature/auth`). The human's branches are never touched. Use this when both human and agents commit frequently to the same branches — the separate namespace means zero conflicts. The human merges from `alcatraz/*` when ready.
+
+```toml
+[promotion-daemon]
+mode = "mirror"        # or "alcatraz-tree"
+```

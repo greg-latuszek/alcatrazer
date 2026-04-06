@@ -191,10 +191,11 @@ def main():
                     promoted = [b for b, s in results.items() if s == "promoted"]
                     if promoted:
                         log.info("Promotion cycle complete: %s", ", ".join(promoted))
-                else:
+                elif mode == "alcatraz-tree":
                     promote_mod.promote(source_repo, target_repo, marks_dir,
-                                        name, email, branches=branches)
-                    log.info("Promotion cycle complete")
+                                        name, email, branches=branches,
+                                        namespace="alcatraz")
+                    log.info("Promotion cycle complete (alcatraz-tree)")
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:

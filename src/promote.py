@@ -165,9 +165,25 @@ def dry_run(source: Path, marks_dir: Path, name: str, email: str,
     print(f"Author/committer will be rewritten to: {name} <{email}>")
 
 
+def rewrite_refs(stream: str, namespace: str) -> str:
+    """Rewrite ref names in a fast-export stream to add a namespace prefix.
+
+    refs/heads/main -> refs/heads/<namespace>/main
+    """
+    return re.sub(
+        r"^(commit|reset) refs/heads/(.+)$",
+        rf"\1 refs/heads/{namespace}/\2",
+        stream, flags=re.MULTILINE,
+    )
+
+
 def promote(source: Path, target: Path, marks_dir: Path,
-            name: str, email: str, branches: str | list = "all") -> None:
-    """Run fast-export | rewrite identity | fast-import pipeline."""
+            name: str, email: str, branches: str | list = "all",
+            namespace: str = "") -> None:
+    """Run fast-export | rewrite identity | fast-import pipeline.
+
+    If namespace is set, branch names are prefixed: main -> <namespace>/main.
+    """
     marks_dir.mkdir(parents=True, exist_ok=True)
     export_marks = marks_dir / "promote-export-marks"
     import_marks = marks_dir / "promote-import-marks"
@@ -185,10 +201,12 @@ def promote(source: Path, target: Path, marks_dir: Path,
         import_cmd.append(f"--import-marks={import_marks}")
     import_cmd.append(f"--export-marks={import_marks}")
 
-    # Run pipeline: fast-export | rewrite | fast-import
+    # Run pipeline: fast-export | rewrite identity (+ namespace) | fast-import
     export_proc = subprocess.run(export_cmd, capture_output=True, text=True, check=True)
-    rewritten = rewrite_identity(export_proc.stdout, name, email)
-    subprocess.run(import_cmd, input=rewritten, text=True, check=True)
+    stream = rewrite_identity(export_proc.stdout, name, email)
+    if namespace:
+        stream = rewrite_refs(stream, namespace)
+    subprocess.run(import_cmd, input=stream, text=True, check=True)
 
     print(f"Promotion complete: {source} -> {target}")
 
