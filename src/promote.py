@@ -34,10 +34,45 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 import argparse
+import fnmatch
 import re
 import subprocess
 import tomllib
 from pathlib import Path
+
+
+def resolve_branches(source: Path, branches_config) -> list[str]:
+    """Resolve branches config to a list of git refs for fast-export.
+
+    branches_config can be:
+      - "all"         → returns ["--all"]
+      - "main"        → returns ["refs/heads/main"]
+      - ["main", "feature/*"] → glob-matched against actual branches
+    """
+    if branches_config == "all":
+        return ["--all"]
+
+    # Get all branch names from the source repo
+    result = subprocess.run(
+        ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
+        capture_output=True, text=True,
+    )
+    all_branches = result.stdout.strip().splitlines() if result.stdout.strip() else []
+
+    # Normalize to list of patterns
+    if isinstance(branches_config, str):
+        patterns = [branches_config]
+    else:
+        patterns = list(branches_config)
+
+    # Match patterns against actual branches
+    matched = set()
+    for pattern in patterns:
+        for branch in all_branches:
+            if fnmatch.fnmatch(branch, pattern):
+                matched.add(branch)
+
+    return [f"refs/heads/{b}" for b in sorted(matched)]
 
 
 def git(repo: Path, *args: str) -> str:
@@ -99,11 +134,13 @@ def rewrite_identity(stream: str, name: str, email: str) -> str:
     return stream
 
 
-def dry_run(source: Path, marks_dir: Path, name: str, email: str) -> None:
+def dry_run(source: Path, marks_dir: Path, name: str, email: str,
+            branches: str | list = "all") -> None:
     """Show what would be promoted without modifying anything."""
     export_marks = marks_dir / "promote-export-marks"
+    refs = resolve_branches(source, branches)
 
-    cmd = ["git", "-C", str(source), "fast-export", "--all"]
+    cmd = ["git", "-C", str(source), "fast-export"] + refs
     if export_marks.exists():
         cmd.append(f"--import-marks={export_marks}")
 
@@ -127,14 +164,15 @@ def dry_run(source: Path, marks_dir: Path, name: str, email: str) -> None:
 
 
 def promote(source: Path, target: Path, marks_dir: Path,
-            name: str, email: str) -> None:
+            name: str, email: str, branches: str | list = "all") -> None:
     """Run fast-export | rewrite identity | fast-import pipeline."""
     marks_dir.mkdir(parents=True, exist_ok=True)
     export_marks = marks_dir / "promote-export-marks"
     import_marks = marks_dir / "promote-import-marks"
+    refs = resolve_branches(source, branches)
 
     # Build fast-export command
-    export_cmd = ["git", "-C", str(source), "fast-export", "--all"]
+    export_cmd = ["git", "-C", str(source), "fast-export"] + refs
     if export_marks.exists():
         export_cmd.append(f"--import-marks={export_marks}")
     export_cmd.append(f"--export-marks={export_marks}")

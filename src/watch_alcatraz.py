@@ -25,11 +25,11 @@ if sys.version_info < (3, 11):
 
 import argparse
 import logging
+import logging.handlers
 import os
 import signal
 import threading
 import tomllib
-from datetime import datetime
 from pathlib import Path
 
 # Import promote module (same package)
@@ -141,16 +141,22 @@ def main():
     marks_dir = alcatraz_dir
     name, email = promote_mod.resolve_identity(target_repo, toml_file, "", "")
 
-    # --- Set up logging ---
+    # --- Set up logging with rotation ---
     log_file = alcatraz_dir / "promotion-daemon.log"
-    logging.basicConfig(
-        filename=str(log_file),
-        format="%(asctime)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        level=logging.INFO,
-    )
+    max_log_bytes = config["max_log_size"] * 1024  # config is in KB
     log = logging.getLogger("promotion-daemon")
-    log.info("Daemon started (PID %d, interval=%ds)", os.getpid(), interval)
+    log.setLevel(logging.INFO)
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_file),
+        maxBytes=max_log_bytes,
+        backupCount=1,
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s",
+                                           datefmt="%Y-%m-%d %H:%M:%S"))
+    log.addHandler(handler)
+    branches = config["branches"]
+    log.info("Daemon started (PID %d, interval=%ds, branches=%s)",
+             os.getpid(), interval, branches)
 
     # --- Main polling loop ---
     try:
@@ -158,7 +164,8 @@ def main():
             if shutdown_event.wait(timeout=interval):
                 break
             try:
-                promote_mod.promote(source_repo, target_repo, marks_dir, name, email)
+                promote_mod.promote(source_repo, target_repo, marks_dir,
+                                    name, email, branches=branches)
                 log.info("Promotion cycle complete")
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
