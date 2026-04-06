@@ -129,6 +129,7 @@ def dry_run(source: Path, marks_dir: Path, name: str, email: str) -> None:
 def promote(source: Path, target: Path, marks_dir: Path,
             name: str, email: str) -> None:
     """Run fast-export | rewrite identity | fast-import pipeline."""
+    marks_dir.mkdir(parents=True, exist_ok=True)
     export_marks = marks_dir / "promote-export-marks"
     import_marks = marks_dir / "promote-import-marks"
 
