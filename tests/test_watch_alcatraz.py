@@ -447,5 +447,192 @@ class TestDaemonPromotion(unittest.TestCase):
             proc.wait(timeout=5)
 
 
+class TestLogRotation(unittest.TestCase):
+    """Test that the daemon rotates log files when they exceed max_log_size."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_project = self.tmpdir
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+
+        # Create outer repo
+        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        git(self.test_project, "config", "user.name", PROMOTED_NAME)
+        git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
+        git(self.test_project, "config", "commit.gpgsign", "false")
+        Path(self.test_project, ".gitkeep").write_text("")
+        git(self.test_project, "add", ".gitkeep")
+        git(self.test_project, "commit", "-m", "init outer repo")
+
+        # Create workspace
+        os.makedirs(self.workspace)
+        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        git(self.workspace, "config", "commit.gpgsign", "false")
+        subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
+
+        os.makedirs(self.alcatraz_dir, exist_ok=True)
+
+    def tearDown(self):
+        pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                pid = int(Path(pid_file).read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+            except (ProcessLookupError, ValueError):
+                pass
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_log_rotates_when_exceeding_max_size(self):
+        """Log file should rotate when it exceeds max_log_size KB."""
+        # Set max_log_size to 1 KB so rotation triggers quickly
+        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        Path(toml_path).write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+            f'max_log_size = 1\n'  # 1 KB — will rotate very quickly
+        )
+
+        # Pre-fill the log with > 1 KB of data to trigger rotation on first cycle
+        log_file = Path(self.alcatraz_dir) / "promotion-daemon.log"
+        log_file.write_text("x" * 2048 + "\n")
+
+        proc = subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            time.sleep(3)
+
+            rotated_log = Path(self.alcatraz_dir) / "promotion-daemon.log.1"
+            self.assertTrue(rotated_log.exists(),
+                            "Rotated log file (.log.1) should exist")
+            # Current log should be smaller than the rotated one
+            self.assertTrue(log_file.exists(), "Current log should exist")
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+
+class TestBranchFiltering(unittest.TestCase):
+    """Test that the daemon respects the branches config."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_project = self.tmpdir
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+
+        # Create outer repo
+        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        git(self.test_project, "config", "user.name", PROMOTED_NAME)
+        git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
+        git(self.test_project, "config", "commit.gpgsign", "false")
+        Path(self.test_project, ".gitkeep").write_text("")
+        git(self.test_project, "add", ".gitkeep")
+        git(self.test_project, "commit", "-m", "init outer repo")
+
+        # Create workspace with seeded history (has main, feature/auth, agent/backend, agent/frontend)
+        os.makedirs(self.workspace)
+        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        git(self.workspace, "config", "commit.gpgsign", "false")
+        subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
+
+        os.makedirs(self.alcatraz_dir, exist_ok=True)
+
+    def tearDown(self):
+        pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                pid = int(Path(pid_file).read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+            except (ProcessLookupError, ValueError):
+                pass
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_toml(self, branches_value):
+        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        Path(toml_path).write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+            f'branches = {branches_value}\n'
+        )
+
+    def _start_daemon(self):
+        return subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def _target_branches(self):
+        """Return set of branch names in the target repo."""
+        output = git(self.test_project, "branch", "--format=%(refname:short)")
+        return set(output.splitlines()) if output else set()
+
+    def test_branches_all_promotes_everything(self):
+        """branches = "all" should promote all branches."""
+        self._write_toml('"all"')
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+            branches = self._target_branches()
+            self.assertIn("main", branches)
+            self.assertIn("feature/auth", branches)
+            self.assertIn("agent/backend", branches)
+            self.assertIn("agent/frontend", branches)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_branches_main_only(self):
+        """branches = "main" should promote only main."""
+        self._write_toml('"main"')
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+            branches = self._target_branches()
+            self.assertIn("main", branches)
+            self.assertNotIn("feature/auth", branches)
+            self.assertNotIn("agent/backend", branches)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_branches_glob_pattern(self):
+        """branches = ["main", "agent/*"] should promote main and agent branches."""
+        self._write_toml('["main", "agent/*"]')
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+            branches = self._target_branches()
+            self.assertIn("main", branches)
+            self.assertIn("agent/backend", branches)
+            self.assertIn("agent/frontend", branches)
+            self.assertNotIn("feature/auth", branches)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()
