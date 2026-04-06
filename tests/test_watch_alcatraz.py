@@ -320,5 +320,132 @@ class TestSignalHandling(unittest.TestCase):
                       f"SIGINT should produce clean exit, got {returncode}")
 
 
+SEED_SCRIPT = str(project_dir() / "tests" / "seed_alcatraz.sh")
+
+PROMOTED_NAME = "Test User"
+PROMOTED_EMAIL = "test@example.com"
+
+
+def git(repo: str, *args: str) -> str:
+    """Run a git command, return stdout."""
+    result = subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+class TestDaemonPromotion(unittest.TestCase):
+    """Integration test: daemon promotes commits from workspace to outer repo."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        # project_dir layout: has .alcatraz/workspace (source) and is itself a git repo (target)
+        self.test_project = self.tmpdir
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+
+        # Create the outer (target) repo
+        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        git(self.test_project, "config", "user.name", PROMOTED_NAME)
+        git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
+        git(self.test_project, "config", "commit.gpgsign", "false")
+        # Need an initial commit so the repo has a HEAD
+        Path(self.test_project, ".gitkeep").write_text("")
+        git(self.test_project, "add", ".gitkeep")
+        git(self.test_project, "commit", "-m", "init outer repo")
+
+        # Create the inner (source) workspace repo
+        os.makedirs(self.workspace)
+        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        git(self.workspace, "config", "commit.gpgsign", "false")
+
+        # Seed the workspace with commits
+        subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
+
+        # Write alcatrazer.toml with promotion identity and fast polling
+        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        Path(toml_path).write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+        )
+
+        # Create marks dir
+        os.makedirs(self.alcatraz_dir, exist_ok=True)
+
+    def tearDown(self):
+        pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                pid = int(Path(pid_file).read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+            except (ProcessLookupError, ValueError):
+                pass
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _start_daemon(self):
+        proc = subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        return proc
+
+    def test_daemon_promotes_commits(self):
+        """Daemon should promote workspace commits to the outer repo."""
+        proc = self._start_daemon()
+        try:
+            # Wait for at least one promotion cycle (interval=1s + buffer)
+            time.sleep(3)
+
+            # Verify commits appeared in the outer repo
+            target_msgs = git(self.test_project, "log", "--all", "--format=%s").splitlines()
+            self.assertIn("initial commit", target_msgs,
+                          "Seeded commits should appear in outer repo")
+            self.assertIn("merge feature/auth into main", target_msgs)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_promoted_commits_have_rewritten_identity(self):
+        """Promoted commits should have the configured identity, not alcatraz."""
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+
+            # Check all promoted authors (excluding the outer repo's own init commit)
+            authors = set(git(self.test_project, "log", "--all", "--format=%an <%ae>").splitlines())
+            # Should contain the promoted identity (from seeded commits)
+            self.assertIn(f"{PROMOTED_NAME} <{PROMOTED_EMAIL}>", authors)
+            # Should NOT contain alcatraz identity
+            self.assertNotIn("Alcatraz Agent <alcatraz@localhost>", authors)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_daemon_writes_log(self):
+        """Daemon should write promotion activity to the log file."""
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+
+            log_file = os.path.join(self.alcatraz_dir, "promotion-daemon.log")
+            self.assertTrue(os.path.exists(log_file), "Log file should exist")
+            log_content = Path(log_file).read_text()
+            self.assertTrue(len(log_content) > 0, "Log file should not be empty")
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()
