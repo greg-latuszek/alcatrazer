@@ -1,5 +1,5 @@
 """
-Tests for src/promote.sh — promotion from inner (alcatraz) to outer repo.
+Tests for src/promote.py — promotion from inner (alcatraz) to outer repo.
 
 Verifies:
 - Same commit count, branches, messages, merge topology, file content
@@ -11,14 +11,19 @@ Verifies:
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-PROMOTE_SCRIPT = str(PROJECT_DIR / "src" / "promote.sh")
+PROMOTE_SCRIPT = str(PROJECT_DIR / "src" / "promote.py")
 SEED_SCRIPT = str(PROJECT_DIR / "tests" / "seed_alcatraz.sh")
+
+# Use the resolved Python from .alcatraz/python symlink, or fall back to current
+_python_link = PROJECT_DIR / ".alcatraz" / "python"
+PYTHON = str(_python_link.resolve()) if _python_link.is_symlink() else sys.executable
 
 ALCATRAZ_NAME = "Alcatraz Agent"
 ALCATRAZ_EMAIL = "alcatraz@localhost"
@@ -66,9 +71,9 @@ class PromotionTestBase(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def promote(self, dry_run=False):
-        """Run promote.sh with standard args. Returns CompletedProcess."""
+        """Run promote.py with standard args. Returns CompletedProcess."""
         cmd = [
-            PROMOTE_SCRIPT,
+            PYTHON, PROMOTE_SCRIPT,
             "--source", self.source,
             "--target", self.target,
             "--author-name", PROMOTED_NAME,
