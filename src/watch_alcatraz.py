@@ -155,8 +155,10 @@ def main():
                                            datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
     branches = config["branches"]
-    log.info("Daemon started (PID %d, interval=%ds, branches=%s)",
-             os.getpid(), interval, branches)
+    mode = config["mode"]
+    paused_branches: set[str] = set()
+    log.info("Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
+             os.getpid(), interval, branches, mode)
 
     # --- Main polling loop ---
     try:
@@ -164,9 +166,24 @@ def main():
             if shutdown_event.wait(timeout=interval):
                 break
             try:
-                promote_mod.promote(source_repo, target_repo, marks_dir,
-                                    name, email, branches=branches)
-                log.info("Promotion cycle complete")
+                if mode == "mirror":
+                    results = promote_mod.promote_with_conflict_handling(
+                        source_repo, target_repo, marks_dir,
+                        name, email, branches=branches,
+                        paused_branches=paused_branches,
+                    )
+                    for branch, status in results.items():
+                        if status == "conflict":
+                            log.warning("CONFLICT on branch %s — promoted state "
+                                        "saved to conflict/resolve-* branch. "
+                                        "Resolve manually.", branch)
+                    promoted = [b for b, s in results.items() if s == "promoted"]
+                    if promoted:
+                        log.info("Promotion cycle complete: %s", ", ".join(promoted))
+                else:
+                    promote_mod.promote(source_repo, target_repo, marks_dir,
+                                        name, email, branches=branches)
+                    log.info("Promotion cycle complete")
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:

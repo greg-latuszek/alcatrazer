@@ -35,9 +35,11 @@ if sys.version_info < (3, 11):
 
 import argparse
 import fnmatch
+import json
 import re
 import subprocess
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 
@@ -189,6 +191,160 @@ def promote(source: Path, target: Path, marks_dir: Path,
     subprocess.run(import_cmd, input=rewritten, text=True, check=True)
 
     print(f"Promotion complete: {source} -> {target}")
+
+
+# --- Conflict detection for mirror mode ---
+
+
+def load_promoted_tips(marks_dir: Path) -> dict[str, str]:
+    """Load last-promoted branch tips from JSON file."""
+    tips_file = marks_dir / "promoted-tips.json"
+    if tips_file.exists():
+        return json.loads(tips_file.read_text())
+    return {}
+
+
+def save_promoted_tips(marks_dir: Path, tips: dict[str, str]) -> None:
+    """Save branch tips after successful promotion."""
+    tips_file = marks_dir / "promoted-tips.json"
+    tips_file.write_text(json.dumps(tips, indent=2) + "\n")
+
+
+def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
+    """Get current commit hashes for the given branches in a repo."""
+    tips = {}
+    for branch in branches:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", f"refs/heads/{branch}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            tips[branch] = result.stdout.strip()
+    return tips
+
+
+def detect_diverged_branches(target: Path, marks_dir: Path,
+                             branch_names: list[str]) -> set[str]:
+    """Detect branches where the outer repo has diverged from last promotion.
+
+    A branch has diverged if its current tip in the target repo differs from
+    what we recorded after the last promotion.
+    """
+    promoted_tips = load_promoted_tips(marks_dir)
+    current_tips = get_branch_tips(target, branch_names)
+    diverged = set()
+    for branch, current_tip in current_tips.items():
+        last_tip = promoted_tips.get(branch)
+        if last_tip is not None and current_tip != last_tip:
+            diverged.add(branch)
+    return diverged
+
+
+def promote_with_conflict_handling(
+    source: Path, target: Path, marks_dir: Path,
+    name: str, email: str, branches: str | list = "all",
+    paused_branches: set | None = None,
+) -> dict[str, str]:
+    """Promote branches, handling conflicts in mirror mode.
+
+    Returns a dict of {branch: status} where status is:
+      "promoted" — branch promoted successfully
+      "conflict" — branch diverged, conflict branch created
+      "paused"   — branch was already paused from a previous conflict
+      "skipped"  — nothing new to promote on this branch
+
+    Also updates promoted-tips.json for successfully promoted branches.
+    """
+    if paused_branches is None:
+        paused_branches = set()
+
+    marks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve which branches to promote
+    refs = resolve_branches(source, branches)
+    if refs == ["--all"]:
+        # Get actual branch names from source
+        result = subprocess.run(
+            ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True,
+        )
+        branch_names = result.stdout.strip().splitlines() if result.stdout.strip() else []
+    else:
+        branch_names = [r.removeprefix("refs/heads/") for r in refs]
+
+    # Detect diverged branches
+    diverged = detect_diverged_branches(target, marks_dir, branch_names)
+
+    # Separate into promotable and conflicting
+    to_promote = [b for b in branch_names if b not in diverged and b not in paused_branches]
+    results = {}
+
+    # Mark paused branches
+    for b in branch_names:
+        if b in paused_branches:
+            results[b] = "paused"
+
+    # Handle diverged branches — create conflict branches
+    for b in diverged:
+        if b in paused_branches:
+            continue
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        conflict_ref = f"conflict/resolve-{b}-{timestamp}"
+        try:
+            _promote_single_branch(source, target, marks_dir, name, email,
+                                   b, target_ref=conflict_ref)
+            results[b] = "conflict"
+            paused_branches.add(b)
+        except Exception:
+            results[b] = "conflict"
+            paused_branches.add(b)
+
+    # Promote non-conflicting branches
+    if to_promote:
+        promote(source, target, marks_dir, name, email, branches=to_promote)
+        # Update tips for successfully promoted branches
+        new_tips = get_branch_tips(target, to_promote)
+        old_tips = load_promoted_tips(marks_dir)
+        old_tips.update(new_tips)
+        save_promoted_tips(marks_dir, old_tips)
+        for b in to_promote:
+            results[b] = "promoted"
+
+    return results
+
+
+def _promote_single_branch(
+    source: Path, target: Path, marks_dir: Path,
+    name: str, email: str,
+    branch: str, target_ref: str | None = None,
+) -> None:
+    """Promote a single branch, optionally to a different ref name."""
+    marks_dir.mkdir(parents=True, exist_ok=True)
+    export_marks = marks_dir / "promote-export-marks"
+    import_marks = marks_dir / "promote-import-marks"
+
+    export_cmd = ["git", "-C", str(source), "fast-export", f"refs/heads/{branch}"]
+    if export_marks.exists():
+        export_cmd.append(f"--import-marks={export_marks}")
+    export_cmd.append(f"--export-marks={export_marks}")
+
+    import_cmd = ["git", "-C", str(target), "fast-import", "--force", "--quiet"]
+    if import_marks.exists():
+        import_cmd.append(f"--import-marks={import_marks}")
+    import_cmd.append(f"--export-marks={import_marks}")
+
+    export_proc = subprocess.run(export_cmd, capture_output=True, text=True, check=True)
+    stream = rewrite_identity(export_proc.stdout, name, email)
+
+    # Rewrite the ref name if promoting to a different target (e.g. conflict branch)
+    if target_ref:
+        stream = re.sub(
+            rf"^commit refs/heads/{re.escape(branch)}$",
+            f"commit refs/heads/{target_ref}",
+            stream, flags=re.MULTILINE,
+        )
+
+    subprocess.run(import_cmd, input=stream, text=True, check=True)
 
 
 def main():
