@@ -24,11 +24,17 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 import argparse
+import logging
 import os
 import signal
 import threading
 import tomllib
+from datetime import datetime
 from pathlib import Path
+
+# Import promote module (same package)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import promote as promote_mod
 
 
 # --- Default config ---
@@ -129,11 +135,35 @@ def main():
     config = load_config(toml_file)
     interval = config["interval"]
 
+    # --- Resolve promotion identity ---
+    source_repo = alcatraz_dir / "workspace"
+    target_repo = project_dir
+    marks_dir = alcatraz_dir
+    name, email = promote_mod.resolve_identity(target_repo, toml_file, "", "")
+
+    # --- Set up logging ---
+    log_file = alcatraz_dir / "promotion-daemon.log"
+    logging.basicConfig(
+        filename=str(log_file),
+        format="%(asctime)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
+    log = logging.getLogger("promotion-daemon")
+    log.info("Daemon started (PID %d, interval=%ds)", os.getpid(), interval)
+
     # --- Main polling loop ---
     try:
         while not shutdown_event.is_set():
-            shutdown_event.wait(timeout=interval)
+            if shutdown_event.wait(timeout=interval):
+                break
+            try:
+                promote_mod.promote(source_repo, target_repo, marks_dir, name, email)
+                log.info("Promotion cycle complete")
+            except Exception as exc:
+                log.error("Promotion failed: %s", exc)
     finally:
+        log.info("Daemon stopped")
         remove_pid(pid_file)
 
 
