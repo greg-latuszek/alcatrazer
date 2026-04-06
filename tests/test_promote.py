@@ -316,5 +316,35 @@ class TestDryRun(PromotionTestBase):
         self.assertEqual(count_before, count_after)
 
 
+class TestNamespacePromotion(PromotionTestBase):
+    """Tests for promoting into a namespace (alcatraz-tree mode)."""
+
+    def test_namespace_rewrites_branch_names(self):
+        """Promote with namespace should map main -> alcatraz/main."""
+        promote_mod.promote(self.source, self.target, self.marks,
+                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
+        target_branches = sorted(
+            git(str(self.target), "branch", "--format=%(refname:short)").splitlines()
+        )
+        self.assertIn("alcatraz/main", target_branches)
+        self.assertIn("alcatraz/feature/auth", target_branches)
+        self.assertNotIn("main", target_branches)
+
+    def test_namespace_preserves_content(self):
+        """Namespaced promotion should have the same file content."""
+        promote_mod.promote(self.source, self.target, self.marks,
+                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
+        src_files = sorted(git(str(self.source), "ls-tree", "-r", "--name-only", "main").splitlines())
+        tgt_files = sorted(git(str(self.target), "ls-tree", "-r", "--name-only", "alcatraz/main").splitlines())
+        self.assertEqual(src_files, tgt_files)
+
+    def test_namespace_rewrites_identity(self):
+        """Namespaced promotion should still rewrite identity."""
+        promote_mod.promote(self.source, self.target, self.marks,
+                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
+        authors = set(git(str(self.target), "log", "--all", "--format=%an <%ae>").splitlines())
+        self.assertEqual(authors, {f"{PROMOTED_NAME} <{PROMOTED_EMAIL}>"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -894,5 +894,122 @@ class TestConflictResolution(_ConflictTestBase):
             proc.wait(timeout=5)
 
 
+class TestAlcatrazTreeMode(unittest.TestCase):
+    """Integration test: daemon promotes into alcatraz/* namespace."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.test_project = self.tmpdir
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+
+        # Create outer repo
+        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        git(self.test_project, "config", "user.name", PROMOTED_NAME)
+        git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
+        git(self.test_project, "config", "commit.gpgsign", "false")
+        Path(self.test_project, ".gitkeep").write_text("")
+        git(self.test_project, "add", ".gitkeep")
+        git(self.test_project, "commit", "-m", "init outer repo")
+
+        # Create workspace with seeded history
+        os.makedirs(self.workspace)
+        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        git(self.workspace, "config", "commit.gpgsign", "false")
+        subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
+
+        Path(self.test_project, "alcatrazer.toml").write_text(
+            f'[promotion]\n'
+            f'name = "{PROMOTED_NAME}"\n'
+            f'email = "{PROMOTED_EMAIL}"\n'
+            f'\n'
+            f'[promotion-daemon]\n'
+            f'interval = 1\n'
+            f'mode = "alcatraz-tree"\n'
+        )
+        os.makedirs(self.alcatraz_dir, exist_ok=True)
+
+    def tearDown(self):
+        pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                pid = int(Path(pid_file).read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(1)
+            except (ProcessLookupError, ValueError):
+                pass
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_promotes_into_alcatraz_namespace(self):
+        """In alcatraz-tree mode, inner main becomes outer alcatraz/main."""
+        proc = subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            time.sleep(3)
+            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            self.assertIn("alcatraz/main", branches)
+            self.assertIn("alcatraz/feature/auth", branches)
+            # Original main should still be outer repo's own main (not overwritten)
+            main_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+            self.assertEqual(main_msgs, ["init outer repo"])
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_no_conflicts_in_alcatraz_tree_mode(self):
+        """alcatraz-tree mode should never conflict — separate namespace."""
+        # Do initial promotion
+        proc = subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        time.sleep(3)
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        # Human commits to main (would conflict in mirror mode)
+        Path(self.test_project, "human.txt").write_text("human\n")
+        git(self.test_project, "add", "human.txt")
+        git(self.test_project, "commit", "-m", "human work on main")
+
+        # Agent adds more work
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "more.py").write_text("more\n")
+        git(self.workspace, "add", "more.py")
+        git(self.workspace, "commit", "-m", "agent more work")
+
+        # Restart daemon — should promote without conflict
+        proc2 = subprocess.Popen(
+            [PYTHON, DAEMON_SCRIPT,
+             "--alcatraz-dir", self.alcatraz_dir,
+             "--project-dir", self.test_project],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            time.sleep(3)
+            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            # No conflict branches should exist
+            conflict_branches = [b for b in branches if b.startswith("conflict/")]
+            self.assertEqual(conflict_branches, [])
+            # Agent work should be in alcatraz/main
+            alcatraz_msgs = git(self.test_project, "log", "alcatraz/main", "--format=%s").splitlines()
+            self.assertIn("agent more work", alcatraz_msgs)
+            # Human work should still be on main
+            main_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+            self.assertIn("human work on main", main_msgs)
+        finally:
+            proc2.send_signal(signal.SIGTERM)
+            proc2.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()
