@@ -634,8 +634,8 @@ class TestBranchFiltering(unittest.TestCase):
             proc.wait(timeout=5)
 
 
-class TestConflictDetection(unittest.TestCase):
-    """Integration test: daemon handles conflicts when outer repo diverges."""
+class _ConflictTestBase(unittest.TestCase):
+    """Shared setup for conflict tests: outer repo + workspace + initial promotion."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -690,6 +690,9 @@ class TestConflictDetection(unittest.TestCase):
              "--project-dir", self.test_project],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+
+class TestConflictDetection(_ConflictTestBase):
+    """Integration test: daemon handles conflicts when outer repo diverges."""
 
     def test_conflict_branch_created_on_divergence(self):
         """When outer repo diverges, daemon creates a conflict/resolve-* branch."""
@@ -808,6 +811,87 @@ class TestConflictDetection(unittest.TestCase):
         finally:
             proc2.send_signal(signal.SIGTERM)
             proc2.wait(timeout=5)
+
+
+class TestConflictResolution(_ConflictTestBase):
+    """Integration test: daemon resumes after conflict branch is resolved."""
+
+    def _create_conflict(self):
+        """Run daemon for initial promotion, then create divergence on main."""
+        proc = self._start_daemon()
+        time.sleep(3)
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+
+        # Human commits to outer main
+        Path(self.test_project, "human.txt").write_text("human work\n")
+        git(self.test_project, "add", "human.txt")
+        git(self.test_project, "commit", "-m", "human commit on outer main")
+
+        # Agent commits to workspace main
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "agent_new.py").write_text("agent work\n")
+        git(self.workspace, "add", "agent_new.py")
+        git(self.workspace, "commit", "-m", "agent commit after divergence")
+
+        # Run daemon again to create conflict branch
+        proc2 = self._start_daemon()
+        time.sleep(3)
+        proc2.send_signal(signal.SIGTERM)
+        proc2.wait(timeout=5)
+
+        # Find the conflict branch name
+        all_branches = git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+        conflict_branches = [b for b in all_branches if b.startswith("conflict/resolve-main")]
+        assert len(conflict_branches) > 0, f"Expected conflict branch, got: {all_branches}"
+        return conflict_branches[0]
+
+    def test_resumes_after_conflict_branch_deleted(self):
+        """Daemon resumes promoting a branch after its conflict branch is deleted."""
+        conflict_branch = self._create_conflict()
+
+        # User resolves: merge conflict branch into main, then delete it
+        git(self.test_project, "merge", conflict_branch, "--no-ff", "-m", "resolve conflict")
+        git(self.test_project, "branch", "-d", conflict_branch)
+
+        # Add another commit in workspace to verify promotion resumes
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "after_resolve.py").write_text("after resolve\n")
+        git(self.workspace, "add", "after_resolve.py")
+        git(self.workspace, "commit", "-m", "commit after conflict resolved")
+
+        # Restart daemon — should resume promoting main
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+            target_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+            self.assertIn("commit after conflict resolved", target_msgs)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
+    def test_resumes_after_conflict_branch_force_deleted(self):
+        """Daemon resumes even if user force-deletes the conflict branch without merging."""
+        conflict_branch = self._create_conflict()
+
+        # User just deletes the conflict branch (decides to discard agent's work)
+        git(self.test_project, "branch", "-D", conflict_branch)
+
+        # Add another commit in workspace
+        git(self.workspace, "checkout", "main")
+        Path(self.workspace, "after_discard.py").write_text("after discard\n")
+        git(self.workspace, "add", "after_discard.py")
+        git(self.workspace, "commit", "-m", "commit after conflict discarded")
+
+        # Restart daemon — should resume promoting main
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)
+            target_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()
+            self.assertIn("commit after conflict discarded", target_msgs)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
 
 
 if __name__ == "__main__":
