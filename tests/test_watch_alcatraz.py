@@ -24,10 +24,10 @@ def project_dir():
 
 
 def python_bin():
-    """Read the resolved Python path from .alcatraz/python, fall back to sys."""
+    """Resolve Python from .alcatraz/python symlink, fall back to sys."""
     python_file = project_dir() / ".alcatraz" / "python"
-    if python_file.exists():
-        return python_file.read_text().strip()
+    if python_file.is_symlink() or python_file.exists():
+        return str(python_file.resolve())
     import sys
     return sys.executable
 

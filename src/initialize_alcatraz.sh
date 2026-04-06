@@ -134,7 +134,7 @@ fi
 
 # --- Summary ---
 
-PYTHON_PATH=$(cat "${ALCATRAZ_DIR}/python" 2>/dev/null || echo "not resolved")
+PYTHON_PATH=$(readlink -f "${ALCATRAZ_DIR}/python" 2>/dev/null || echo "not resolved")
 
 echo ""
 echo "Alcatraz configuration:"

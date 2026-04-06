@@ -8,7 +8,7 @@
 #   3. No mise → offer to install mise, then Python 3.11 via mise
 #   4. User declines everything → ask for manual path to Python 3.11+
 #
-# Writes the resolved interpreter absolute path to .alcatraz/python.
+# Creates .alcatraz/python as a symlink to the resolved interpreter.
 #
 # Usage:
 #   src/resolve_python.sh [--alcatraz-dir <dir>]
@@ -82,14 +82,14 @@ resolve_real_path() {
 
 # --- Check for previously resolved Python ---
 
-if [ -f "${PYTHON_FILE}" ]; then
-    EXISTING_PYTHON=$(cat "${PYTHON_FILE}")
-    if validate_python "${EXISTING_PYTHON}"; then
-        VERSION=$("${EXISTING_PYTHON}" --version 2>&1)
-        echo "Reusing already resolved Python: ${EXISTING_PYTHON} (${VERSION})"
+if [ -L "${PYTHON_FILE}" ] || [ -x "${PYTHON_FILE}" ]; then
+    if validate_python "${PYTHON_FILE}"; then
+        RESOLVED_TARGET=$(readlink -f "${PYTHON_FILE}" 2>/dev/null || echo "${PYTHON_FILE}")
+        VERSION=$("${PYTHON_FILE}" --version 2>&1)
+        echo "Reusing already resolved Python: ${RESOLVED_TARGET} (${VERSION})"
         exit 0
     else
-        echo "Previously resolved Python at ${EXISTING_PYTHON} is no longer valid. Re-resolving..."
+        echo "Previously resolved Python at ${PYTHON_FILE} is no longer valid. Re-resolving..."
         rm -f "${PYTHON_FILE}"
     fi
 fi
@@ -108,8 +108,8 @@ if [ -n "${PYTHON3_PATH}" ]; then
         if [ "${REAL_PATH}" != "${PYTHON3_PATH}" ]; then
             echo "  (resolved from shim ${PYTHON3_PATH})"
         fi
-        echo "${REAL_PATH}" > "${PYTHON_FILE}"
-        echo "Python path saved to .alcatraz/python"
+        ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
+        echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
         exit 0
     else
         VERSION=$("${PYTHON3_PATH}" --version 2>&1 || echo "unknown")
@@ -134,8 +134,8 @@ if [ -n "${MISE_PATH}" ]; then
             REAL_PATH=$(resolve_real_path "${MISE_PYTHON}")
             VERSION=$("${REAL_PATH}" --version 2>&1)
             echo "Installed ${VERSION} via mise at ${REAL_PATH}"
-            echo "${REAL_PATH}" > "${PYTHON_FILE}"
-            echo "Python path saved to .alcatraz/python"
+            ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
+            echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
             exit 0
         else
             echo "mise install completed but python3 validation failed."
@@ -166,8 +166,8 @@ if [ -z "${MISE_PATH}" ]; then
                 REAL_PATH=$(resolve_real_path "${MISE_PYTHON}")
                 VERSION=$("${REAL_PATH}" --version 2>&1)
                 echo "Installed ${VERSION} via mise at ${REAL_PATH}"
-                echo "${REAL_PATH}" > "${PYTHON_FILE}"
-                echo "Python path saved to .alcatraz/python"
+                ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
+                echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
                 exit 0
             else
                 echo "mise Python install completed but validation failed."
@@ -188,8 +188,8 @@ if [ -n "${MANUAL_PATH}" ] && validate_python "${MANUAL_PATH}"; then
     REAL_PATH=$(resolve_real_path "${MANUAL_PATH}")
     VERSION=$("${REAL_PATH}" --version 2>&1)
     echo "Validated ${VERSION} at ${REAL_PATH}"
-    echo "${REAL_PATH}" > "${PYTHON_FILE}"
-    echo "Python path saved to .alcatraz/python"
+    ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
+    echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
     exit 0
 fi
 

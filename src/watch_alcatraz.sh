@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Auto-promotion daemon wrapper — reads the resolved Python path from
-# .alcatraz/python and execs the Python daemon (watch_alcatraz.py).
+# Auto-promotion daemon wrapper — .alcatraz/python is a symlink to
+# the resolved Python 3.11+ interpreter. Just exec it.
 #
 # Usage:
 #   src/watch_alcatraz.sh
@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
-# Parse --alcatraz-dir from args to find the python file, pass all args through
+# Parse --alcatraz-dir from args to find the python symlink, pass all args through
 ALCATRAZ_DIR=""
 PROJECT_DIR="${DEFAULT_PROJECT_DIR}"
 ARGS=("$@")
@@ -26,19 +26,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 ALCATRAZ_DIR="${ALCATRAZ_DIR:-${PROJECT_DIR}/.alcatraz}"
-PYTHON_FILE="${ALCATRAZ_DIR}/python"
-
-if [ ! -f "${PYTHON_FILE}" ]; then
-    echo "ERROR: No Python path found at ${PYTHON_FILE}"
-    echo "Run ./src/initialize_alcatraz.sh first."
-    exit 1
-fi
-
-PYTHON=$(cat "${PYTHON_FILE}")
+PYTHON="${ALCATRAZ_DIR}/python"
 
 if [ ! -x "${PYTHON}" ]; then
-    echo "ERROR: Python at ${PYTHON} is not executable."
-    echo "Run ./src/resolve_python.sh to re-resolve."
+    echo "ERROR: No Python found at ${PYTHON}"
+    echo "Run ./src/initialize_alcatraz.sh first."
     exit 1
 fi
 

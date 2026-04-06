@@ -119,8 +119,8 @@ class TestTier1SystemPython(ResolutionTestBase):
         write_script(Path(self.fakebin) / "python3", fake_python("3.12.0"))
         result = self.run_resolve()
         self.assertEqual(result.returncode, 0)
-        self.assertTrue(self.python_file.exists())
-        resolved = self.python_file.read_text().strip()
+        self.assertTrue(self.python_file.is_symlink())
+        resolved = os.readlink(self.python_file)
         self.assertEqual(resolved, os.path.join(self.fakebin, "python3"))
 
     def test_output_mentions_version(self):
@@ -194,7 +194,7 @@ class TestTier4ManualPath(ResolutionTestBase):
         # "n" declines mise bootstrap, then provide the path
         result = self.run_resolve(stdin_text=f"n\n{custom_python}\n")
         self.assertEqual(result.returncode, 0)
-        resolved = self.python_file.read_text().strip()
+        resolved = os.readlink(self.python_file)
         self.assertEqual(resolved, custom_python)
 
 
@@ -204,7 +204,7 @@ class TestCaching(ResolutionTestBase):
     def test_reuses_cached_python(self):
         custom_python = os.path.join(self.fakebin, "mypython")
         write_script(Path(custom_python), fake_python("3.11.9"))
-        self.python_file.write_text(custom_python + "\n")
+        os.symlink(custom_python, self.python_file)
 
         result = self.run_resolve()
         self.assertEqual(result.returncode, 0)
