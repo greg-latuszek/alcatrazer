@@ -10,7 +10,7 @@
 # 5. Stale PID file (dead process) is overwritten
 #
 # Usage:
-#   ./test/test_daemon_startup.sh
+#   ./tests/test_daemon_startup.sh
 
 set -euo pipefail
 

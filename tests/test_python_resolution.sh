@@ -13,7 +13,7 @@
 # PATH and simulated stdin input.
 #
 # Usage:
-#   ./test/test_python_resolution.sh
+#   ./tests/test_python_resolution.sh
 
 set -euo pipefail
 

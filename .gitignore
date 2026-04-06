@@ -7,9 +7,10 @@
 .env
 
 # Test artifacts (temporary dirs created during tests)
-test/**/promotion_temp_output/
-test/**/daemon_temp_output/
-test/**/python_resolution_temp/
+tests/**/promotion_temp_output/
+tests/**/daemon_temp_output/
+tests/**/python_resolution_temp/
 
 # Conversation exports
 *.txt
+__pycache__/

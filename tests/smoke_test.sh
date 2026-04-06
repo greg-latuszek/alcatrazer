@@ -17,7 +17,7 @@
 #   docker compose build
 #
 # Usage:
-#   ./test/smoke_test.sh
+#   ./tests/smoke_test.sh
 
 set -euo pipefail
 

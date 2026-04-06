@@ -12,7 +12,7 @@
 # All temporary repos are created under test/promotion_temp_output/ (gitignored).
 #
 # Usage:
-#   ./test/test_promote.sh
+#   ./tests/test_promote.sh
 
 set -euo pipefail
 
