@@ -7,15 +7,25 @@ Runs on the host side, polling at a configurable interval.
 Silent by default — writes to .alcatraz/promotion-daemon.log.
 
 Usage:
+    .alcatraz/python src/watch_alcatraz.py
     src/watch_alcatraz.py [--alcatraz-dir DIR] [--project-dir DIR]
 
 Requires Python 3.11+ (for tomllib).
 """
 
+import sys
+
+if sys.version_info < (3, 11):
+    print(
+        f"ERROR: Python 3.11+ required, got {sys.version}\n"
+        "Run ./src/initialize_alcatraz.sh to set up the correct Python.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 import argparse
 import os
 import signal
-import sys
 import threading
 import tomllib
 from pathlib import Path
