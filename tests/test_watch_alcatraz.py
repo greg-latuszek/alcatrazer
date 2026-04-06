@@ -33,6 +33,7 @@ def python_bin():
 
 
 DAEMON_SCRIPT = str(project_dir() / "src" / "watch_alcatraz.py")
+INSPECT_SCRIPT = str(project_dir() / "src" / "inspect_promotion.py")
 PYTHON = python_bin()
 
 
@@ -892,6 +893,43 @@ class TestConflictResolution(_ConflictTestBase):
         finally:
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
+
+
+class TestInspectPromotion(unittest.TestCase):
+    """Tests for inspect_promotion.py."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        os.makedirs(self.alcatraz_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_exits_when_no_log_file(self):
+        """Should exit non-zero with helpful message when log doesn't exist."""
+        result = subprocess.run(
+            [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No log file", result.stdout)
+        self.assertIn("watch_alcatraz.py", result.stdout)
+
+    def test_starts_tailing_when_log_exists(self):
+        """Should start tailing when log file exists (we kill it quickly)."""
+        log_file = os.path.join(self.alcatraz_dir, "promotion-daemon.log")
+        Path(log_file).write_text("2026-04-06 12:00:00 Daemon started\n")
+
+        proc = subprocess.Popen(
+            [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        time.sleep(0.5)
+        proc.send_signal(signal.SIGINT)
+        stdout, _ = proc.communicate(timeout=5)
+        self.assertIn("Tailing", stdout.decode())
 
 
 class TestAlcatrazTreeMode(unittest.TestCase):
