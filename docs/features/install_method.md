@@ -212,10 +212,97 @@ Re-extracts tool files from package data into `.alcatraz/`, preserving `alcatraz
 ### Step 4: Write `install.sh` (curl|bash bootstrap)
 Thin bash script: resolve Python 3.11+ (four-tier), create temp venv, `pip install alcatrazer`, run `alcatrazer init`, delete temp venv. ~50 lines.
 
-### Step 5: Tests
+### Step 5: Tests (development)
 - Unit tests for init (mock filesystem, verify files created)
 - Integration test: run `alcatrazer init` in a temp git repo, verify layout
 - Test `install.sh` with faked PATH (same approach as resolve_python tests)
 
-### Step 6: Publish to PyPI
+### Step 6: Post-installation verification tests
+See "Trust and Verification" section below — bundle tests and source into `.alcatraz/` so end users can verify the installed tool.
+
+### Step 7: Publish to PyPI
 `uvx twine upload dist/*` — first real release (0.1.0).
+
+---
+
+## Trust and Verification
+
+### The trust problem
+
+Alcatrazer is a security tool. It asks users to run AI agents inside Docker containers with the promise that their host is protected. This creates a fundamental trust question:
+
+> "Isn't Alcatrazer a wise social engineer that claims to protect my laptop but instead is a thief itself?"
+
+If the tool claims to isolate agents from host secrets, the user must be able to verify that claim — not just by reading marketing copy, but by reading code and running tests.
+
+### Trust layers
+
+**Layer 1: Open source on GitHub.** The entire codebase is public. Anyone can read the Dockerfile, the entrypoint, the docker-compose volumes, the promotion scripts. This is the foundation — but it's not sufficient, because the user has no guarantee that what's installed on their machine matches what's on GitHub.
+
+**Layer 2: Installed source is readable.** The installation extracts tool files into `.alcatraz/` — not compiled bytecode, not obfuscated, not downloaded from a different source. The user can read every script that runs on their machine:
+
+```bash
+# "What exactly is this tool doing on my host?"
+cat .alcatraz/src/watch_alcatraz.py
+cat .alcatraz/container/Dockerfile
+cat .alcatraz/container/docker-compose.yml
+```
+
+**Layer 3: Post-installation verification tests.** The test suite is bundled alongside the tool files in `.alcatraz/tests/`. The user can run the same tests that developers run to verify the security model:
+
+```bash
+# "Prove to me this tool does what it claims"
+.alcatraz/python -m unittest discover -s .alcatraz/tests -v
+```
+
+These tests verify:
+- Container runs as phantom UID (no matching host user)
+- No host credentials leak into the container (SSH keys, GPG keys, git config)
+- Only explicitly passed environment variables are visible
+- Docker socket is not mounted
+- No git remotes configured inside the container
+- Promotion rewrites identity correctly (no alcatraz identity leaks to outer repo)
+- Files inside workspace are owned by phantom UID
+
+**Layer 4: Diff against GitHub.** The user can verify that what's installed matches the published source:
+
+```bash
+# "Is what I installed the same as what's on GitHub?"
+diff -r .alcatraz/src/ <(curl -sL https://github.com/.../archive/v1.0.tar.gz | tar xzf - --strip=1 -C /tmp/alcatrazer-check && echo /tmp/alcatrazer-check/src/)
+```
+
+The `alcatrazer verify` command (future) could automate this — download the release tarball, compare checksums file-by-file, report any differences.
+
+### What gets bundled in `.alcatraz/`
+
+The installation includes both tool files AND their tests, so the user has the complete picture:
+
+```
+.alcatraz/
+├── src/                    <-- the tool (readable source)
+│   ├── promote.py
+│   ├── watch_alcatraz.py
+│   ├── inspect_promotion.py
+│   ├── initialize_alcatraz.sh
+│   └── resolve_python.sh
+├── container/              <-- Docker infrastructure (readable)
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── entrypoint.sh
+├── tests/                  <-- verification tests (runnable)
+│   ├── test_promote.py
+│   ├── test_watch_alcatraz.py
+│   ├── test_python_resolution.py
+│   ├── seed_alcatraz.sh
+│   └── smoke_test.sh       <-- Docker integration test
+├── workspace/              <-- agent workspace
+└── ... (state files)
+```
+
+### Target audience
+
+The target user is a developer. They can read Python and bash. They understand Docker volumes and git. They may not read the source before first use — but knowing they *can* is itself a trust signal. And when a security-conscious team lead asks "how do we know this is safe?", the answer is: "read the source, run the tests, diff against GitHub."
+
+### Design principle
+
+This is an extension of Iceberg Principle 1 (fight for security): **the tool's security claims must be verifiable by the user, not just asserted by the author.** Open source is necessary but not sufficient. The installed tool must carry its own proof.
