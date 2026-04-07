@@ -116,12 +116,48 @@ Initial commit
 
 No metadata — no branch name, no hash, no mention of Alcatraz or snapshots. Agents see a generic initial commit, indistinguishable from any new project. Traceability is handled on the host side (the outer repo knows when init was run from git log). This aligns with Principle 2: zero footprint inside the workspace.
 
+## Resolved Questions
+
+### 1. Automatic snapshotting (not opt-in)
+
+Snapshotting is **automatic**. If the outer repo has tracked files on the main branch, they are copied into the workspace during initialization. Agents in Docker start from where the outside repo has ended — that's the whole point.
+
+### 2. Outer repo must exist
+
+`initialize_alcatraz.sh` **requires** a git repository. If run outside a git repo, it fails with a clear error. Alcatrazer is designed to wrap an existing project — if there's no repo, there's nothing to sandbox around.
+
+**Edge case: empty repo (no commits).** A freshly `git init`'d repo with no commits is valid — it's a greenfield project. The snapshot step is a no-op, and the inner workspace starts with an empty initial commit.
+
+### 3. Re-initialization re-snapshots from current main
+
+When the user runs `--reset`, the workspace is re-snapshotted from the outer repo's current main branch.
+
+**Edge case: agents have already started coding.** The inner workspace may have commits beyond the initial snapshot. Before destroying it, warn the user:
+
+```
+Warning: agents have ongoing development since snapshot (commit <hash>).
+  1. Break — shutdown Docker, discard inner workspace, re-snapshot, reboot
+  2. Wait — cancel reset, let agents finish
+```
+
+If the user chooses **break**: shutdown Docker container → remove inner `.git` and workspace files → re-snapshot outer main → fresh `git init` + initial commit → reboot Alcatrazer.
+
+If the user chooses **wait**: abort the reset, no changes.
+
+### 4. Large repos — no special handling
+
+Large repos are slow to snapshot and produce large workspaces. This is inherent — no special handling needed. If the project is big, the workspace is big.
+
+### 5. `.gitignore` — copy with single filter
+
+Copy the outer repo's `.gitignore` into the workspace, filtering out only the `.alcatraz/` rule. Everything else passes through unchanged.
+
+**Why only `.alcatraz/`:** This rule exists solely because the management layer was installed — it's a footprint of Alcatrazer managing the repo, not project content. All other entries (test temp dirs, IDE configs, `node_modules/`, etc.) are legitimate project rules that agents need.
+
+**Dogfooding edge case:** If Alcatrazer is used to develop Alcatrazer itself, entries like `tests/**/promotion_temp_output/` are part of the project the agents are building — not evidence of a hidden management layer. The distinction is: project content (agents should see) vs. management infrastructure (agents should not see).
+
 ## Open Questions
 
-1. **Should this be opt-in or automatic?** If the outer repo has tracked files, should `initialize_alcatraz.sh` always snapshot them into the workspace? Or ask first? For a greenfield project (empty repo), this step is a no-op.
+1. **How do we know coding has started?** We need to detect whether agents have made changes since the initial snapshot. Options: check if inner repo has commits beyond the initial one, check if there are uncommitted changes, or both.
 
-2. **What about `.gitignore` inside the workspace?** The outer repo's `.gitignore` may contain entries that don't make sense inside the workspace (like `.alcatraz/`). Should we filter or copy as-is? Probably copy as-is — agents can modify it if needed.
-
-3. **Re-initialization:** If the user runs `--reset` and re-initializes, should it re-snapshot from the current main? Yes — that's the expected behavior. The main branch may have advanced since the first init.
-
-4. **Large repos:** `git archive` of a large repo could be slow and the workspace large. This is inherent — if the project is big, the workspace is big. No special handling needed, but worth documenting.
+2. **How do we know coding has ended?** We need to detect whether agents are actively working or idle. This ties into the daemon/monitoring layer — what signal indicates "agents are done"?
