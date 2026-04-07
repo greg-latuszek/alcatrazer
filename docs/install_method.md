@@ -176,3 +176,46 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
 5. **Should the installer also run `initialize_alcatraz.sh`?** The init command could offer to run the full initialization (UID, workspace, safe.directory) as the final step, or leave it as a separate command. Running it immediately gives a better "one command to set up" experience.
 
 6. **The `.alcatraz/python` symlink:** The curl|bash path creates it during Python resolution. But pipx/uvx users also need it for the daemon. Should `alcatrazer init` create the symlink too (detecting the Python that's running it via `sys.executable`)?
+
+## Current State
+
+**Dev tooling set up:**
+- `mise.toml` — manages python 3.12 + uv, defines tasks (test, build, format, lint, docker-build, etc.)
+- `pyproject.toml` — package config with hatchling build, ruff linting, dev dependencies
+- `src/alcatrazer/` — PyPI package skeleton with placeholder CLI (`init`, `update`, `version` commands)
+- `LICENSE` — MIT
+- Package builds successfully (`mise run build` → `dist/alcatrazer-0.0.1-py3-none-any.whl`)
+- Version single-sourced from `src/alcatrazer/__init__.py` (hatch reads it dynamically)
+
+**PyPI account:** Recovery in progress (may take a few days). Name `alcatrazer` is available.
+
+## Implementation Plan
+
+Build order for the real installer (before first PyPI publish):
+
+### Step 1: Bundle tool files as package data
+Copy Dockerfile, entrypoint, scripts (promote.py, watch_alcatraz.py, etc.) into `src/alcatrazer/data/`. Hatch auto-includes everything under `src/alcatrazer/` in the wheel.
+
+### Step 2: Implement `alcatrazer init`
+Interactive CLI that:
+- Detects git repo, reads git config for default identity
+- Asks questions (name, email, tool versions, promotion mode)
+- Writes `alcatrazer.toml` and `.env.example` to repo root
+- Extracts tool files from package data into `.alcatraz/`
+- Updates `.gitignore` (adds `.alcatraz/` and `.env`)
+- Creates `.alcatraz/python` symlink (from `sys.executable`)
+- Optionally runs full initialization (UID, workspace, safe.directory)
+
+### Step 3: Implement `alcatrazer update`
+Re-extracts tool files from package data into `.alcatraz/`, preserving `alcatrazer.toml` and all state (workspace, marks, UID, logs).
+
+### Step 4: Write `install.sh` (curl|bash bootstrap)
+Thin bash script: resolve Python 3.11+ (four-tier), create temp venv, `pip install alcatrazer`, run `alcatrazer init`, delete temp venv. ~50 lines.
+
+### Step 5: Tests
+- Unit tests for init (mock filesystem, verify files created)
+- Integration test: run `alcatrazer init` in a temp git repo, verify layout
+- Test `install.sh` with faked PATH (same approach as resolve_python tests)
+
+### Step 6: Publish to PyPI
+`uvx twine upload dist/*` — first real release (0.1.0).
