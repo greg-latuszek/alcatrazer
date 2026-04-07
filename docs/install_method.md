@@ -166,13 +166,13 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
 4. **Domain / URL for curl installer:**
    **Decision:** Start with raw GitHub URL (free, zero setup):
    `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh`
+
    Future options for a nicer URL:
-   a. GitHub Pages on the repo → `https://greg-latuszek.github.io/alcatrazer/install.sh`
-   b. Custom domain on GitHub Pages → `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh.sh` (costs money)
+   - GitHub Pages on the repo → `https://greg-latuszek.github.io/alcatrazer/install.sh`
+   - Custom domain on GitHub Pages → `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh` (**costs money**)
+   
    Note: `https://github.com/<user>/<repo>/install` is NOT a valid GitHub URL pattern. GitHub only serves raw files via `raw.githubusercontent.com`, release assets, or GitHub Pages.
 
 5. **Should the installer also run `initialize_alcatraz.sh`?** The init command could offer to run the full initialization (UID, workspace, safe.directory) as the final step, or leave it as a separate command. Running it immediately gives a better "one command to set up" experience.
 
-6. **PyPI package name:** Is `alcatrazer` available on PyPI? Need to check and reserve it.
-
-7. **The `.alcatraz/python` symlink:** The curl|bash path creates it during Python resolution. But pipx/uvx users also need it for the daemon. Should `alcatrazer init` create the symlink too (detecting the Python that's running it via `sys.executable`)?
+6. **The `.alcatraz/python` symlink:** The curl|bash path creates it during Python resolution. But pipx/uvx users also need it for the daemon. Should `alcatrazer init` create the symlink too (detecting the Python that's running it via `sys.executable`)?
