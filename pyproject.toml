@@ -1,6 +1,6 @@
 [project]
 name = "alcatrazer"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Secure AI agent workspace — your code gets out, your secrets don't"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,9 @@ alcatrazer = "alcatrazer.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/alcatrazer/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/alcatrazer/"]
