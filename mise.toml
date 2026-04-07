@@ -1,0 +1,76 @@
+# ----------------------------------------------------------------------------
+# TOOL VERSIONS
+# ----------------------------------------------------------------------------
+[tools]
+python = "3.12"
+uv = "latest"
+
+# ----------------------------------------------------------------------------
+# ENVIRONMENT
+# ----------------------------------------------------------------------------
+[env]
+# Auto-create and activate venv
+_.python.venv = ".venv"
+
+# ----------------------------------------------------------------------------
+# TASKS
+# ----------------------------------------------------------------------------
+
+[tasks.env-create]
+description = "Create development environment"
+run = ["uv sync"]
+
+[tasks.env-rm]
+description = "Remove development environment"
+run = ["rm -rf .venv"]
+
+[tasks.env-show]
+description = "Show python and uv locations (for IDE settings)"
+run = [
+  'echo "Python:  $(which python)"',
+  'echo "uv:      $(which uv)"',
+]
+
+[tasks.test]
+description = "Run all tests"
+run = ["python -m unittest discover -s tests -v"]
+
+[tasks.test-fast]
+description = "Run unit tests only (skip slow integration tests)"
+run = ["python -m unittest discover -s tests -v -k 'not TestDaemon and not TestConflict and not TestBranch and not TestAlcatraz and not TestLogRotation'"]
+
+[tasks.lint]
+description = "Run linter"
+run = ["ruff check"]
+
+[tasks.format]
+description = "Format code"
+run = ["ruff format", "ruff check --fix"]
+
+[tasks.build]
+description = "Build PyPI package"
+run = ["uv build"]
+
+[tasks.docker-build]
+description = "Build the Alcatraz container"
+run = ["docker compose -f container/docker-compose.yml build"]
+
+[tasks.docker-run]
+description = "Run the Alcatraz container"
+run = ["docker compose -f container/docker-compose.yml run --rm alcatraz"]
+
+[tasks.init]
+description = "Initialize Alcatraz (workspace, UID, Python)"
+run = ["./src/initialize_alcatraz.sh"]
+
+[tasks.init-reset]
+description = "Reset and reinitialize Alcatraz"
+run = ["./src/initialize_alcatraz.sh --reset"]
+
+[tasks.start-promotion]
+description = "Start the promotion daemon"
+run = [".alcatraz/python src/watch_alcatraz.py"]
+
+[tasks.tail-promotion-log]
+description = "Tail the promotion daemon log"
+run = [".alcatraz/python src/inspect_promotion.py"]

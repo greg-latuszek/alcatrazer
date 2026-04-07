@@ -1,0 +1,66 @@
+[project]
+name = "alcatrazer"
+version = "0.0.1"
+description = "Secure AI agent workspace — your code gets out, your secrets don't"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Grzegorz Latuszek", email = "latuszek.grzegorz@gmail.com"},
+]
+keywords = ["ai", "agents", "docker", "security", "sandbox"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Security",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/greg-latuszek/alcatrazer"
+Repository = "https://github.com/greg-latuszek/alcatrazer"
+Issues = "https://github.com/greg-latuszek/alcatrazer/issues"
+
+[project.scripts]
+alcatrazer = "alcatrazer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/alcatrazer/"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alcatrazer"]
+
+# --- Development dependencies ---
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "build>=1.0",
+    "twine>=6.0",
+]
+
+# --- Tool configuration ---
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "I",    # isort
+    "RUF",  # ruff
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

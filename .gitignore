@@ -6,6 +6,13 @@
 # Environment variables with secrets - never commit
 .env
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+
 # Test artifacts (temporary dirs created during tests)
 tests/**/promotion_temp_output/
 tests/**/daemon_temp_output/
@@ -13,4 +20,3 @@ tests/**/python_resolution_temp/
 
 # Conversation exports
 *.txt
-__pycache__/
