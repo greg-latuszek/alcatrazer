@@ -85,8 +85,7 @@ After creating `.alcatraz/workspace/` and initializing git:
 1. Detect outer repo's main branch (main or master)
 2. Check out that branch's files into a temp dir (or use `git archive`)
 3. Copy files into `.alcatraz/workspace/`
-4. Create initial commit: `"Initial workspace from <branch> at <short-hash>"`
-5. The commit message records the source — traceable but minimal metadata
+4. Create initial commit: `"Initial commit"` — generic, zero Alcatraz footprint (Principle 2)
 
 ### Using `git archive` for clean extraction
 
@@ -112,13 +111,10 @@ The `.gitignore` of the outer repo already controls what's tracked, so `git arch
 ### Commit message
 
 ```
-Initial workspace from main at a1b2c3d
-
-Snapshot of the outer repository at the time of Alcatraz initialization.
-Agents continue development from this point.
+Initial commit
 ```
 
-The short hash provides traceability without exposing the full commit message or author.
+No metadata — no branch name, no hash, no mention of Alcatraz or snapshots. Agents see a generic initial commit, indistinguishable from any new project. Traceability is handled on the host side (the outer repo knows when init was run from git log). This aligns with Principle 2: zero footprint inside the workspace.
 
 ## Open Questions
 
