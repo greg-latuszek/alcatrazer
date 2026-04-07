@@ -47,19 +47,34 @@ The user didn't intend to merge their feature branch into main. But the promotio
 
 If the user truly wants agents to work on a feature branch, they should merge it to main first, then initialize. That's an explicit decision, not an accident.
 
-### How to detect main/master
+### How to detect the default branch
 
-```bash
-# Check which one exists in the outer repo
-if git rev-parse --verify refs/heads/main >/dev/null 2>&1; then
-    SOURCE_BRANCH="main"
-elif git rev-parse --verify refs/heads/master >/dev/null 2>&1; then
-    SOURCE_BRANCH="master"
-else
-    echo "ERROR: No 'main' or 'master' branch found."
-    exit 1
-fi
-```
+Note: `git config init.defaultBranch` is NOT the answer — it controls what `git init` uses for *new* repos, not what an existing repo considers its default branch.
+
+Detection priority:
+
+1. **`origin/HEAD`** (authoritative) — this is what GitHub/GitLab set as the "default branch":
+   ```bash
+   git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||'
+   ```
+   If the repo has a remote with `origin/HEAD` set, this is the definitive answer. Handles the case where both `main` and `master` exist.
+
+2. **Existence check** (fallback for repos without a remote or where `origin/HEAD` is not set):
+   ```bash
+   if git rev-parse --verify refs/heads/main >/dev/null 2>&1; then
+       SOURCE_BRANCH="main"
+   elif git rev-parse --verify refs/heads/master >/dev/null 2>&1; then
+       SOURCE_BRANCH="master"
+   fi
+   ```
+   If both `main` and `master` exist and there's no `origin/HEAD`, we cannot guess — ask the user.
+
+3. **Ask the user** (last resort):
+   ```
+   Both 'main' and 'master' branches exist. Which is the default branch?
+     1. main
+     2. master
+   ```
 
 ## Implementation
 
