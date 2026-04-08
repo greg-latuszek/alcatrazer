@@ -3,6 +3,7 @@ Tests for src/snapshot.py — snapshot extraction from outer repo into workspace
 
 Phase 1: Default branch detection and git repo validation.
 Phase 2: Snapshot extraction, .gitignore filtering, exclusions, initial commit.
+Phase 3: Orchestrator (snapshot_workspace) — full flow integration.
 """
 
 import os
@@ -440,6 +441,127 @@ class TestCreateInitialCommit(unittest.TestCase):
 
             author = git(workspace, "log", "--format=%an <%ae>")
             self.assertEqual(author, "Alcatraz Agent <alcatraz@localhost>")
+
+
+# ── Integration tests: snapshot_workspace orchestrator ────────────────
+
+
+def init_workspace(workspace: str) -> None:
+    """Simulate what initialize_alcatraz.sh does before calling snapshot."""
+    subprocess.run(["git", "init", workspace], capture_output=True, check=True)
+    git(workspace, "config", "user.name", "Alcatraz Agent")
+    git(workspace, "config", "user.email", "alcatraz@localhost")
+    git(workspace, "config", "commit.gpgsign", "false")
+
+
+class TestSnapshotWorkspace(unittest.TestCase):
+    """Integration tests for the full snapshot_workspace orchestrator."""
+
+    def test_full_flow_with_existing_repo(self):
+        """Outer repo with files → workspace has snapshot + initial commit."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            # Add .gitignore with .alcatraz/ rule
+            Path(outer, ".gitignore").write_text("node_modules/\n.alcatraz/\n")
+            git(outer, "add", ".gitignore")
+            git(outer, "commit", "-m", "add gitignore")
+
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # Files from outer are in workspace
+            self.assertTrue(Path(workspace, "file.txt").exists())
+            self.assertEqual(Path(workspace, "file.txt").read_text(), "hello")
+            # .gitignore exists but without .alcatraz/ rule
+            gitignore = Path(workspace, ".gitignore").read_text()
+            self.assertIn("node_modules/", gitignore)
+            self.assertNotIn(".alcatraz/", gitignore)
+            # Exactly one commit
+            count = git(workspace, "rev-list", "--count", "HEAD")
+            self.assertEqual(count, "1")
+            # Correct message
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+
+    def test_full_flow_with_empty_repo(self):
+        """Empty outer repo (no commits) → workspace has empty initial commit."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            subprocess.run(
+                ["git", "init", outer], capture_output=True, check=True,
+            )
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # Empty commit exists
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+            # No files besides .git
+            files = [
+                f.name for f in Path(workspace).iterdir()
+                if f.name != ".git"
+            ]
+            self.assertEqual(files, [])
+
+    def test_full_flow_excludes_env_and_alcatraz(self):
+        """Even if .env and .alcatraz/ are tracked, they don't enter workspace."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            Path(outer, ".env").write_text("SECRET=x")
+            alcatraz = Path(outer, ".alcatraz")
+            alcatraz.mkdir()
+            (alcatraz / "uid").write_text("9999")
+            git(outer, "add", ".")
+            git(outer, "commit", "-m", "add secrets")
+
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            self.assertFalse(Path(workspace, ".env").exists())
+            self.assertFalse(Path(workspace, ".alcatraz").exists())
+            self.assertTrue(Path(workspace, "file.txt").exists())
+
+    def test_not_a_git_repo_raises(self):
+        """Running snapshot_workspace from a non-git dir raises."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(outer)
+            os.makedirs(workspace)
+            with self.assertRaises(snapshot.NotAGitRepoError):
+                snapshot.snapshot_workspace(outer, workspace)
+
+    def test_no_outer_history_leaks(self):
+        """Workspace must have no trace of outer repo's git history."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            # Add multiple commits to outer
+            Path(outer, "second.txt").write_text("two")
+            git(outer, "add", "second.txt")
+            git(outer, "commit", "-m", "second commit with details")
+
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # Only one commit in workspace
+            count = git(workspace, "rev-list", "--count", "HEAD")
+            self.assertEqual(count, "1")
+            # Outer commit messages not visible
+            log = git(workspace, "log", "--format=%s")
+            self.assertNotIn("second commit", log)
+            self.assertNotIn("first commit", log)
 
 
 if __name__ == "__main__":
