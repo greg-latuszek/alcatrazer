@@ -1,6 +1,6 @@
 # Start from Existing Repository
 
-## Status: Implementation (branch: start_from_existing_repo)
+## Status: Complete
 
 ## Problem
 
@@ -174,96 +174,46 @@ Each step is one commit, small enough for human review. Dependencies flow top to
 - `[GREEN]` commit — implementation that makes the test pass
 - `[BLUE]` commit — improvements/cleanup if applicable
 
-### Phase 1: Default branch detection
+### Phase 1: Default branch detection ✅
 
-The snapshot needs to know which branch to extract from. This is a standalone, testable unit.
+**Step 1.1** — `Detect outer repo's default branch` ✅
+**Step 1.2** — `Fail if not inside a git repository` ✅
 
-**Step 1.1** — `Detect outer repo's default branch`
-> A Python function that implements the three-tier detection priority:
-> 1. `origin/HEAD` symbolic ref (authoritative)
-> 2. Existence check — `main` then `master`; fail if both exist without `origin/HEAD`
-> 3. Return `None` if no commits exist (greenfield)
->
-> Must work from the outer repo (the directory where `initialize_alcatraz.sh` runs).
+### Phase 2: Snapshot extraction ✅
 
-**Step 1.2** — `Fail if not inside a git repository`
-> A Python function that verifies the current directory is inside a git working tree. Returns the repo root path, or raises an error with a clear message.
+**Step 2.1** — `Extract snapshot via git archive` ✅
+**Step 2.2** — `Filter .gitignore during snapshot` ✅
+**Step 2.3** — `Exclude .alcatraz/ and .env from snapshot` ✅
+**Step 2.4** — `Create initial commit from snapshot` ✅
 
-### Phase 2: Snapshot extraction
+### Phase 3: Integration into initialize_alcatraz.sh ✅
 
-Extract files from the outer repo's main branch into the workspace. This is the core of the feature.
+**Step 3.1** — `Add snapshot step to initialize_alcatraz.sh` ✅
+> Snapshot implemented in Python (src/snapshot.py). Python resolution reordered to Step 3 (before git init at Step 4). Snapshot calls via `.alcatraz/python src/snapshot.py`. New step order: .env → UID → Python resolution → git init → snapshot → safe.directory.
 
-**Step 2.1** — `Extract snapshot via git archive`
-> A Python function that takes the outer repo path, source branch, and target directory, then runs `git archive <branch> | tar -xf - -C <target>`. Must handle the empty-repo case (no commits → no-op).
+### Phase 4: Reset with unpromoted work warning ✅
 
-**Step 2.2** — `Filter .gitignore during snapshot`
-> After extraction, if `.gitignore` exists in the workspace, remove lines matching `.alcatraz/` (exact rule, not substring — don't filter `.alcatraz-something/`). If filtering leaves the file empty, remove it entirely.
+**Step 4.1** — `Detect unpromoted commits in workspace` ✅
+**Step 4.2** — `Add unpromoted-work warning to --reset flow` ✅
+> Uses `.alcatraz/python` from previous init run. `--force` flag skips prompt.
+**Step 4.3** — `Re-snapshot after reset` ✅
+> Handled by normal init flow — reset falls through to Steps 1-6.
 
-**Step 2.3** — `Exclude .alcatraz/ and .env from snapshot`
-> Verify `git archive` doesn't include `.alcatraz/` or `.env` if they happen to be tracked. Use `git archive` with explicit exclusion (`--worktree-attributes` or tar filtering). Test with a repo where `.env` is tracked — it must not appear in the workspace.
+### Phase 5: End-to-end integration tests ✅
 
-**Step 2.4** — `Create initial commit from snapshot`
-> After files are extracted into the workspace (which already has `git init` from Step 3 of initialize_alcatraz.sh), stage all files and create a commit with message `"Initial commit"`. The commit must use the Alcatraz Agent identity already configured in the workspace. If no files were extracted (greenfield), create an empty initial commit.
+**Step 5.1** — `Integration test: init from existing repo` ✅
+**Step 5.2** — `Integration test: init from empty repo` ✅
+**Step 5.3** — `Integration test: reset with unpromoted work` ✅
 
-### Phase 3: Integration into initialize_alcatraz.sh
+### Phase 6: Documentation ✅
 
-Wire the snapshot into the existing initialization flow.
-
-**Step 3.1** — `Add snapshot step to initialize_alcatraz.sh`
-> Snapshot is implemented in Python (src/snapshot.py — already tested). This requires reordering initialize_alcatraz.sh: Python resolution (currently Step 5) must move before git init (currently Step 3), so `.alcatraz/python` is available when the snapshot step runs. The full regression test suite validates nothing breaks from the reorder.
->
-> New step order: .env → UID → Python resolution → git init → snapshot → safe.directory.
-
-### Phase 4: Reset with unpromoted work warning
-
-Enhance `--reset` to warn about unpromoted commits before destroying the workspace.
-
-**Step 4.1** — `Detect unpromoted commits in workspace`
-> A Python function that checks whether the inner repo has commits that haven't been promoted. Reuses the same logic as `promote.py --dry-run`: run fast-export with import-marks and check if output contains any commits. Returns the count of unpromoted commits.
->
-> Edge cases: marks file doesn't exist (never promoted — all commits are unpromoted), workspace has no commits (nothing to warn about).
-
-**Step 4.2** — `Add unpromoted-work warning to --reset flow`
-> Before destroying the workspace, call the detection function. If unpromoted commits exist, print the warning and prompt (proceed/cancel). If the user cancels, exit without changes. If no unpromoted work exists, proceed silently.
->
-> Must handle non-interactive mode (e.g., `--reset --force` to skip the prompt for scripted usage).
-
-**Step 4.3** — `Re-snapshot after reset`
-> After cleaning the workspace, re-run the snapshot from the outer repo's current main branch. The reset flow becomes: clean → re-init git → re-snapshot → re-configure identity → re-resolve Python (or reuse existing `.alcatraz/python`).
-
-### Phase 5: End-to-end integration test
-
-**Step 5.1** — `Integration test: init from existing repo`
-> Create a temp git repo with files and commits on main. Run the full initialization flow. Verify:
-> - Workspace contains the files from outer main
-> - Workspace has exactly one commit ("Initial commit")
-> - No git history from outer repo is visible
-> - `.gitignore` doesn't contain `.alcatraz/` rule
-> - `.env` is not in the workspace even if tracked in outer repo
-> - `.alcatraz/` directory is not in the workspace
-
-**Step 5.2** — `Integration test: init from empty repo`
-> Create a temp git repo with `git init` but no commits. Run initialization. Verify:
-> - Workspace exists with git initialized
-> - Workspace has an empty initial commit (or no commits — decide during implementation)
-> - No errors during initialization
-
-**Step 5.3** — `Integration test: reset with unpromoted work`
-> Create a workspace with promoted and unpromoted commits. Run `--reset`. Verify:
-> - Warning is displayed with correct unpromoted commit count
-> - Cancel aborts without changes
-> - Proceed destroys and re-snapshots from current outer main
-
-### Phase 6: Documentation
-
-**Step 6.1** — `Update README with snapshot behavior`
-> Document that initialization automatically snapshots the outer repo's main branch. Document `--reset` behavior including the unpromoted work warning. Document the `.gitignore` filtering.
-
-**Step 6.2** — `Mark plan complete`
-> Update status to "Complete" at the top of this document.
+**Step 6.1** — `Update README with snapshot behavior` ✅
+**Step 6.2** — `Mark plan complete` ✅
 
 ### Implementation Notes
 
 Decisions resolved during implementation:
-- **Python for snapshot step (decided):** Snapshot is Python (src/snapshot.py), not bash. Python resolution moves earlier in initialize_alcatraz.sh (before git init). Full regression suite guards the reorder.
-- **Empty initial commit for greenfield:** `git commit --allow-empty -m "Initial commit"` — decide if this is valuable or if an empty workspace with no commits is cleaner.
+- **Python for snapshot step:** Snapshot is Python (src/snapshot.py), not bash. Python resolution moves earlier in initialize_alcatraz.sh (before git init). Full regression suite guards the reorder.
+- **Empty initial commit for greenfield:** `git commit --allow-empty -m "Initial commit"` — yes, greenfield repos get an empty initial commit for consistency.
+- **Unpromoted detection (no marks case):** `git rev-list --count --all` instead of `fast-export --all` (which overcounts). With marks, `fast-export --import-marks` correctly counts only new commits.
+- **114 tests total** covering snapshot (branch detection, extraction, filtering, exclusions, CLI, orchestrator, reset warnings), promotion, daemon, Python resolution, and inspection tool.
