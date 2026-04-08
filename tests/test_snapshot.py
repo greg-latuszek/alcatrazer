@@ -2,6 +2,7 @@
 Tests for src/snapshot.py — snapshot extraction from outer repo into workspace.
 
 Phase 1: Default branch detection and git repo validation.
+Phase 2: Snapshot extraction, .gitignore filtering, exclusions, initial commit.
 """
 
 import os
@@ -157,6 +158,288 @@ class TestDetectDefaultBranch(unittest.TestCase):
             msg = str(ctx.exception)
             self.assertIn("main", msg)
             self.assertIn("master", msg)
+
+
+# ── Unit tests: extract_snapshot ─────────────────────────────────────
+
+
+class TestExtractSnapshot(unittest.TestCase):
+    """Verify git archive extraction into workspace."""
+
+    def test_extracts_files_from_main(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertTrue(Path(workspace, "file.txt").exists())
+            self.assertEqual(Path(workspace, "file.txt").read_text(), "hello")
+
+    def test_extracts_nested_directories(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            # Add a nested file
+            nested = Path(outer) / "src" / "lib"
+            nested.mkdir(parents=True)
+            (nested / "core.py").write_text("print('hi')")
+            git(outer, "add", ".")
+            git(outer, "commit", "-m", "add nested")
+
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertEqual(
+                Path(workspace, "src", "lib", "core.py").read_text(),
+                "print('hi')",
+            )
+
+    def test_noop_for_none_branch(self):
+        """None branch (empty repo) is a no-op — no files extracted."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            # No outer repo needed — None means greenfield
+            snapshot.extract_snapshot(tmp, None, workspace)
+            # Workspace should remain empty (only dirs we created)
+            files = list(Path(workspace).iterdir())
+            self.assertEqual(files, [])
+
+    def test_only_tracked_files_extracted(self):
+        """Untracked files in outer repo are not in the snapshot."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            # Create untracked file
+            Path(outer, "untracked.txt").write_text("secret")
+
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertTrue(Path(workspace, "file.txt").exists())
+            self.assertFalse(Path(workspace, "untracked.txt").exists())
+
+
+# ── Unit tests: filter_gitignore ─────────────────────────────────────
+
+
+class TestFilterGitignore(unittest.TestCase):
+    """Verify .alcatraz/ rule is removed from .gitignore."""
+
+    def test_removes_alcatraz_rule(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            gitignore = Path(tmp) / ".gitignore"
+            gitignore.write_text("node_modules/\n.alcatraz/\n*.pyc\n")
+            snapshot.filter_gitignore(tmp)
+            self.assertEqual(gitignore.read_text(), "node_modules/\n*.pyc\n")
+
+    def test_removes_alcatraz_rule_without_trailing_slash(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            gitignore = Path(tmp) / ".gitignore"
+            gitignore.write_text(".alcatraz\nother\n")
+            snapshot.filter_gitignore(tmp)
+            self.assertEqual(gitignore.read_text(), "other\n")
+
+    def test_does_not_filter_alcatraz_substring(self):
+        """Rules like .alcatraz-something/ must NOT be filtered."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            gitignore = Path(tmp) / ".gitignore"
+            gitignore.write_text(".alcatraz-tools/\n.alcatraz/\n")
+            snapshot.filter_gitignore(tmp)
+            self.assertEqual(gitignore.read_text(), ".alcatraz-tools/\n")
+
+    def test_removes_file_if_empty_after_filter(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            gitignore = Path(tmp) / ".gitignore"
+            gitignore.write_text(".alcatraz/\n")
+            snapshot.filter_gitignore(tmp)
+            self.assertFalse(gitignore.exists())
+
+    def test_noop_if_no_gitignore(self):
+        """No .gitignore file — nothing to filter, no error."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot.filter_gitignore(tmp)  # should not raise
+
+    def test_preserves_comments_and_blank_lines(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            gitignore = Path(tmp) / ".gitignore"
+            gitignore.write_text("# Build output\n\n.alcatraz/\ndist/\n")
+            snapshot.filter_gitignore(tmp)
+            self.assertEqual(gitignore.read_text(), "# Build output\n\ndist/\n")
+
+
+# ── Unit tests: exclude .alcatraz/ and .env ──────────────────────────
+
+
+class TestExclusions(unittest.TestCase):
+    """Verify .alcatraz/ and .env are excluded even if tracked."""
+
+    def test_env_excluded_even_if_tracked(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            # Track .env
+            Path(outer, ".env").write_text("SECRET_KEY=abc")
+            git(outer, "add", ".env")
+            git(outer, "commit", "-m", "add env")
+
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertFalse(Path(workspace, ".env").exists())
+
+    def test_alcatraz_dir_excluded_even_if_tracked(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            # Track .alcatraz/ contents
+            alcatraz = Path(outer) / ".alcatraz"
+            alcatraz.mkdir()
+            (alcatraz / "uid").write_text("9999")
+            git(outer, "add", ".alcatraz/uid")
+            git(outer, "commit", "-m", "add alcatraz")
+
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertFalse(Path(workspace, ".alcatraz").exists())
+
+    def test_regular_files_not_excluded(self):
+        """Sanity check — normal files come through."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            make_repo(outer)
+            Path(outer, ".env.example").write_text("KEY=")
+            git(outer, "add", ".env.example")
+            git(outer, "commit", "-m", "add example")
+
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertTrue(Path(workspace, ".env.example").exists())
+
+
+# ── Unit tests: create_initial_commit ────────────────────────────────
+
+
+class TestCreateInitialCommit(unittest.TestCase):
+    """Verify the initial commit in the workspace."""
+
+    def test_creates_commit_with_files(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+            # Add a file to stage
+            Path(workspace, "app.py").write_text("print('hello')")
+
+            snapshot.create_initial_commit(workspace)
+
+            log = git(workspace, "log", "--oneline")
+            self.assertEqual(log, "Initial commit")
+
+    def test_commit_message_is_generic(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+            Path(workspace, "x.txt").write_text("x")
+
+            snapshot.create_initial_commit(workspace)
+
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+
+    def test_all_files_are_committed(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+            Path(workspace, "a.txt").write_text("a")
+            Path(workspace, "b.txt").write_text("b")
+            subdir = Path(workspace) / "sub"
+            subdir.mkdir()
+            (subdir / "c.txt").write_text("c")
+
+            snapshot.create_initial_commit(workspace)
+
+            status = git(workspace, "status", "--porcelain")
+            self.assertEqual(status, "")  # clean working tree
+
+    def test_empty_commit_for_greenfield(self):
+        """No files → empty initial commit (allow-empty)."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+
+            snapshot.create_initial_commit(workspace)
+
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+
+    def test_exactly_one_commit(self):
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+            Path(workspace, "file.txt").write_text("data")
+
+            snapshot.create_initial_commit(workspace)
+
+            count = git(workspace, "rev-list", "--count", "HEAD")
+            self.assertEqual(count, "1")
+
+    def test_commit_uses_workspace_identity(self):
+        """Commit must use the identity configured in the workspace, not host."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = tmp
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+            git(workspace, "config", "user.name", "Alcatraz Agent")
+            git(workspace, "config", "user.email", "alcatraz@localhost")
+            Path(workspace, "f.txt").write_text("x")
+
+            snapshot.create_initial_commit(workspace)
+
+            author = git(workspace, "log", "--format=%an <%ae>")
+            self.assertEqual(author, "Alcatraz Agent <alcatraz@localhost>")
 
 
 if __name__ == "__main__":
