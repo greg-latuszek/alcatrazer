@@ -210,9 +210,9 @@ Extract files from the outer repo's main branch into the workspace. This is the 
 Wire the snapshot into the existing initialization flow.
 
 **Step 3.1** — `Add snapshot step to initialize_alcatraz.sh`
-> Insert a new step between current Step 3 (init git) and Step 4 (safe.directory). The new step calls the Python snapshot function via `.alcatraz/python`. Must handle the case where Python hasn't been resolved yet — reorder steps if needed (Python resolution may need to move earlier, or snapshot can be done in bash).
+> Snapshot is implemented in Python (src/snapshot.py — already tested). This requires reordering initialize_alcatraz.sh: Python resolution (currently Step 5) must move before git init (currently Step 3), so `.alcatraz/python` is available when the snapshot step runs. The full regression test suite validates nothing breaks from the reorder.
 >
-> Decision point: if the snapshot logic is simple enough in bash (`git archive | tar`, `sed` on `.gitignore`, `git add -A && git commit`), it may not need Python at all. Evaluate during implementation.
+> New step order: .env → UID → Python resolution → git init → snapshot → safe.directory.
 
 ### Phase 4: Reset with unpromoted work warning
 
@@ -264,6 +264,6 @@ Enhance `--reset` to warn about unpromoted commits before destroying the workspa
 
 ### Implementation Notes
 
-Decisions to resolve during implementation:
-- **Bash vs Python for snapshot step:** The snapshot logic (`git archive | tar`, `sed` on `.gitignore`, `git add && commit`) is simple shell. But Python resolution (Step 5) currently runs after git init (Step 3). If snapshot needs Python, Step 5 must move earlier. If snapshot stays bash, no reordering needed.
+Decisions resolved during implementation:
+- **Python for snapshot step (decided):** Snapshot is Python (src/snapshot.py), not bash. Python resolution moves earlier in initialize_alcatraz.sh (before git init). Full regression suite guards the reorder.
 - **Empty initial commit for greenfield:** `git commit --allow-empty -m "Initial commit"` — decide if this is valuable or if an empty workspace with no commits is cleaner.
