@@ -88,8 +88,8 @@ This is Principle 2: **inmates are not aware they live in Alcatraz.**
 - ~~Rename `.alcatraz/`~~ — rejected. `.alcatraz/` is the user-facing brand, should stay.
 - ~~Symlink with generic name~~ — rejected. Docker resolves symlinks; mountinfo still shows real path. Verified experimentally.
 - ~~Run docker-compose from inside `.alcatraz/`~~ — rejected. Docker resolves relative paths to absolute. Verified experimentally.
-- **Docker named volume** — works (no host path in mountinfo), but heavy impact: all host-side tools (promotion daemon, snapshot, reset) lose direct filesystem access to the workspace. Would require running them inside containers or via `docker cp`.
-- **Accept as known limitation** — the leak requires an agent to parse `/proc/self/mountinfo`, recognize `.alcatraz` as meaningful, and find our repo. Low probability compared to the git identity which literally says "Alcatraz." **Chosen for now — revisit if threat model changes.**
+- ~~Docker named volume~~ — rejected. Works (no host path in mountinfo), but requires root access to `/var/lib/docker/volumes/`. Tool claiming to be trustful should not ask end users for sudo.
+- **Separate workspace directory** — **CHOSEN.** Move the workspace out of `.alcatraz/` into a separate directory with a randomly generated generic name (e.g., `.devspace-7f3a/`, `.codework-b2e1/`). `.alcatraz/` stays as tool state only (never mounted into Docker). The workspace directory is mounted into Docker — mountinfo shows the generic name, no Alcatraz trace. See Resolved Question 4 below.
 
 ## Resolved Questions
 
@@ -125,6 +125,32 @@ Generated once per `initialize_alcatraz.sh` run. Stored in `.alcatraz/` for reus
 
 3. ~~**Dockerfile identity: build-time vs runtime?**~~ **Resolved:** Remove git config from Dockerfile entirely. The workspace is mounted with local git config already set by `initialize_alcatraz.sh` (random identity). No global fallback needed — lack of global git config is normal in a Docker container. If agents `git init` outside `/workspace`, git will complain about missing identity, which prevents accidental commits outside the workspace.
 
+### 4. Workspace directory: separate from `.alcatraz/`, randomly named
+
+The workspace moves out of `.alcatraz/` into its own top-level directory with a randomly generated generic name.
+
+**Why:** Docker bind mounts expose the full host path via `/proc/self/mountinfo`. If the workspace lives inside `.alcatraz/`, agents see `.alcatraz` in the mount path. A separate directory with a generic name reveals nothing.
+
+**Directory split:**
+- **`.alcatraz/`** — tool state only: uid, marks, logs, python symlink, agent-identity, config. Never mounted into Docker.
+- **`.<random-name>/`** — workspace git repo only. Mounted into Docker as `/workspace`.
+
+**Name generation:** A pool of generic-looking hidden directory names (thousands of combinations). Pattern examples: `.devspace-<hex>/`, `.codework-<hex>/`, `.project-<hex>/`, `.sandbox-<hex>/`. The name should look like a plausible IDE, tool, or project cache directory — nothing unusual.
+
+**User interaction during init:**
+1. Generator produces thousands of possible names
+2. Three are randomly drawn and presented to the user
+3. User picks one
+4. Selection stored in `.alcatraz/workspace-dir` (the directory name, e.g., `.devspace-7f3a`)
+
+**Both directories are gitignored** — `.alcatraz/` and the chosen workspace directory. The init script adds both to `.gitignore` if not already present.
+
+**Impact on codebase:**
+- `docker-compose.yml` reads workspace path from `.alcatraz/workspace-dir` (or a generated env file)
+- Host tools (promote daemon, snapshot, reset) resolve workspace path from `.alcatraz/workspace-dir`
+- `safe.directory` points to the new path
+- All existing references to `.alcatraz/workspace/` update to use the configured path
+
 ---
 
 ## Detailed Implementation Plan
@@ -146,53 +172,73 @@ A Python module that generates realistic-looking human identities for agents. St
 **Step 1.2** — `Store and retrieve agent identity`
 > Functions to write identity to `.alcatraz/agent-identity` and read it back. Format: two lines, name and email. If file exists, reuse it (identity is stable per workspace). If not, generate and store.
 
-### Phase 2: Wire identity into initialization
+### Phase 2: Random workspace directory name generator
 
-Replace hardcoded "Alcatraz Agent" with the random identity in `initialize_alcatraz.sh`.
+Generate generic-looking hidden directory names for the workspace. Same module as identity generation.
 
-**Step 2.1** — `Generate identity during init, use in workspace git config`
-> `initialize_alcatraz.sh` Step 4 (git init) calls the identity generator via `.alcatraz/python` to produce `.alcatraz/agent-identity`. Then reads name/email from it and sets workspace git config. Replaces hardcoded "Alcatraz Agent" / "alcatraz@localhost".
+**Step 2.1** — `Generate random workspace directory names`
+> A Python function that produces thousands of possible hidden directory names. Pattern: `.{word}-{4-hex}` where `word` is drawn from a pool of generic dev/tool terms (e.g., `devspace`, `codework`, `project`, `sandbox`, `buildenv`, `workspace`, `codebase`, `devenv`, `runspace`, `toolbox`, etc. — ~30 words). Combined with 4 hex chars = ~30 × 65536 ≈ 2 million combinations.
+>
+> A second function draws 3 random names from the pool and returns them as choices for the user.
+
+**Step 2.2** — `Store workspace directory selection`
+> During init, the user picks from 3 options. Selection stored in `.alcatraz/workspace-dir` (just the directory name, e.g., `.devspace-7f3a`). Functions to read/write this file. If file exists, reuse the selection.
+
+### Phase 3: Wire identity and workspace dir into initialization
+
+Replace hardcoded values in `initialize_alcatraz.sh` and restructure directory layout.
+
+**Step 3.1** — `Generate identity during init, use in workspace git config`
+> `initialize_alcatraz.sh` calls the identity generator via `.alcatraz/python` to produce `.alcatraz/agent-identity`. Reads name/email from it and sets workspace git config. Replaces hardcoded "Alcatraz Agent" / "alcatraz@localhost".
 >
 > The snapshot's initial commit (`snapshot.py`) already uses the workspace's git config — no changes needed there.
 
-### Phase 3: Remove identity from Dockerfile
+**Step 3.2** — `Move workspace out of .alcatraz/ into chosen directory`
+> `initialize_alcatraz.sh` calls the workspace dir generator to prompt the user (or reads existing selection from `.alcatraz/workspace-dir`). Creates the chosen directory at the repo root. Moves git init + snapshot + safe.directory to use the new path. Adds the chosen directory to `.gitignore`.
+>
+> All host tools resolve workspace path by reading `.alcatraz/workspace-dir`. A helper function in Python provides this.
+
+**Step 3.3** — `Update docker-compose.yml to use configured workspace path`
+> `docker-compose.yml` reads the workspace directory from an env file or variable. The mount becomes `../<workspace-dir>:/workspace`. The init script generates a `.alcatraz/workspace.env` with `WORKSPACE_DIR=<name>` for docker-compose consumption.
+
+### Phase 4: Remove identity from Dockerfile
 
 The Dockerfile no longer sets git identity. The workspace's local config is sufficient.
 
-**Step 3.1** — `Remove git identity from Dockerfile`
+**Step 4.1** — `Remove git identity from Dockerfile`
 > Remove the `git config --global user.name` and `git config --global user.email` lines from the Dockerfile. Keep `commit.gpgsign false` and `init.defaultBranch main` — these are standard container defaults, not identity.
 
-### Phase 4: Rename ALCATRAZ_UID to USER_UID
+### Phase 5: Rename ALCATRAZ_UID to USER_UID
 
 Remove "alcatraz" from the build arg and runtime environment.
 
-**Step 4.1** — `Rename ALCATRAZ_UID to USER_UID`
+**Step 5.1** — `Rename ALCATRAZ_UID to USER_UID`
 > Rename in: Dockerfile (ARG, RUN, error message), docker-compose.yml (build arg), `initialize_alcatraz.sh` (uid.env generation, variable names), smoke_test.sh (all references). The `.alcatraz/uid.env` file content changes from `ALCATRAZ_UID=...` to `USER_UID=...`.
 
-**Step 4.2** — `Remove uid.env from runtime env_file`
+**Step 5.2** — `Remove uid.env from runtime env_file`
 > Remove the `../.alcatraz/uid.env` entry from docker-compose.yml `env_file` list. `USER_UID` is only needed at build time — it's already baked into the `agent` user. Verify with a test that `USER_UID` is not visible in the container's runtime environment.
 
-### Phase 5: Rename container and service names
+### Phase 6: Rename container and service names
 
 Remove "alcatraz" from all Docker naming visible to agents.
 
-**Step 5.1** — `Rename Dockerfile stages and docker-compose service`
+**Step 6.1** — `Rename Dockerfile stages and docker-compose service`
 > Dockerfile: `alcatraz-base` → `dev-base`, `alcatraz-dev` → `dev`. Docker-compose: service `alcatraz` → `workspace`, container name `agent-alcatraz` → `workspace`, target `alcatraz-dev` → `dev`. Remove "alcatraz" and "alcatrazer" from Dockerfile comments. Update all references in smoke_test.sh, README, and any scripts that reference the service name.
 
-### Phase 6: Smoke test and verification
+### Phase 7: Smoke test and verification
 
 Update the smoke test to verify zero Alcatraz footprint inside the container. This is the safety net — if any future change reintroduces a footprint, this catches it.
 
-**Step 6.1** — `Update smoke test for new identity`
-> Smoke test sections 2, 6, 7 currently assert "Alcatraz Agent". Update to read expected identity from `.alcatraz/agent-identity` and assert against that. Section 3 (env vars) should verify `ALCATRAZ_UID` is NOT present.
+**Step 7.1** — `Update smoke test for new identity`
+> Smoke test sections 2, 6, 7 currently assert "Alcatraz Agent". Update to read expected identity from `.alcatraz/agent-identity` and assert against that. Section 3 (env vars) should verify `ALCATRAZ_UID` / `USER_UID` is NOT present in runtime env.
 
-**Step 6.2** — `Add alcatraz-grep smoke test`
-> New smoke test section: run `env && git config --list && cat /etc/hostname` inside the container, pipe through `grep -i alcatraz`. If any match is found, the test fails. This is a catch-all — if we miss a footprint, this finds it.
+**Step 7.2** — `Add alcatraz-grep smoke test`
+> New smoke test section: run `env && git config --list && cat /etc/hostname && cat /proc/self/mountinfo` inside the container, pipe through `grep -i alcatraz`. If any match is found, the test fails. This is a catch-all — includes mountinfo to verify the workspace directory separation works.
 
-### Phase 7: Documentation
+### Phase 8: Documentation
 
-**Step 7.1** — `Update README and plan`
-> Update README: remove "Alcatraz Agent" references, document that identity is randomly generated, update docker-compose command examples with new service name. Mark plan complete.
+**Step 8.1** — `Update README and plan`
+> Update README: remove "Alcatraz Agent" references, document that identity is randomly generated, document workspace directory selection during init, update docker-compose command examples with new service name, update directory structure diagram. Mark plan complete.
 
 ### Implementation Notes
 
@@ -200,4 +246,5 @@ Decisions to evaluate during implementation:
 - **Identity file format:** Two lines (name, email) vs JSON vs TOML. Two lines is simplest and needs no parser.
 - **Seed for testing:** `random.seed()` for deterministic tests, system entropy for production.
 - **Smoke test scope:** The alcatraz-grep test is a powerful catch-all but may need exceptions for false positives (e.g., if the project IS Alcatrazer being dogfooded).
-- **Migration:** Existing workspaces have "Alcatraz Agent" in their git config. `--reset` will fix this (re-init with new identity). No migration of existing workspaces without reset — document this.
+- **Migration:** Existing workspaces have "Alcatraz Agent" in their git config and live under `.alcatraz/workspace/`. `--reset` will fix this (re-init with new identity, new workspace dir). No migration of existing workspaces without reset — document this.
+- **docker-compose workspace path:** The mount path needs to reference the chosen directory. Options: generate docker-compose.yml from template, or use env var interpolation (`${WORKSPACE_DIR}`). Env var interpolation is simpler.
