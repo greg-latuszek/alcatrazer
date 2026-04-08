@@ -677,5 +677,235 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             self.assertEqual(count, 0)
 
 
+# ── End-to-end: snapshot.py CLI entry point ──────────────────────────
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+SNAPSHOT_SCRIPT = str(PROJECT_DIR / "src" / "snapshot.py")
+
+
+class TestSnapshotCLI(unittest.TestCase):
+    """Test snapshot.py as a CLI tool (called by initialize_alcatraz.sh)."""
+
+    def test_cli_snapshots_existing_repo(self):
+        """CLI with outer-repo and workspace args produces a valid snapshot."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            Path(outer, "app.py").write_text("print('hello')")
+            git(outer, "add", ".")
+            git(outer, "commit", "-m", "add app")
+
+            # Prepare workspace with git init + identity (as init script does)
+            init_workspace(workspace)
+
+            result = subprocess.run(
+                [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(Path(workspace, "file.txt").exists())
+            self.assertTrue(Path(workspace, "app.py").exists())
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+
+    def test_cli_snapshots_empty_repo(self):
+        """CLI with empty outer repo creates workspace with empty commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            subprocess.run(
+                ["git", "init", outer], capture_output=True, check=True,
+            )
+            init_workspace(workspace)
+
+            result = subprocess.run(
+                [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
+
+    def test_cli_fails_for_non_git_dir(self):
+        """CLI exits non-zero when outer dir is not a git repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(outer)
+            os.makedirs(workspace)
+
+            result = subprocess.run(
+                [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_cli_wrong_args(self):
+        """CLI exits non-zero with wrong number of arguments."""
+        result = subprocess.run(
+            [sys.executable, SNAPSHOT_SCRIPT],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Usage", result.stderr)
+
+    def test_cli_gitignore_filtered(self):
+        """CLI filters .alcatraz/ from .gitignore in workspace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            Path(outer, ".gitignore").write_text(
+                "node_modules/\n.alcatraz/\n*.pyc\n"
+            )
+            git(outer, "add", ".gitignore")
+            git(outer, "commit", "-m", "add gitignore")
+
+            init_workspace(workspace)
+            subprocess.run(
+                [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
+                capture_output=True, text=True, check=True,
+            )
+
+            gitignore = Path(workspace, ".gitignore").read_text()
+            self.assertNotIn(".alcatraz/", gitignore)
+            self.assertIn("node_modules/", gitignore)
+            self.assertIn("*.pyc", gitignore)
+
+    def test_cli_env_excluded(self):
+        """CLI excludes .env even if tracked in outer repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            make_repo(outer)
+            Path(outer, ".env").write_text("SECRET=abc")
+            git(outer, "add", ".env")
+            git(outer, "commit", "-m", "add env")
+
+            init_workspace(workspace)
+            subprocess.run(
+                [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
+                capture_output=True, text=True, check=True,
+            )
+
+            self.assertFalse(Path(workspace, ".env").exists())
+            # But other files come through
+            self.assertTrue(Path(workspace, "file.txt").exists())
+
+
+# ── End-to-end: reset with unpromoted work ───────────────────────────
+
+
+class TestResetUnpromotedWarning(unittest.TestCase):
+    """Test the --reset flow's unpromoted work detection.
+
+    These test the Python detection layer end-to-end, not the bash
+    interactive prompt (which requires Docker and is covered by smoke tests).
+    """
+
+    def test_reset_detects_unpromoted_after_agent_work(self):
+        """Full scenario: snapshot → agents commit → detect unpromoted."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            # Outer repo with files
+            make_repo(outer)
+
+            # Initialize workspace with snapshot
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # Simulate agent work inside workspace
+            Path(workspace, "agent_work.py").write_text("# agent code")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: add feature")
+            Path(workspace, "agent_work2.py").write_text("# more code")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: add another feature")
+
+            # All 3 commits (initial + 2 agent) are unpromoted
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 3)
+
+    def test_reset_detects_zero_after_full_promotion(self):
+        """After promoting everything, reset should show no warning."""
+        import snapshot
+        import promote as promote_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            target = str(Path(tmp) / "target")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            make_repo(outer)
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # Agent work
+            Path(workspace, "feature.py").write_text("# feature")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: feature")
+
+            # Promote everything to outer
+            subprocess.run(
+                ["git", "init", target], capture_output=True, check=True,
+            )
+            promote_mod.promote(
+                source=Path(workspace), target=Path(target),
+                name="Dev", email="dev@example.com",
+                marks_dir=Path(marks_dir),
+            )
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 0)
+
+    def test_reset_scenario_partial_promotion(self):
+        """Promote some work, agent adds more — reset detects the new ones."""
+        import snapshot
+        import promote as promote_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            target = str(Path(tmp) / "target")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            make_repo(outer)
+            init_workspace(workspace)
+            snapshot.snapshot_workspace(outer, workspace)
+
+            # First batch of agent work
+            Path(workspace, "batch1.py").write_text("# batch 1")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: batch 1")
+
+            # Promote
+            subprocess.run(
+                ["git", "init", target], capture_output=True, check=True,
+            )
+            promote_mod.promote(
+                source=Path(workspace), target=Path(target),
+                name="Dev", email="dev@example.com",
+                marks_dir=Path(marks_dir),
+            )
+
+            # Second batch — not promoted
+            Path(workspace, "batch2.py").write_text("# batch 2")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: batch 2")
+            Path(workspace, "batch3.py").write_text("# batch 3")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "agent: batch 3")
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
