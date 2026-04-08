@@ -132,17 +132,20 @@ Snapshotting is **automatic**. If the outer repo has tracked files on the main b
 
 When the user runs `--reset`, the workspace is re-snapshotted from the outer repo's current main branch.
 
-**Edge case: agents have already started coding.** The inner workspace may have commits beyond the initial snapshot. Before destroying it, warn the user:
+**Edge case: unpromoted work exists.** Before destroying the workspace, check if the inner repo has commits that haven't been promoted to the outer repo (same detection logic used by the promotion daemon). If unpromoted commits exist, warn the user:
 
 ```
-Warning: agents have ongoing development since snapshot (commit <hash>).
-  1. Break — shutdown Docker, discard inner workspace, re-snapshot, reboot
-  2. Wait — cancel reset, let agents finish
+Warning: N commits in workspace have not been promoted to outer repo.
+Proceeding with --reset will discard them.
+  1. Proceed — shutdown Docker, discard inner workspace, re-snapshot, reboot
+  2. Cancel — abort reset, no changes
 ```
 
-If the user chooses **break**: shutdown Docker container → remove inner `.git` and workspace files → re-snapshot outer main → fresh `git init` + initial commit → reboot Alcatrazer.
+If the user chooses **proceed**: shutdown Docker container → remove inner `.git` and workspace files → re-snapshot outer main → fresh `git init` + initial commit → reboot Alcatrazer.
 
-If the user chooses **wait**: abort the reset, no changes.
+If the user chooses **cancel**: abort the reset, no changes.
+
+**Why we don't detect coding start/end:** Alcatrazer is agent-system-agnostic. Detecting whether agents are actively coding would require knowledge of the specific agentic system running inside Docker (e.g., `ov status` for Overstory, different signals for other systems). We don't want to bind Alcatrazer to any specific agent framework. The end user knows what agents they put inside Alcatrazer and how to check their status — if they request `--reset`, they know the consequences. We just warn about unpromoted work.
 
 ### 4. Large repos — no special handling
 
@@ -158,6 +161,4 @@ Copy the outer repo's `.gitignore` into the workspace, filtering out only the `.
 
 ## Open Questions
 
-1. **How do we know coding has started?** We need to detect whether agents have made changes since the initial snapshot. Options: check if inner repo has commits beyond the initial one, check if there are uncommitted changes, or both.
-
-2. **How do we know coding has ended?** We need to detect whether agents are actively working or idle. This ties into the daemon/monitoring layer — what signal indicates "agents are done"?
+None — all questions resolved. Ready for implementation.
