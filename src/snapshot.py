@@ -5,6 +5,7 @@ Copies the current state of the outer repo's main branch into
 .alcatraz/workspace/ as a flat snapshot (files only, no history).
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -78,3 +79,57 @@ def detect_default_branch(repo: str) -> str | None:
     # No main or master — shouldn't happen if repo has commits,
     # but handle gracefully
     return None
+
+
+def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
+    """Extract files from repo's branch into workspace via git archive.
+
+    If branch is None (greenfield/empty repo), this is a no-op.
+    Excludes .alcatraz/ and .env even if tracked.
+    """
+    if branch is None:
+        return
+
+    # git archive exports tracked files, piped to tar for extraction
+    archive = subprocess.run(
+        ["git", "-C", repo, "archive", branch],
+        capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["tar", "-xf", "-", "-C", workspace,
+         "--exclude=.alcatraz", "--exclude=.env"],
+        input=archive.stdout, check=True,
+    )
+
+
+def filter_gitignore(workspace: str) -> None:
+    """Remove .alcatraz/ rule from .gitignore in workspace.
+
+    Matches exactly '.alcatraz/' or '.alcatraz' (with optional trailing
+    slash and whitespace). Does not match substrings like '.alcatraz-tools/'.
+    Removes the file entirely if empty after filtering.
+    """
+    gitignore = Path(workspace) / ".gitignore"
+    if not gitignore.exists():
+        return
+
+    lines = gitignore.read_text().splitlines(keepends=True)
+    filtered = [
+        line for line in lines
+        if not re.match(r"^\.alcatraz/?\s*$", line)
+    ]
+
+    if not filtered or all(line.strip() == "" for line in filtered):
+        gitignore.unlink()
+    else:
+        gitignore.write_text("".join(filtered))
+
+
+def create_initial_commit(workspace: str) -> None:
+    """Stage all files and create the initial commit in workspace.
+
+    Uses --allow-empty for greenfield repos (no files to commit).
+    Commit identity comes from the workspace's git config.
+    """
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "--allow-empty", "-m", "Initial commit")

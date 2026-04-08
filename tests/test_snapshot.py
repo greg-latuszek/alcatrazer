@@ -353,8 +353,8 @@ class TestCreateInitialCommit(unittest.TestCase):
 
             snapshot.create_initial_commit(workspace)
 
-            log = git(workspace, "log", "--oneline")
-            self.assertEqual(log, "Initial commit")
+            msg = git(workspace, "log", "--format=%s")
+            self.assertEqual(msg, "Initial commit")
 
     def test_commit_message_is_generic(self):
         import snapshot
