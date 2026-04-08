@@ -133,3 +133,24 @@ def create_initial_commit(workspace: str) -> None:
     """
     _git(workspace, "add", "-A")
     _git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
+
+
+def snapshot_workspace(outer_repo: str, workspace: str) -> None:
+    """Full snapshot flow: validate repo, detect branch, extract, filter, commit.
+
+    Called by initialize_alcatraz.sh after git init of the workspace.
+    Expects the workspace to already have git init + identity configured.
+    """
+    require_git_repo(outer_repo)
+    branch = detect_default_branch(outer_repo)
+    extract_snapshot(outer_repo, branch, workspace)
+    filter_gitignore(workspace)
+    create_initial_commit(workspace)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 3:
+        print(f"Usage: {sys.argv[0]} <outer-repo> <workspace>", file=sys.stderr)
+        sys.exit(1)
+    snapshot_workspace(sys.argv[1], sys.argv[2])
