@@ -64,10 +64,12 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 ├── src/                            <-- tool source code
 │   ├── initialize_alcatraz.sh      <-- bash: creates inner repo + finds phantom UID + resolves Python
 │   ├── resolve_python.sh           <-- bash: four-tier Python 3.11+ detection
+│   ├── snapshot.py                 <-- Python: snapshots outer repo into workspace
 │   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
 │   ├── watch_alcatraz.py           <-- Python: auto-promotion daemon
 │   └── inspect_promotion.py        <-- Python: live log viewer
 ├── tests/                          <-- Python unittest test suite
+│   ├── test_snapshot.py
 │   ├── test_promote.py
 │   ├── test_watch_alcatraz.py
 │   ├── test_python_resolution.py
@@ -137,9 +139,12 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
 2. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatraz/uid`
-3. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
-4. Adds the workspace to `git safe.directory` so host git can read it despite phantom UID ownership
-5. Resolves Python 3.11+ for the promotion daemon (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatraz/python` symlink
+3. Resolves Python 3.11+ (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatraz/python` symlink
+4. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
+5. **Snapshots the outer repo's main branch** into the workspace — files only, no git history. Agents start from the current state of your project, not an empty repo. `.gitignore` is copied with the `.alcatraz/` rule filtered out. `.env` and `.alcatraz/` are excluded even if tracked. The workspace gets a single generic "Initial commit" with zero Alcatraz footprint.
+6. Adds the workspace to `git safe.directory` so host git can read it despite phantom UID ownership
+
+If the outer repo has no commits (greenfield project), the snapshot step is a no-op and the workspace starts with an empty initial commit.
 
 ### 2. LLM Authentication
 
@@ -184,7 +189,23 @@ Files created inside the container are owned by the phantom UID and cannot be de
 ./src/initialize_alcatraz.sh --reset
 ```
 
-This removes all Alcatraz contents and reinitializes a fresh inner git repo.
+If the workspace has commits that haven't been promoted to the outer repo, you'll be warned before anything is destroyed:
+
+```
+Warning: 5 commit(s) in workspace have not been promoted to outer repo.
+Proceeding with --reset will discard them.
+
+  1. Proceed — discard workspace, re-snapshot, reinitialize
+  2. Cancel — abort reset, no changes
+```
+
+To skip the prompt (e.g., in scripts):
+
+```bash
+./src/initialize_alcatraz.sh --reset --force
+```
+
+After reset, the workspace is re-snapshotted from the outer repo's current main branch — picking up any changes that were merged since the last initialization.
 
 ## Configuration
 
@@ -335,4 +356,4 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 .alcatraz/python -m unittest discover -s tests -v
 ```
 
-The test suite covers promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.
+The test suite covers snapshot (branch detection, extraction, .gitignore filtering, exclusions, CLI, reset warnings), promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.

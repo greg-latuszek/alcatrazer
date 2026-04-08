@@ -1,6 +1,6 @@
 # Start from Existing Repository
 
-## Status: Planning
+## Status: Complete
 
 ## Problem
 
@@ -162,3 +162,58 @@ Copy the outer repo's `.gitignore` into the workspace, filtering out only the `.
 ## Open Questions
 
 None — all questions resolved. Ready for implementation.
+
+---
+
+## Detailed Implementation Plan
+
+Each step is one commit, small enough for human review. Dependencies flow top to bottom — each step may require previous steps to be in place.
+
+**TDD discipline:** Each step follows the RED/GREEN/BLUE cycle where possible:
+- `[RED]` commit — failing test for the planned functionality
+- `[GREEN]` commit — implementation that makes the test pass
+- `[BLUE]` commit — improvements/cleanup if applicable
+
+### Phase 1: Default branch detection ✅
+
+**Step 1.1** — `Detect outer repo's default branch` ✅
+**Step 1.2** — `Fail if not inside a git repository` ✅
+
+### Phase 2: Snapshot extraction ✅
+
+**Step 2.1** — `Extract snapshot via git archive` ✅
+**Step 2.2** — `Filter .gitignore during snapshot` ✅
+**Step 2.3** — `Exclude .alcatraz/ and .env from snapshot` ✅
+**Step 2.4** — `Create initial commit from snapshot` ✅
+
+### Phase 3: Integration into initialize_alcatraz.sh ✅
+
+**Step 3.1** — `Add snapshot step to initialize_alcatraz.sh` ✅
+> Snapshot implemented in Python (src/snapshot.py). Python resolution reordered to Step 3 (before git init at Step 4). Snapshot calls via `.alcatraz/python src/snapshot.py`. New step order: .env → UID → Python resolution → git init → snapshot → safe.directory.
+
+### Phase 4: Reset with unpromoted work warning ✅
+
+**Step 4.1** — `Detect unpromoted commits in workspace` ✅
+**Step 4.2** — `Add unpromoted-work warning to --reset flow` ✅
+> Uses `.alcatraz/python` from previous init run. `--force` flag skips prompt.
+**Step 4.3** — `Re-snapshot after reset` ✅
+> Handled by normal init flow — reset falls through to Steps 1-6.
+
+### Phase 5: End-to-end integration tests ✅
+
+**Step 5.1** — `Integration test: init from existing repo` ✅
+**Step 5.2** — `Integration test: init from empty repo` ✅
+**Step 5.3** — `Integration test: reset with unpromoted work` ✅
+
+### Phase 6: Documentation ✅
+
+**Step 6.1** — `Update README with snapshot behavior` ✅
+**Step 6.2** — `Mark plan complete` ✅
+
+### Implementation Notes
+
+Decisions resolved during implementation:
+- **Python for snapshot step:** Snapshot is Python (src/snapshot.py), not bash. Python resolution moves earlier in initialize_alcatraz.sh (before git init). Full regression suite guards the reorder.
+- **Empty initial commit for greenfield:** `git commit --allow-empty -m "Initial commit"` — yes, greenfield repos get an empty initial commit for consistency.
+- **Unpromoted detection (no marks case):** `git rev-list --count --all` instead of `fast-export --all` (which overcounts). With marks, `fast-export --import-marks` correctly counts only new commits.
+- **114 tests total** covering snapshot (branch detection, extraction, filtering, exclusions, CLI, orchestrator, reset warnings), promotion, daemon, Python resolution, and inspection tool.

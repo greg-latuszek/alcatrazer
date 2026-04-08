@@ -3,11 +3,12 @@
 # Initialize the alcatraz environment for agentic AI development in Docker.
 #
 # This script:
-# 1. Finds a UID/GID that does not exist on the host (for container isolation)
-# 2. Writes UID to .alcatraz/uid, ensures .env exists for API keys
-# 3. Creates the inner git repo at .alcatraz/workspace/ with Alcatraz Agent identity
-# 4. Adds workspace to safe.directory so host git can read it
-# 5. Resolves Python 3.11+ for the promotion daemon
+# 1. Ensures .env exists for API keys
+# 2. Finds a UID/GID that does not exist on the host (for container isolation)
+# 3. Resolves Python 3.11+ for the promotion daemon and snapshot tool
+# 4. Creates the inner git repo at .alcatraz/workspace/ with Alcatraz Agent identity
+# 5. Snapshots outer repo's main branch into workspace (automatic, no history)
+# 6. Adds workspace to safe.directory so host git can read it
 #
 # Run this once from the host before starting any Docker containers.
 
@@ -24,9 +25,44 @@ ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
 # Files inside .alcatraz/ are owned by the phantom UID and cannot be deleted
 # by the host user directly. We use a disposable Docker container to clean up.
 
-if [ "${1:-}" = "--reset" ]; then
-    echo "Resetting alcatraz..."
+RESET=false
+FORCE=false
+for arg in "$@"; do
+    case "${arg}" in
+        --reset) RESET=true ;;
+        --force) FORCE=true ;;
+    esac
+done
+
+if [ "${RESET}" = true ]; then
     if [ -d "${ALCATRAZ_DIR}" ]; then
+        # Check for unpromoted work before destroying.
+        # Uses .alcatraz/python from the *previous* init run (still on disk).
+        # If Python isn't available (e.g. interrupted first init), skip the warning.
+        PYTHON="${ALCATRAZ_DIR}/python"
+        if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -d "${WORKSPACE_DIR}/.git" ]; then
+            UNPROMOTED=$("${PYTHON}" -c "
+import sys; sys.path.insert(0, '${SCRIPT_DIR}')
+from snapshot import count_unpromoted_commits
+print(count_unpromoted_commits('${WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
+" 2>/dev/null || echo "0")
+            if [ "${UNPROMOTED}" -gt 0 ] 2>/dev/null; then
+                echo ""
+                echo "Warning: ${UNPROMOTED} commit(s) in workspace have not been promoted to outer repo."
+                echo "Proceeding with --reset will discard them."
+                echo ""
+                echo "  1. Proceed — discard workspace, re-snapshot, reinitialize"
+                echo "  2. Cancel — abort reset, no changes"
+                echo ""
+                read -rp "Choose [1/2]: " CHOICE
+                if [ "${CHOICE}" != "1" ]; then
+                    echo "Reset cancelled."
+                    exit 0
+                fi
+            fi
+        fi
+
+        echo "Resetting alcatraz..."
         docker run --rm -v "${ALCATRAZ_DIR}:/workspace" ubuntu:24.04 \
             sh -c "rm -rf /workspace/* /workspace/.*" 2>/dev/null || true
         rmdir "${ALCATRAZ_DIR}" 2>/dev/null || true
@@ -83,7 +119,13 @@ if getent passwd "${ALCATRAZ_UID}" >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- Step 3: Initialize inner git repo ---
+# --- Step 3: Resolve Python 3.11+ for the daemon and snapshot tool ---
+
+"${SCRIPT_DIR}/resolve_python.sh" --alcatraz-dir "${ALCATRAZ_DIR}"
+
+PYTHON="${ALCATRAZ_DIR}/python"
+
+# --- Step 4: Initialize inner git repo ---
 
 if [ -d "${WORKSPACE_DIR}/.git" ]; then
     echo "Alcatraz git repo already exists at ${WORKSPACE_DIR}/.git"
@@ -111,9 +153,16 @@ else
 
     echo ""
     echo "Alcatraz git repo initialized at: ${WORKSPACE_DIR}"
+
+    # --- Step 5: Snapshot outer repo into workspace ---
+    # Copies current main branch files (no history) into workspace.
+    # Filters .alcatraz/ from .gitignore, excludes .env and .alcatraz/.
+    # Creates a single "Initial commit" — zero footprint (Principle 2).
+
+    "${PYTHON}" "${SCRIPT_DIR}/snapshot.py" "${PROJECT_DIR}" "${WORKSPACE_DIR}"
 fi
 
-# --- Step 4: Add safe.directory so host git can read the workspace ---
+# --- Step 6: Add safe.directory so host git can read the workspace ---
 # The workspace is owned by the phantom UID, so git refuses to operate on it
 # by default ("dubious ownership"). Adding it to safe.directory is safe —
 # the directory is ours, created and controlled by our tool.
@@ -127,10 +176,6 @@ else
     git config --global --add safe.directory "${WORKSPACE_ABS}"
     echo "Added ${WORKSPACE_ABS} to git safe.directory"
 fi
-
-# --- Step 5: Resolve Python 3.11+ for the daemon ---
-
-"${SCRIPT_DIR}/resolve_python.sh" --alcatraz-dir "${ALCATRAZ_DIR}"
 
 # --- Summary ---
 
