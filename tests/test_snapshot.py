@@ -564,5 +564,118 @@ class TestSnapshotWorkspace(unittest.TestCase):
             self.assertNotIn("first commit", log)
 
 
+# ── Unit tests: count_unpromoted_commits ─────────────────────────────
+
+
+class TestCountUnpromotedCommits(unittest.TestCase):
+    """Verify detection of unpromoted commits for --reset warning."""
+
+    def _make_workspace_with_commits(self, workspace: str, n: int) -> None:
+        """Create a workspace with n commits beyond initial."""
+        subprocess.run(
+            ["git", "init", workspace], capture_output=True, check=True,
+        )
+        git(workspace, "config", "user.name", "Alcatraz Agent")
+        git(workspace, "config", "user.email", "alcatraz@localhost")
+        git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
+        for i in range(n):
+            Path(workspace, f"file{i}.txt").write_text(f"content {i}")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", f"commit {i}")
+
+    def test_all_unpromoted_when_no_marks(self):
+        """No marks file = never promoted = all commits are unpromoted."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+            self._make_workspace_with_commits(workspace, 3)
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            # 1 initial + 3 work commits = 4 total unpromoted
+            self.assertEqual(count, 4)
+
+    def test_zero_after_full_promotion(self):
+        """After promoting all commits, count should be 0."""
+        import snapshot
+        import promote as promote_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            target = str(Path(tmp) / "target")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            self._make_workspace_with_commits(workspace, 2)
+            # Create target repo and promote
+            subprocess.run(
+                ["git", "init", target], capture_output=True, check=True,
+            )
+            promote_mod.promote(
+                source=Path(workspace), target=Path(target),
+                name="Test", email="test@test.com",
+                marks_dir=Path(marks_dir),
+            )
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 0)
+
+    def test_partial_promotion(self):
+        """Promote some commits, add more — count reflects only new ones."""
+        import snapshot
+        import promote as promote_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            target = str(Path(tmp) / "target")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            self._make_workspace_with_commits(workspace, 2)
+            subprocess.run(
+                ["git", "init", target], capture_output=True, check=True,
+            )
+            promote_mod.promote(
+                source=Path(workspace), target=Path(target),
+                name="Test", email="test@test.com",
+                marks_dir=Path(marks_dir),
+            )
+
+            # Add 2 more commits after promotion
+            Path(workspace, "new1.txt").write_text("new")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "new commit 1")
+            Path(workspace, "new2.txt").write_text("newer")
+            git(workspace, "add", ".")
+            git(workspace, "commit", "-m", "new commit 2")
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 2)
+
+    def test_workspace_with_no_commits(self):
+        """Empty workspace (git init, no commits) returns 0."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+            subprocess.run(
+                ["git", "init", workspace], capture_output=True, check=True,
+            )
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 0)
+
+    def test_workspace_does_not_exist(self):
+        """Non-existent workspace returns 0 (nothing to warn about)."""
+        import snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "nonexistent")
+            marks_dir = str(Path(tmp) / "marks")
+            os.makedirs(marks_dir)
+
+            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
+            self.assertEqual(count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
