@@ -25,9 +25,42 @@ ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
 # Files inside .alcatraz/ are owned by the phantom UID and cannot be deleted
 # by the host user directly. We use a disposable Docker container to clean up.
 
-if [ "${1:-}" = "--reset" ]; then
-    echo "Resetting alcatraz..."
+RESET=false
+FORCE=false
+for arg in "$@"; do
+    case "${arg}" in
+        --reset) RESET=true ;;
+        --force) FORCE=true ;;
+    esac
+done
+
+if [ "${RESET}" = true ]; then
     if [ -d "${ALCATRAZ_DIR}" ]; then
+        # Check for unpromoted work before destroying
+        PYTHON="${ALCATRAZ_DIR}/python"
+        if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -d "${WORKSPACE_DIR}/.git" ]; then
+            UNPROMOTED=$("${PYTHON}" -c "
+import sys; sys.path.insert(0, '${SCRIPT_DIR}')
+from snapshot import count_unpromoted_commits
+print(count_unpromoted_commits('${WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
+" 2>/dev/null || echo "0")
+            if [ "${UNPROMOTED}" -gt 0 ] 2>/dev/null; then
+                echo ""
+                echo "Warning: ${UNPROMOTED} commit(s) in workspace have not been promoted to outer repo."
+                echo "Proceeding with --reset will discard them."
+                echo ""
+                echo "  1. Proceed — discard workspace, re-snapshot, reinitialize"
+                echo "  2. Cancel — abort reset, no changes"
+                echo ""
+                read -rp "Choose [1/2]: " CHOICE
+                if [ "${CHOICE}" != "1" ]; then
+                    echo "Reset cancelled."
+                    exit 0
+                fi
+            fi
+        fi
+
+        echo "Resetting alcatraz..."
         docker run --rm -v "${ALCATRAZ_DIR}:/workspace" ubuntu:24.04 \
             sh -c "rm -rf /workspace/* /workspace/.*" 2>/dev/null || true
         rmdir "${ALCATRAZ_DIR}" 2>/dev/null || true

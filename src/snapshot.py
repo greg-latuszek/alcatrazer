@@ -148,6 +148,37 @@ def snapshot_workspace(outer_repo: str, workspace: str) -> None:
     create_initial_commit(workspace)
 
 
+def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
+    """Count commits in workspace that haven't been promoted.
+
+    Uses the same fast-export + marks logic as promote.py --dry-run.
+    Returns 0 if workspace doesn't exist, has no commits, or all promoted.
+    """
+    workspace_git = Path(workspace) / ".git"
+    if not workspace_git.is_dir():
+        return 0
+
+    # Check if repo has any commits
+    result = _git(workspace, "rev-parse", "HEAD")
+    if result.returncode != 0:
+        return 0
+
+    export_marks = Path(marks_dir) / "promote-export-marks"
+    if not export_marks.exists():
+        # No marks = never promoted = all commits are unpromoted
+        result = _git(workspace, "rev-list", "--count", "--all")
+        return int(result.stdout.strip()) if result.returncode == 0 else 0
+
+    # With marks, fast-export only outputs commits not yet exported
+    cmd = [
+        "git", "-C", workspace, "fast-export", "--all",
+        f"--import-marks={export_marks}",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    commits = re.findall(r"^commit (.+)$", result.stdout, re.MULTILINE)
+    return len(commits)
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) != 3:
