@@ -36,7 +36,9 @@ done
 
 if [ "${RESET}" = true ]; then
     if [ -d "${ALCATRAZ_DIR}" ]; then
-        # Check for unpromoted work before destroying
+        # Check for unpromoted work before destroying.
+        # Uses .alcatraz/python from the *previous* init run (still on disk).
+        # If Python isn't available (e.g. interrupted first init), skip the warning.
         PYTHON="${ALCATRAZ_DIR}/python"
         if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -d "${WORKSPACE_DIR}/.git" ]; then
             UNPROMOTED=$("${PYTHON}" -c "
