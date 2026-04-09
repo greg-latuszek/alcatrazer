@@ -191,6 +191,9 @@ Generate generic-looking hidden directory names for the workspace. Same module a
 
 Replace hardcoded values in `initialize_alcatraz.sh` and restructure directory layout.
 
+**Step 3.0** — `Verify init runs at repository root`
+> `initialize_alcatraz.sh` currently derives `PROJECT_DIR` from the script's location (`dirname of src/`), not from the actual git repo root. Add a guard that verifies `PROJECT_DIR` matches `git rev-parse --show-toplevel`. Both `.alcatraz/` and the workspace directory must be created at the repository root — running init from a subdirectory or a misplaced script would create them in the wrong location.
+
 **Step 3.1** — `Generate identity during init, use in workspace git config`
 > `initialize_alcatraz.sh` calls the identity generator via `.alcatraz/python` to produce `.alcatraz/agent-identity`. Reads name/email from it and sets workspace git config. Replaces hardcoded "Alcatraz Agent" / "alcatraz@localhost".
 >
