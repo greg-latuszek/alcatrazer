@@ -6,7 +6,8 @@
 # 1. Ensures .env exists for API keys
 # 2. Finds a UID/GID that does not exist on the host (for container isolation)
 # 3. Resolves Python 3.11+ for the promotion daemon and snapshot tool
-# 4. Creates the inner git repo at .alcatrazer/workspace/ with Alcatraz Agent identity
+# 3.5. Selects workspace directory (randomly named, separate from .alcatrazer/)
+# 4. Creates the inner git repo in the workspace directory with random identity
 # 5. Snapshots outer repo's main branch into workspace (automatic, no history)
 # 6. Adds workspace to safe.directory so host git can read it
 #
@@ -35,9 +36,9 @@ if [ "$(cd "${PROJECT_DIR}" && pwd)" != "$(cd "${REPO_ROOT}" && pwd)" ]; then
 fi
 
 ALCATRAZ_DIR="${PROJECT_DIR}/.alcatrazer"
-WORKSPACE_DIR="${ALCATRAZ_DIR}/workspace"
 ENV_FILE="${PROJECT_DIR}/.env"
 ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
+# WORKSPACE_DIR is resolved after Python is available (Step 3.5)
 
 # --- Handle --reset flag ---
 # Files inside .alcatrazer/ are owned by the phantom UID and cannot be deleted
@@ -54,15 +55,22 @@ done
 
 if [ "${RESET}" = true ]; then
     if [ -d "${ALCATRAZ_DIR}" ]; then
+        # Resolve workspace dir from stored selection (if available)
+        RESET_WORKSPACE_DIR=""
+        if [ -f "${ALCATRAZ_DIR}/workspace-dir" ]; then
+            RESET_WORKSPACE_NAME=$(cat "${ALCATRAZ_DIR}/workspace-dir" | tr -d '[:space:]')
+            RESET_WORKSPACE_DIR="${PROJECT_DIR}/${RESET_WORKSPACE_NAME}"
+        fi
+
         # Check for unpromoted work before destroying.
         # Uses .alcatrazer/python from the *previous* init run (still on disk).
         # If Python isn't available (e.g. interrupted first init), skip the warning.
         PYTHON="${ALCATRAZ_DIR}/python"
-        if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -d "${WORKSPACE_DIR}/.git" ]; then
+        if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -n "${RESET_WORKSPACE_DIR}" ] && [ -d "${RESET_WORKSPACE_DIR}/.git" ]; then
             UNPROMOTED=$("${PYTHON}" -c "
 import sys; sys.path.insert(0, '${SCRIPT_DIR}')
 from snapshot import count_unpromoted_commits
-print(count_unpromoted_commits('${WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
+print(count_unpromoted_commits('${RESET_WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
 " 2>/dev/null || echo "0")
             if [ "${UNPROMOTED}" -gt 0 ] 2>/dev/null; then
                 echo ""
@@ -81,6 +89,14 @@ print(count_unpromoted_commits('${WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
         fi
 
         echo "Resetting alcatrazer..."
+        # Clean workspace directory (separate from .alcatrazer/)
+        if [ -n "${RESET_WORKSPACE_DIR}" ] && [ -d "${RESET_WORKSPACE_DIR}" ]; then
+            docker run --rm -v "${RESET_WORKSPACE_DIR}:/workspace" ubuntu:24.04 \
+                sh -c "rm -rf /workspace/* /workspace/.*" 2>/dev/null || true
+            rmdir "${RESET_WORKSPACE_DIR}" 2>/dev/null || true
+            echo "Workspace directory cleaned."
+        fi
+        # Clean .alcatrazer/
         docker run --rm -v "${ALCATRAZ_DIR}:/workspace" ubuntu:24.04 \
             sh -c "rm -rf /workspace/* /workspace/.*" 2>/dev/null || true
         rmdir "${ALCATRAZ_DIR}" 2>/dev/null || true
@@ -143,15 +159,59 @@ fi
 
 PYTHON="${ALCATRAZ_DIR}/python"
 
+# --- Step 3.5: Resolve workspace directory ---
+# The workspace lives in a separate directory from .alcatrazer/ (not inside it).
+# This prevents the host path ".alcatrazer" from leaking via Docker's /proc/self/mountinfo.
+# The directory name is randomly generated and user-selected during first init.
+
+WORKSPACE_DIR_FILE="${ALCATRAZ_DIR}/workspace-dir"
+if [ -f "${WORKSPACE_DIR_FILE}" ]; then
+    WORKSPACE_NAME=$(cat "${WORKSPACE_DIR_FILE}" | tr -d '[:space:]')
+else
+    # First init — prompt user to select a workspace directory name
+    echo ""
+    echo "Choose a workspace directory name (this will be mounted into Docker):"
+    CHOICES=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -c "
+from alcatrazer.identity import generate_workspace_choices
+for c in generate_workspace_choices('${PROJECT_DIR}'):
+    print(c)
+")
+    CHOICE1=$(echo "${CHOICES}" | sed -n '1p')
+    CHOICE2=$(echo "${CHOICES}" | sed -n '2p')
+    CHOICE3=$(echo "${CHOICES}" | sed -n '3p')
+    echo "  1. ${CHOICE1}"
+    echo "  2. ${CHOICE2}"
+    echo "  3. ${CHOICE3}"
+    echo ""
+    read -rp "Choose [1/2/3]: " PICK
+    case "${PICK}" in
+        1) WORKSPACE_NAME="${CHOICE1}" ;;
+        2) WORKSPACE_NAME="${CHOICE2}" ;;
+        3) WORKSPACE_NAME="${CHOICE3}" ;;
+        *) WORKSPACE_NAME="${CHOICE1}" ;;
+    esac
+    echo "${WORKSPACE_NAME}" > "${WORKSPACE_DIR_FILE}"
+    echo "Workspace directory: ${WORKSPACE_NAME}"
+fi
+WORKSPACE_DIR="${PROJECT_DIR}/${WORKSPACE_NAME}"
+
+# Add workspace directory to .gitignore if not already present
+GITIGNORE_FILE="${PROJECT_DIR}/.gitignore"
+if [ -f "${GITIGNORE_FILE}" ]; then
+    if ! grep -qxF "${WORKSPACE_NAME}/" "${GITIGNORE_FILE}" 2>/dev/null; then
+        echo "${WORKSPACE_NAME}/" >> "${GITIGNORE_FILE}"
+    fi
+else
+    echo "${WORKSPACE_NAME}/" > "${GITIGNORE_FILE}"
+fi
+
 # --- Step 4: Initialize inner git repo ---
 
 if [ -d "${WORKSPACE_DIR}/.git" ]; then
-    echo "Alcatraz git repo already exists at ${WORKSPACE_DIR}/.git"
+    echo "Workspace git repo already exists at ${WORKSPACE_DIR}/.git"
     echo "To reinitialize, run: ./src/initialize_alcatraz.sh --reset"
 else
-    # Create workspace directory inside .alcatrazer/
-    # .alcatrazer/workspace/ is the only thing mounted into Docker (Principle 2)
-    # Tool state (UID, marks, logs) lives in .alcatrazer/ but outside workspace/
+    # Create workspace directory at repo root (separate from .alcatrazer/)
     mkdir -p "${WORKSPACE_DIR}"
 
     # Initialize a fresh git repo
@@ -174,11 +234,12 @@ else
     git -C "${WORKSPACE_DIR}" config gpg.ssh.allowedSignersFile ""
 
     echo ""
-    echo "Alcatraz git repo initialized at: ${WORKSPACE_DIR}"
+    echo "Workspace git repo initialized at: ${WORKSPACE_DIR}"
 
     # --- Step 5: Snapshot outer repo into workspace ---
     # Copies current main branch files (no history) into workspace.
     # Filters .alcatrazer/ from .gitignore, excludes .env and .alcatrazer/.
+    # Also excludes the workspace dir name from snapshot (in case it was tracked).
     # Creates a single "Initial commit" — zero footprint (Principle 2).
 
     "${PYTHON}" "${SCRIPT_DIR}/snapshot.py" "${PROJECT_DIR}" "${WORKSPACE_DIR}"

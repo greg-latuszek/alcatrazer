@@ -142,17 +142,30 @@ class TestIdentityInInit(unittest.TestCase):
             if f.is_file() and f.suffix == ".py":
                 (pkg_dir / f.name).write_text(f.read_text())
 
+    def _resolve_workspace(self, tmp):
+        """Read workspace path from .alcatrazer/workspace-dir."""
+        ws_file = Path(tmp) / ".alcatrazer" / "workspace-dir"
+        if ws_file.exists():
+            name = ws_file.read_text().strip()
+            return Path(tmp) / name
+        return None
+
     def test_workspace_git_identity_is_not_alcatraz(self):
         """After init, workspace git config must NOT contain 'Alcatraz Agent'."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup_repo_with_init_script(tmp)
-            result = subprocess.run(
+            # Pre-select workspace dir to avoid interactive prompt
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".testws-0001\n")
+
+            subprocess.run(
                 [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
-            workspace = Path(tmp) / ".alcatrazer" / "workspace"
-            if workspace.exists():
+            workspace = self._resolve_workspace(tmp)
+            if workspace and workspace.exists():
                 name = subprocess.run(
                     ["git", "-C", str(workspace), "config", "user.name"],
                     capture_output=True, text=True,
@@ -164,6 +177,10 @@ class TestIdentityInInit(unittest.TestCase):
         """Init should create .alcatrazer/agent-identity file."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup_repo_with_init_script(tmp)
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".testws-0002\n")
+
             subprocess.run(
                 [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
@@ -178,14 +195,18 @@ class TestIdentityInInit(unittest.TestCase):
         """Workspace git config should use the identity from agent-identity file."""
         with tempfile.TemporaryDirectory() as tmp:
             self._setup_repo_with_init_script(tmp)
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".testws-0003\n")
+
             subprocess.run(
                 [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
             identity_file = Path(tmp) / ".alcatrazer" / "agent-identity"
-            workspace = Path(tmp) / ".alcatrazer" / "workspace"
-            if identity_file.exists() and workspace.exists():
+            workspace = self._resolve_workspace(tmp)
+            if identity_file.exists() and workspace and workspace.exists():
                 lines = identity_file.read_text().strip().split("\n")
                 expected_name, expected_email = lines[0], lines[1]
                 actual_name = subprocess.run(
