@@ -200,5 +200,121 @@ class TestIdentityInInit(unittest.TestCase):
                 self.assertEqual(actual_email, expected_email)
 
 
+class TestWorkspaceSeparation(unittest.TestCase):
+    """Verify workspace lives in a separate directory from .alcatrazer/."""
+
+    def _setup_repo_with_init_script(self, tmp):
+        """Create a git repo with the init script at the correct location."""
+        subprocess.run(["git", "init", tmp], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", tmp, "config", "user.name", "Test"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", tmp, "config", "user.email", "test@test.com"],
+            capture_output=True, check=True,
+        )
+        Path(tmp, "README.md").write_text("test")
+        subprocess.run(
+            ["git", "-C", tmp, "add", "."], capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", tmp, "commit", "-m", "init"],
+            capture_output=True, check=True,
+        )
+        # Copy src/ directory
+        src_dir = Path(tmp) / "src"
+        src_dir.mkdir()
+        for f in ["initialize_alcatraz.sh", "resolve_python.sh", "snapshot.py"]:
+            src_file = PROJECT_DIR / "src" / f
+            dest = src_dir / f
+            dest.write_text(src_file.read_text())
+            dest.chmod(0o755)
+        # Copy alcatrazer package
+        pkg_dir = src_dir / "alcatrazer"
+        pkg_dir.mkdir()
+        for f in (PROJECT_DIR / "src" / "alcatrazer").iterdir():
+            if f.is_file() and f.suffix == ".py":
+                (pkg_dir / f.name).write_text(f.read_text())
+
+    def test_workspace_not_inside_alcatrazer(self):
+        """Workspace must NOT be inside .alcatrazer/ directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            # Pre-select workspace dir to avoid interactive prompt
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".devspace-test\n")
+
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            # Workspace should be at repo_root/.devspace-test, NOT .alcatrazer/workspace
+            self.assertTrue(
+                Path(tmp, ".devspace-test", ".git").exists(),
+                "Workspace git not found at the selected directory",
+            )
+            self.assertFalse(
+                Path(tmp, ".alcatrazer", "workspace").exists(),
+                "Workspace should NOT exist inside .alcatrazer/",
+            )
+
+    def test_workspace_dir_stored_in_alcatrazer(self):
+        """The workspace-dir file should record the selected directory name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".sandbox-abcd\n")
+
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            stored = (alcatrazer_dir / "workspace-dir").read_text().strip()
+            self.assertEqual(stored, ".sandbox-abcd")
+
+    def test_workspace_dir_added_to_gitignore(self):
+        """The selected workspace dir should be added to .gitignore."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".codework-ef01\n")
+
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            gitignore = Path(tmp, ".gitignore")
+            self.assertTrue(gitignore.exists())
+            content = gitignore.read_text()
+            self.assertIn(".codework-ef01", content)
+
+    def test_workspace_has_snapshot_from_outer(self):
+        """Workspace in the separate dir should have files from outer repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            alcatrazer_dir = Path(tmp) / ".alcatrazer"
+            alcatrazer_dir.mkdir(exist_ok=True)
+            (alcatrazer_dir / "workspace-dir").write_text(".devbox-1234\n")
+
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            # The outer repo has README.md — it should be in the workspace
+            workspace = Path(tmp, ".devbox-1234")
+            self.assertTrue(
+                Path(workspace, "README.md").exists(),
+                "Outer repo files not snapshotted into workspace",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
