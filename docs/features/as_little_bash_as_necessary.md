@@ -130,19 +130,25 @@ src/alcatrazer/
 ├── snapshot.py             <-- from src/snapshot.py
 ├── daemon.py               <-- from src/watch_alcatraz.py (renamed)
 ├── inspect.py              <-- from src/inspect_promotion.py (renamed)
-└── init.py                 <-- new (Phase 1)
+├── init.py                 <-- new (Phase 1)
+├── container/              <-- Docker templates (from container/)
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── entrypoint.sh
+└── scripts/                <-- bash bootstrap templates (from src/)
+    ├── initialize_alcatraz.sh
+    └── resolve_python.sh
 ```
 
 **Why:**
 - Single importable package: `from alcatrazer import promote, snapshot, identity`
-- Clean PyPI distribution: `pip install alcatrazer` gives `alcatrazer` package
+- Clean PyPI distribution: `pip install alcatrazer` gives everything — Python code, Docker templates, bash bootstrap
 - CLI entry points via `pyproject.toml`: `python -m alcatrazer.promote`, `python -m alcatrazer.daemon`, etc.
+- `alcatrazer init` copies templates (container/, scripts/) into the user's repo — no separate download
 - Tests drop `sys.path.insert(0, ...)` hacks, use `from alcatrazer import ...`
 - Module names improve: `watch_alcatraz.py` → `daemon.py`, `inspect_promotion.py` → `inspect.py`
 
-**What stays outside the package:**
-- `src/initialize_alcatraz.sh` — bash bootstrap
-- `src/resolve_python.sh` — bash bootstrap (pre-Python)
+**Nothing stays outside the package** — everything is inside `src/alcatrazer/`. The package is fully self-contained.
 
 **Step 0.1** — `Move promote.py into alcatrazer package`
 > `git mv src/promote.py src/alcatrazer/promote.py`. Update all imports in tests, daemon, init script. Existing `__main__` block keeps working via `python -m alcatrazer.promote`. Update `initialize_alcatraz.sh` and `mise.toml` references.
@@ -159,8 +165,32 @@ src/alcatrazer/
 **Step 0.5** — `Remove sys.path hacks from all tests`
 > All test files currently do `sys.path.insert(0, str(Path(...) / "src"))`. With the package under `src/`, tests can use `from alcatrazer import promote` directly (with `PYTHONPATH=src` or a proper `pyproject.toml` config). Clean up all test imports.
 
-**Step 0.6** — `Add pyproject.toml package configuration`
-> Configure `pyproject.toml` with package metadata, entry points, and the `src` layout. This enables `pip install -e .` for development and future PyPI publishing.
+**Step 0.6** — `Move container/ and bash scripts into package as templates`
+> `git mv container/ src/alcatrazer/container/` and `git mv src/initialize_alcatraz.sh src/alcatrazer/scripts/initialize_alcatraz.sh`, same for `resolve_python.sh`. These are not importable Python — they're templates that `alcatrazer init` copies into the user's repo. Using `importlib.resources` (stdlib, Python 3.9+) to locate them at runtime.
+>
+> Target layout:
+> ```
+> src/alcatrazer/
+> ├── __init__.py
+> ├── identity.py
+> ├── promote.py
+> ├── snapshot.py
+> ├── daemon.py
+> ├── inspect.py
+> ├── init.py                 <-- new (Phase 1)
+> ├── container/              <-- Docker templates
+> │   ├── Dockerfile
+> │   ├── docker-compose.yml
+> │   └── entrypoint.sh
+> └── scripts/                <-- bash bootstrap templates
+>     ├── initialize_alcatraz.sh
+>     └── resolve_python.sh
+> ```
+>
+> **Why inside the package:** `pip install alcatrazer` becomes self-contained. The `alcatrazer init` command copies templates into the user's repo — no separate download step. Same pattern as `cookiecutter`, `django-admin startproject`, etc. Non-Python files are fully supported via `package_data` in `pyproject.toml`.
+
+**Step 0.7** — `Add pyproject.toml package configuration`
+> Configure `pyproject.toml` with package metadata, entry points, `package_data` (to include container/ and scripts/ templates), and the `src` layout. This enables `pip install -e .` for development and future PyPI publishing.
 
 ### Phase 1: Extract post-Python init logic to Python
 
