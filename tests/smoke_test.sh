@@ -26,8 +26,10 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected ALCATRAZ_UID from .alcatraz/uid
-EXPECTED_UID=$(cat .alcatraz/uid)
+# Load expected values from .alcatrazer/
+EXPECTED_UID=$(cat .alcatrazer/uid)
+EXPECTED_NAME=$(head -1 .alcatrazer/agent-identity)
+EXPECTED_EMAIL=$(tail -1 .alcatrazer/agent-identity)
 
 PASS=0
 FAIL=0
@@ -40,7 +42,7 @@ echo "  Alcatraz Smoke Test"
 echo "========================================="
 
 # Run all checks inside a single container invocation and capture output
-OUTPUT=$(docker compose -f container/docker-compose.yml run --rm alcatraz bash -c '
+OUTPUT=$(docker compose -f container/docker-compose.yml run --rm workspace bash -c '
 # Delimiter-separated sections for reliable parsing
 echo "===SECTION:ID==="
 id
@@ -152,10 +154,15 @@ else
 fi
 
 SECTION=$(get_section "GITCONFIG")
-if echo "${SECTION}" | grep -q "Alcatraz Agent" && ! echo "${SECTION}" | grep -qi "signingkey\s*=\s*/."; then
-    pass "Git config has Alcatraz identity, no host signing key paths"
+if echo "${SECTION}" | grep -qi "alcatraz"; then
+    fail "Global git config contains 'alcatraz': ${SECTION}"
 else
-    fail "Git config may leak host info: ${SECTION}"
+    pass "Global git config has no alcatraz footprint"
+fi
+if echo "${SECTION}" | grep -qi "signingkey\s*=\s*/."; then
+    fail "Global git config leaks host signing key path: ${SECTION}"
+else
+    pass "No host signing key paths in global git config"
 fi
 
 SECTION=$(get_section "SIGNINGKEY")
@@ -177,11 +184,18 @@ echo ""
 echo "--- 3. Environment variables ---"
 SECTION=$(get_section "ENV_SECRETS")
 # Only env vars we explicitly pass should appear — no host secrets leaked
-LEAKED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY|ALCATRAZ_UID" || true)
+LEAKED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY" || true)
 if [ -z "${LEAKED}" ]; then
     pass "No leaked secret-like environment variables from host"
 else
     fail "Unexpected secret-like env vars found: ${LEAKED}"
+fi
+# Verify ALCATRAZ_UID is not in runtime environment (renamed to USER_UID, build-time only)
+ALL_ENV=$(get_section "ENV_SECRETS")
+if echo "${ALL_ENV}" | grep -qi "ALCATRAZ_UID"; then
+    fail "ALCATRAZ_UID visible in runtime environment"
+else
+    pass "ALCATRAZ_UID not in runtime environment"
 fi
 
 # --- 4. Development tools ---
@@ -212,25 +226,35 @@ done
 echo ""
 echo "--- 6. Workspace git config ---"
 SECTION=$(get_section "WORKSPACE_GIT_CONFIG")
-if echo "${SECTION}" | grep -q "user.name=Alcatraz Agent"; then
-    pass "Workspace git user.name is Alcatraz Agent"
+if echo "${SECTION}" | grep -q "user.name=${EXPECTED_NAME}"; then
+    pass "Workspace git user.name matches stored identity: ${EXPECTED_NAME}"
 else
-    fail "Workspace git user.name mismatch: ${SECTION}"
+    fail "Workspace git user.name mismatch (expected '${EXPECTED_NAME}'): ${SECTION}"
 fi
-if echo "${SECTION}" | grep -q "user.email=alcatraz@localhost"; then
-    pass "Workspace git user.email is alcatraz@localhost"
+if echo "${SECTION}" | grep -q "user.email=${EXPECTED_EMAIL}"; then
+    pass "Workspace git user.email matches stored identity: ${EXPECTED_EMAIL}"
 else
-    fail "Workspace git user.email mismatch: ${SECTION}"
+    fail "Workspace git user.email mismatch (expected '${EXPECTED_EMAIL}'): ${SECTION}"
+fi
+if echo "${SECTION}" | grep -qi "alcatraz"; then
+    fail "Workspace git config contains 'alcatraz': ${SECTION}"
+else
+    pass "Workspace git config has no alcatraz footprint"
 fi
 
 # --- 7. Git commit test ---
 echo ""
 echo "--- 7. Git commit ---"
 SECTION=$(get_section "COMMIT_TEST")
-if echo "${SECTION}" | grep -q "Alcatraz Agent|alcatraz@localhost|Alcatraz Agent|alcatraz@localhost"; then
-    pass "Commits are authored and committed as Alcatraz Agent"
+if echo "${SECTION}" | grep -q "${EXPECTED_NAME}|${EXPECTED_EMAIL}|${EXPECTED_NAME}|${EXPECTED_EMAIL}"; then
+    pass "Commits are authored and committed as ${EXPECTED_NAME}"
 else
-    fail "Commit identity mismatch: $(echo "${SECTION}" | tail -1)"
+    fail "Commit identity mismatch (expected '${EXPECTED_NAME} <${EXPECTED_EMAIL}>'): $(echo "${SECTION}" | tail -1)"
+fi
+if echo "${SECTION}" | grep -qi "alcatraz"; then
+    fail "Commit identity contains 'alcatraz': ${SECTION}"
+else
+    pass "Commit identity has no alcatraz footprint"
 fi
 
 # --- 8. Branch and merge ---
@@ -300,14 +324,39 @@ else
     fail "Cleanup may have failed: ${SECTION}"
 fi
 
-# --- 13. Dockerfile rejects build without ALCATRAZ_UID ---
+# --- 13. Dockerfile rejects build without USER_UID ---
 echo ""
-echo "--- 13. Dockerfile requires ALCATRAZ_UID ---"
-BUILD_OUTPUT=$(docker build --build-arg ALCATRAZ_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
-if echo "${BUILD_OUTPUT}" | grep -q "ALCATRAZ_UID build arg is required"; then
-    pass "Dockerfile rejects build without ALCATRAZ_UID"
+echo "--- 13. Dockerfile requires USER_UID ---"
+BUILD_OUTPUT=$(docker build --build-arg USER_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
+if echo "${BUILD_OUTPUT}" | grep -q "USER_UID build arg is required"; then
+    pass "Dockerfile rejects build without USER_UID"
 else
-    fail "Dockerfile should reject build without ALCATRAZ_UID"
+    fail "Dockerfile should reject build without USER_UID"
+fi
+
+# --- 14. Zero alcatraz footprint (catch-all) ---
+# This is the safety net — if any future change reintroduces an alcatraz
+# footprint visible inside the container, this test catches it.
+echo ""
+echo "--- 14. Zero alcatraz footprint ---"
+FOOTPRINT_OUTPUT=$(docker compose -f container/docker-compose.yml run --rm workspace bash -c '
+{
+    echo "=== ENV ==="
+    env 2>/dev/null
+    echo "=== GIT_GLOBAL ==="
+    git config --global --list 2>/dev/null
+    echo "=== GIT_LOCAL ==="
+    git -C /workspace config --local --list 2>/dev/null
+    echo "=== HOSTNAME ==="
+    hostname 2>/dev/null
+    echo "=== MOUNTINFO ==="
+    cat /proc/self/mountinfo 2>/dev/null
+} | grep -i alcatraz || echo "CLEAN"
+' 2>&1)
+if echo "${FOOTPRINT_OUTPUT}" | grep -q "CLEAN"; then
+    pass "No 'alcatraz' found in env, git config, hostname, or mountinfo"
+else
+    fail "Alcatraz footprint detected inside container: ${FOOTPRINT_OUTPUT}"
 fi
 
 # --- Summary ---

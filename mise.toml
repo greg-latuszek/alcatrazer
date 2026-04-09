@@ -56,8 +56,8 @@ description = "Build the Alcatraz container"
 run = ["docker compose -f container/docker-compose.yml build"]
 
 [tasks.docker-run]
-description = "Run the Alcatraz container"
-run = ["docker compose -f container/docker-compose.yml run --rm alcatraz"]
+description = "Run the workspace container"
+run = ["docker compose -f container/docker-compose.yml run --rm workspace"]
 
 [tasks.init]
 description = "Initialize Alcatraz (workspace, UID, Python)"
@@ -69,8 +69,8 @@ run = ["./src/initialize_alcatraz.sh --reset"]
 
 [tasks.start-promotion]
 description = "Start the promotion daemon"
-run = [".alcatraz/python src/watch_alcatraz.py"]
+run = [".alcatrazer/python src/watch_alcatraz.py"]
 
 [tasks.tail-promotion-log]
 description = "Tail the promotion daemon log"
-run = [".alcatraz/python src/inspect_promotion.py"]
+run = [".alcatrazer/python src/inspect_promotion.py"]

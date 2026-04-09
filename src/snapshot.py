@@ -2,7 +2,7 @@
 Snapshot extraction from outer repo into workspace.
 
 Copies the current state of the outer repo's main branch into
-.alcatraz/workspace/ as a flat snapshot (files only, no history).
+.alcatrazer/workspace/ as a flat snapshot (files only, no history).
 """
 
 import re
@@ -85,7 +85,7 @@ def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
     """Extract files from repo's branch into workspace via git archive.
 
     If branch is None (greenfield/empty repo), this is a no-op.
-    Excludes .alcatraz/ and .env even if tracked.
+    Excludes .alcatrazer/ and .env even if tracked.
     """
     if branch is None:
         return
@@ -97,16 +97,16 @@ def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
     )
     subprocess.run(
         ["tar", "-xf", "-", "-C", workspace,
-         "--exclude=.alcatraz", "--exclude=.env"],
+         "--exclude=.alcatrazer", "--exclude=.env"],
         input=archive.stdout, check=True,
     )
 
 
 def filter_gitignore(workspace: str) -> None:
-    """Remove .alcatraz/ rule from .gitignore in workspace.
+    """Remove .alcatrazer/ rule from .gitignore in workspace.
 
-    Matches exactly '.alcatraz/' or '.alcatraz' (with optional trailing
-    slash and whitespace). Does not match substrings like '.alcatraz-tools/'.
+    Matches exactly '.alcatrazer/' or '.alcatrazer' (with optional trailing
+    slash and whitespace). Does not match substrings like '.alcatrazer-tools/'.
     Removes the file entirely if empty after filtering.
     """
     gitignore = Path(workspace) / ".gitignore"
@@ -116,7 +116,7 @@ def filter_gitignore(workspace: str) -> None:
     lines = gitignore.read_text().splitlines(keepends=True)
     filtered = [
         line for line in lines
-        if not re.match(r"^\.alcatraz/?\s*$", line)
+        if not re.match(r"^\.alcatrazer/?\s*$", line)
     ]
 
     if not filtered or all(line.strip() == "" for line in filtered):

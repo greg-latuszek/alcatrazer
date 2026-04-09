@@ -2,12 +2,12 @@
 """
 Live log viewer for the promotion daemon.
 
-Tails .alcatraz/promotion-daemon.log so you can watch promotion
+Tails .alcatrazer/promotion-daemon.log so you can watch promotion
 activity in real time from a separate terminal.
 
 Usage:
-    .alcatraz/python src/inspect_promotion.py
-    .alcatraz/python src/inspect_promotion.py --alcatraz-dir <dir>
+    .alcatrazer/python src/inspect_promotion.py
+    .alcatrazer/python src/inspect_promotion.py --alcatraz-dir <dir>
 """
 
 import sys
@@ -52,14 +52,14 @@ def main():
     args = parser.parse_args()
 
     project_dir = args.project_dir.resolve()
-    alcatraz_dir = (args.alcatraz_dir or project_dir / ".alcatraz").resolve()
+    alcatraz_dir = (args.alcatraz_dir or project_dir / ".alcatrazer").resolve()
     log_file = alcatraz_dir / "promotion-daemon.log"
 
     if not log_file.exists():
         print(f"No log file found at {log_file}")
         print()
         print("The promotion daemon hasn't written any logs yet.")
-        print("Start it with: .alcatraz/python src/watch_alcatraz.py")
+        print("Start it with: .alcatrazer/python src/watch_alcatraz.py")
         sys.exit(1)
 
     tail_follow(log_file)

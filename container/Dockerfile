@@ -1,18 +1,18 @@
 # =============================================================================
-# Stage 1: alcatraz-base
+# Stage 1: dev-base
 # The security layer — reusable across any project, any language.
-# Provides: phantom UID, gosu, git, mise, Claude Code CLI, hardcoded
-# Alcatraz Agent identity. No language-specific tools here.
+# Provides: phantom UID, gosu, git, mise, Claude Code CLI.
+# No language-specific tools here.
 # =============================================================================
 
-FROM ubuntu:24.04 AS alcatraz-base
+FROM ubuntu:24.04 AS dev-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Phantom UID — does not exist on the host. If the container escapes,
 # the process cannot write to any host files.
-ARG ALCATRAZ_UID
-RUN test -n "${ALCATRAZ_UID}" || { echo "ERROR: ALCATRAZ_UID build arg is required. Run ./initialize_alcatraz.sh first."; exit 1; }
+ARG USER_UID
+RUN test -n "${USER_UID}" || { echo "ERROR: USER_UID build arg is required. Run initialization to obtain proper UID (see README for details)."; exit 1; }
 
 # System dependencies for the security/orchestration layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with the phantom UID
-RUN groupadd --gid ${ALCATRAZ_UID} agent && \
-    useradd --uid ${ALCATRAZ_UID} --gid ${ALCATRAZ_UID} --create-home --shell /bin/bash agent
+RUN groupadd --gid ${USER_UID} agent && \
+    useradd --uid ${USER_UID} --gid ${USER_UID} --create-home --shell /bin/bash agent
 
 # Install mise and Claude Code CLI as agent user
 USER agent
@@ -41,24 +41,22 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Activate mise shims
 ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
-# Hardcoded Alcatraz Agent identity — not configurable by design.
-# This prevents users from accidentally leaking real credentials.
-RUN git config --global user.name "Alcatraz Agent" && \
-    git config --global user.email "alcatraz@localhost" && \
-    git config --global commit.gpgsign false && \
-    git config --global init.defaultBranch main
+# No global git identity — the workspace has its own local config
+# (randomly generated identity, set by the init script).
+# Disable commit signing — no access to host signing keys inside container.
+RUN git config --global commit.gpgsign false
 
 # =============================================================================
-# Stage 2: alcatraz-dev
-# Language-specific tools — configured per project via alcatrazer.toml [tools].
+# Stage 2: dev
+# Language-specific tools — configured per project via config.
 # This stage is what end users customize for their stack.
 # =============================================================================
 
-FROM alcatraz-base AS alcatraz-dev
+FROM dev-base AS dev
 
 USER agent
 
-# Tool versions from alcatrazer.toml [tools] — passed as build args
+# Tool versions — passed as build args
 ARG PYTHON_VERSION=3.13
 ARG NODE_VERSION=22
 ARG BUN_VERSION=latest

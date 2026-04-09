@@ -1,7 +1,6 @@
-# Alcatraz workspace - agent workspace with its own .git
-# This directory is mounted into Docker containers and managed by agents.
-# Its contents are promoted to the outer repo via the promotion script.
-.alcatraz/
+# Alcatrazer tool state - uid, marks, logs, python symlink, agent identity, config.
+# Never mounted into Docker. The workspace lives in a separate directory.
+.alcatrazer/
 
 # Environment variables with secrets - never commit
 .env

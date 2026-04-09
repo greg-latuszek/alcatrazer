@@ -24,8 +24,8 @@ def project_dir():
 
 
 def python_bin():
-    """Resolve Python from .alcatraz/python symlink, fall back to sys."""
-    python_file = project_dir() / ".alcatraz" / "python"
+    """Resolve Python from .alcatrazer/python symlink, fall back to sys."""
+    python_file = project_dir() / ".alcatrazer" / "python"
     if python_file.is_symlink() or python_file.exists():
         return str(python_file.resolve())
     import sys
@@ -42,7 +42,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
 
     def tearDown(self):
@@ -152,7 +152,7 @@ class TestWorkspaceCheck(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -183,7 +183,7 @@ class TestPidGuard(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
         # Write minimal toml
         with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
@@ -275,7 +275,7 @@ class TestSignalHandling(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
         with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
@@ -341,9 +341,9 @@ class TestDaemonPromotion(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        # project_dir layout: has .alcatraz/workspace (source) and is itself a git repo (target)
+        # project_dir layout: has .alcatrazer/workspace (source) and is itself a git repo (target)
         self.test_project = self.tmpdir
-        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
         self.workspace = os.path.join(self.alcatraz_dir, "workspace")
 
         # Create the outer (target) repo
@@ -454,7 +454,7 @@ class TestLogRotation(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
-        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
         self.workspace = os.path.join(self.alcatraz_dir, "workspace")
 
         # Create outer repo
@@ -531,7 +531,7 @@ class TestBranchFiltering(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
-        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
         self.workspace = os.path.join(self.alcatraz_dir, "workspace")
 
         # Create outer repo
@@ -641,7 +641,7 @@ class _ConflictTestBase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
-        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
         self.workspace = os.path.join(self.alcatraz_dir, "workspace")
 
         # Create outer repo
@@ -900,7 +900,7 @@ class TestInspectPromotion(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -938,7 +938,7 @@ class TestAlcatrazTreeMode(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
-        self.alcatraz_dir = os.path.join(self.test_project, ".alcatraz")
+        self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
         self.workspace = os.path.join(self.alcatraz_dir, "workspace")
 
         # Create outer repo

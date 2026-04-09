@@ -230,38 +230,38 @@ class TestExtractSnapshot(unittest.TestCase):
 
 
 class TestFilterGitignore(unittest.TestCase):
-    """Verify .alcatraz/ rule is removed from .gitignore."""
+    """Verify .alcatrazer/ rule is removed from .gitignore."""
 
-    def test_removes_alcatraz_rule(self):
+    def test_removes_alcatrazer_rule(self):
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
-            gitignore.write_text("node_modules/\n.alcatraz/\n*.pyc\n")
+            gitignore.write_text("node_modules/\n.alcatrazer/\n*.pyc\n")
             snapshot.filter_gitignore(tmp)
             self.assertEqual(gitignore.read_text(), "node_modules/\n*.pyc\n")
 
-    def test_removes_alcatraz_rule_without_trailing_slash(self):
+    def test_removes_alcatrazer_rule_without_trailing_slash(self):
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
-            gitignore.write_text(".alcatraz\nother\n")
+            gitignore.write_text(".alcatrazer\nother\n")
             snapshot.filter_gitignore(tmp)
             self.assertEqual(gitignore.read_text(), "other\n")
 
-    def test_does_not_filter_alcatraz_substring(self):
-        """Rules like .alcatraz-something/ must NOT be filtered."""
+    def test_does_not_filter_alcatrazer_substring(self):
+        """Rules like .alcatrazer-something/ must NOT be filtered."""
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
-            gitignore.write_text(".alcatraz-tools/\n.alcatraz/\n")
+            gitignore.write_text(".alcatrazer-tools/\n.alcatrazer/\n")
             snapshot.filter_gitignore(tmp)
-            self.assertEqual(gitignore.read_text(), ".alcatraz-tools/\n")
+            self.assertEqual(gitignore.read_text(), ".alcatrazer-tools/\n")
 
     def test_removes_file_if_empty_after_filter(self):
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
-            gitignore.write_text(".alcatraz/\n")
+            gitignore.write_text(".alcatrazer/\n")
             snapshot.filter_gitignore(tmp)
             self.assertFalse(gitignore.exists())
 
@@ -275,16 +275,16 @@ class TestFilterGitignore(unittest.TestCase):
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
-            gitignore.write_text("# Build output\n\n.alcatraz/\ndist/\n")
+            gitignore.write_text("# Build output\n\n.alcatrazer/\ndist/\n")
             snapshot.filter_gitignore(tmp)
             self.assertEqual(gitignore.read_text(), "# Build output\n\ndist/\n")
 
 
-# ── Unit tests: exclude .alcatraz/ and .env ──────────────────────────
+# ── Unit tests: exclude .alcatrazer/ and .env ─────────────────────────
 
 
 class TestExclusions(unittest.TestCase):
-    """Verify .alcatraz/ and .env are excluded even if tracked."""
+    """Verify .alcatrazer/ and .env are excluded even if tracked."""
 
     def test_env_excluded_even_if_tracked(self):
         import snapshot
@@ -301,22 +301,22 @@ class TestExclusions(unittest.TestCase):
             snapshot.extract_snapshot(outer, "main", workspace)
             self.assertFalse(Path(workspace, ".env").exists())
 
-    def test_alcatraz_dir_excluded_even_if_tracked(self):
+    def test_alcatrazer_dir_excluded_even_if_tracked(self):
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             os.makedirs(workspace)
             make_repo(outer)
-            # Track .alcatraz/ contents
-            alcatraz = Path(outer) / ".alcatraz"
-            alcatraz.mkdir()
-            (alcatraz / "uid").write_text("9999")
-            git(outer, "add", ".alcatraz/uid")
-            git(outer, "commit", "-m", "add alcatraz")
+            # Track .alcatrazer/ contents
+            alcatrazer = Path(outer) / ".alcatrazer"
+            alcatrazer.mkdir()
+            (alcatrazer / "uid").write_text("9999")
+            git(outer, "add", ".alcatrazer/uid")
+            git(outer, "commit", "-m", "add alcatrazer")
 
             snapshot.extract_snapshot(outer, "main", workspace)
-            self.assertFalse(Path(workspace, ".alcatraz").exists())
+            self.assertFalse(Path(workspace, ".alcatrazer").exists())
 
     def test_regular_files_not_excluded(self):
         """Sanity check — normal files come through."""
@@ -464,8 +464,8 @@ class TestSnapshotWorkspace(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             make_repo(outer)
-            # Add .gitignore with .alcatraz/ rule
-            Path(outer, ".gitignore").write_text("node_modules/\n.alcatraz/\n")
+            # Add .gitignore with .alcatrazer/ rule
+            Path(outer, ".gitignore").write_text("node_modules/\n.alcatrazer/\n")
             git(outer, "add", ".gitignore")
             git(outer, "commit", "-m", "add gitignore")
 
@@ -475,10 +475,10 @@ class TestSnapshotWorkspace(unittest.TestCase):
             # Files from outer are in workspace
             self.assertTrue(Path(workspace, "file.txt").exists())
             self.assertEqual(Path(workspace, "file.txt").read_text(), "hello")
-            # .gitignore exists but without .alcatraz/ rule
+            # .gitignore exists but without .alcatrazer/ rule
             gitignore = Path(workspace, ".gitignore").read_text()
             self.assertIn("node_modules/", gitignore)
-            self.assertNotIn(".alcatraz/", gitignore)
+            self.assertNotIn(".alcatrazer/", gitignore)
             # Exactly one commit
             count = git(workspace, "rev-list", "--count", "HEAD")
             self.assertEqual(count, "1")
@@ -508,17 +508,17 @@ class TestSnapshotWorkspace(unittest.TestCase):
             ]
             self.assertEqual(files, [])
 
-    def test_full_flow_excludes_env_and_alcatraz(self):
-        """Even if .env and .alcatraz/ are tracked, they don't enter workspace."""
+    def test_full_flow_excludes_env_and_alcatrazer(self):
+        """Even if .env and .alcatrazer/ are tracked, they don't enter workspace."""
         import snapshot
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             make_repo(outer)
             Path(outer, ".env").write_text("SECRET=x")
-            alcatraz = Path(outer, ".alcatraz")
-            alcatraz.mkdir()
-            (alcatraz / "uid").write_text("9999")
+            alcatrazer = Path(outer, ".alcatrazer")
+            alcatrazer.mkdir()
+            (alcatrazer / "uid").write_text("9999")
             git(outer, "add", ".")
             git(outer, "commit", "-m", "add secrets")
 
@@ -526,7 +526,7 @@ class TestSnapshotWorkspace(unittest.TestCase):
             snapshot.snapshot_workspace(outer, workspace)
 
             self.assertFalse(Path(workspace, ".env").exists())
-            self.assertFalse(Path(workspace, ".alcatraz").exists())
+            self.assertFalse(Path(workspace, ".alcatrazer").exists())
             self.assertTrue(Path(workspace, "file.txt").exists())
 
     def test_not_a_git_repo_raises(self):
@@ -751,13 +751,13 @@ class TestSnapshotCLI(unittest.TestCase):
         self.assertIn("Usage", result.stderr)
 
     def test_cli_gitignore_filtered(self):
-        """CLI filters .alcatraz/ from .gitignore in workspace."""
+        """CLI filters .alcatrazer/ from .gitignore in workspace."""
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             make_repo(outer)
             Path(outer, ".gitignore").write_text(
-                "node_modules/\n.alcatraz/\n*.pyc\n"
+                "node_modules/\n.alcatrazer/\n*.pyc\n"
             )
             git(outer, "add", ".gitignore")
             git(outer, "commit", "-m", "add gitignore")
@@ -769,7 +769,7 @@ class TestSnapshotCLI(unittest.TestCase):
             )
 
             gitignore = Path(workspace, ".gitignore").read_text()
-            self.assertNotIn(".alcatraz/", gitignore)
+            self.assertNotIn(".alcatrazer/", gitignore)
             self.assertIn("node_modules/", gitignore)
             self.assertIn("*.pyc", gitignore)
 
