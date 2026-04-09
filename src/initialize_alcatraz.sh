@@ -195,8 +195,13 @@ for c in generate_workspace_choices('${PROJECT_DIR}'):
 fi
 WORKSPACE_DIR="${PROJECT_DIR}/${WORKSPACE_NAME}"
 
-# Generate workspace.env for docker-compose consumption
-echo "WORKSPACE_DIR=${WORKSPACE_NAME}" > "${ALCATRAZ_DIR}/workspace.env"
+# Add WORKSPACE_DIR to .env for docker-compose interpolation
+# (env_file only passes vars into the container, not for compose interpolation)
+if grep -q "^WORKSPACE_DIR=" "${ENV_FILE}" 2>/dev/null; then
+    sed -i "s|^WORKSPACE_DIR=.*|WORKSPACE_DIR=${WORKSPACE_NAME}|" "${ENV_FILE}"
+else
+    echo "WORKSPACE_DIR=${WORKSPACE_NAME}" >> "${ENV_FILE}"
+fi
 
 # Add workspace directory to .gitignore if not already present
 GITIGNORE_FILE="${PROJECT_DIR}/.gitignore"
