@@ -40,7 +40,7 @@ echo "  Alcatraz Smoke Test"
 echo "========================================="
 
 # Run all checks inside a single container invocation and capture output
-OUTPUT=$(docker compose -f container/docker-compose.yml run --rm alcatraz bash -c '
+OUTPUT=$(docker compose -f container/docker-compose.yml run --rm workspace bash -c '
 # Delimiter-separated sections for reliable parsing
 echo "===SECTION:ID==="
 id

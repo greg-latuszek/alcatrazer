@@ -160,7 +160,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ```bash
 docker compose -f container/docker-compose.yml build
-docker compose -f container/docker-compose.yml run --rm alcatraz
+docker compose -f container/docker-compose.yml run --rm workspace
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
@@ -343,7 +343,7 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 ## Workflow
 
 1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python.
-2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm alcatraz` — build and enter the container.
+2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm workspace` — build and enter the container.
 3. `.alcatrazer/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
 5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python src/inspect_promotion.py`.

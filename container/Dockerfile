@@ -1,11 +1,11 @@
 # =============================================================================
-# Stage 1: alcatraz-base
+# Stage 1: dev-base
 # The security layer — reusable across any project, any language.
-# Provides: phantom UID, gosu, git, mise, Claude Code CLI, hardcoded
-# Alcatraz Agent identity. No language-specific tools here.
+# Provides: phantom UID, gosu, git, mise, Claude Code CLI.
+# No language-specific tools here.
 # =============================================================================
 
-FROM ubuntu:24.04 AS alcatraz-base
+FROM ubuntu:24.04 AS dev-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -42,21 +42,21 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
 # No global git identity — the workspace has its own local config
-# (randomly generated identity, set by initialize_alcatraz.sh).
+# (randomly generated identity, set by the init script).
 # Disable commit signing — no access to host signing keys inside container.
 RUN git config --global commit.gpgsign false
 
 # =============================================================================
-# Stage 2: alcatraz-dev
-# Language-specific tools — configured per project via alcatrazer.toml [tools].
+# Stage 2: dev
+# Language-specific tools — configured per project via config.
 # This stage is what end users customize for their stack.
 # =============================================================================
 
-FROM alcatraz-base AS alcatraz-dev
+FROM dev-base AS dev
 
 USER agent
 
-# Tool versions from alcatrazer.toml [tools] — passed as build args
+# Tool versions — passed as build args
 ARG PYTHON_VERSION=3.13
 ARG NODE_VERSION=22
 ARG BUN_VERSION=latest

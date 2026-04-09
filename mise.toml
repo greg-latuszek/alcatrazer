@@ -56,8 +56,8 @@ description = "Build the Alcatraz container"
 run = ["docker compose -f container/docker-compose.yml build"]
 
 [tasks.docker-run]
-description = "Run the Alcatraz container"
-run = ["docker compose -f container/docker-compose.yml run --rm alcatraz"]
+description = "Run the workspace container"
+run = ["docker compose -f container/docker-compose.yml run --rm workspace"]
 
 [tasks.init]
 description = "Initialize Alcatraz (workspace, UID, Python)"

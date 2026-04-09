@@ -4,17 +4,17 @@
 # Run from project root: docker compose -f container/docker-compose.yml ...
 
 services:
-  alcatraz:
+  workspace:
     build:
       context: ..
       dockerfile: container/Dockerfile
-      target: alcatraz-dev
+      target: dev
       args:
         USER_UID: ${USER_UID:?Run initialization first (see README)}
         PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
         NODE_VERSION: ${NODE_VERSION:-22}
         BUN_VERSION: ${BUN_VERSION:-latest}
-    container_name: agent-alcatraz
+    container_name: workspace
     volumes:
       # Mount the workspace directory (separate from .alcatrazer/, randomly named)
       # WORKSPACE_DIR is set in .env by the init script
