@@ -53,7 +53,7 @@ This project uses a nested git architecture — a git repo inside a git repo:
 ```
 your_repo/                          <-- outer repo (host user's identity, has GitHub remote)
 ├── .git/                           <-- outer git
-├── .gitignore                      <-- ignores .alcatraz/, .env
+├── .gitignore                      <-- ignores .alcatrazer/, .env
 ├── alcatrazer.toml                 <-- tool configuration (version controlled)
 ├── .env.example                    <-- template for API keys
 ├── README.md
@@ -75,9 +75,9 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 │   ├── test_python_resolution.py
 │   ├── seed_alcatraz.sh            <-- helper: seeds a repo with realistic branch history
 │   └── smoke_test.sh               <-- Docker integration test
-└── .alcatraz/                      <-- gitignored, entire tool state
+└── .alcatrazer/                    <-- gitignored, tool state only
     ├── workspace/                  <-- mounted into Docker as /workspace
-    │   ├── .git/                   <-- inner git (Alcatraz Agent identity, no remote)
+    │   ├── .git/                   <-- inner git (random agent identity, no remote)
     │   └── ... agent work ...
     ├── python -> /usr/bin/python3  <-- symlink to resolved Python 3.11+
     ├── uid                         <-- phantom UID
@@ -91,7 +91,7 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 ```
 
 - The **outer repo** is the host-side control plane. It holds infrastructure (Dockerfiles, scripts, docs) and receives promoted agent work. It has the host user's real identity and a GitHub remote for pushing.
-- The **inner repo** (`.alcatraz/workspace/`) is the agent workspace. It has a hardcoded throwaway identity, no remote, and no access to host credentials. Only `workspace/` is mounted into Docker — tool state (UID, marks, logs, daemon PID) lives in `.alcatraz/` but outside `workspace/`, invisible to agents.
+- The **inner repo** (`.alcatrazer/workspace/`) is the agent workspace. It has a randomly generated throwaway identity, no remote, and no access to host credentials. Only `workspace/` is mounted into Docker — tool state (UID, marks, logs, daemon PID) lives in `.alcatrazer/` but outside `workspace/`, invisible to agents.
 - **Bootstrap scripts** (`initialize_alcatraz.sh`, `resolve_python.sh`) are bash — they run before Python exists. Everything else is Python (stdlib only, no pip).
 - `alcatrazer.toml` captures configuration decisions and is version controlled.
 
@@ -101,7 +101,7 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 
 The container runs as a **phantom UID** — a user ID that does not exist on the host machine. This provides defense in depth: even if an agent escapes the container, the process cannot write to any host files because no host user matches that UID.
 
-The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.alcatraz/uid` for reuse across container rebuilds.
+The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.alcatrazer/uid` for reuse across container rebuilds.
 
 ### What we protect against
 
@@ -111,7 +111,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ### What agents CAN do
 
-- Read and write files inside `.alcatraz/workspace/` (mounted into the container)
+- Read and write files inside `.alcatrazer/workspace/` (mounted into the container)
 - Create git commits using a throwaway identity (`Alcatraz Agent <alcatraz@localhost>`)
 - Create branches, merge branches, and build complex branch/merge histories
 - Access the internet to communicate with LLM APIs via Claude OAuth or API keys
@@ -122,7 +122,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 - Push to GitHub or any remote repository (no git credentials or SSH keys are available)
 - Access the host user's identity, email, or signing keys
-- Access the host filesystem outside of `.alcatraz/workspace/`
+- Access the host filesystem outside of `.alcatrazer/workspace/`
 - Access the Docker socket or spawn new containers
 - Read host files (SSH keys, GPG keys, git config, shell history, environment variables, etc.)
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
@@ -138,10 +138,10 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 This script:
 1. Creates `.env` from `.env.example` (if it doesn't exist)
-2. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatraz/uid`
-3. Resolves Python 3.11+ (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatraz/python` symlink
-4. Creates `.alcatraz/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
-5. **Snapshots the outer repo's main branch** into the workspace — files only, no git history. Agents start from the current state of your project, not an empty repo. `.gitignore` is copied with the `.alcatraz/` rule filtered out. `.env` and `.alcatraz/` are excluded even if tracked. The workspace gets a single generic "Initial commit" with zero Alcatraz footprint.
+2. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatrazer/uid`
+3. Resolves Python 3.11+ (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatrazer/python` symlink
+4. Creates `.alcatrazer/workspace/` with an isolated git repo configured with the Alcatraz Agent identity
+5. **Snapshots the outer repo's main branch** into the workspace — files only, no git history. Agents start from the current state of your project, not an empty repo. `.gitignore` is copied with the `.alcatrazer/` rule filtered out. `.env` and `.alcatrazer/` are excluded even if tracked. The workspace gets a single generic "Initial commit" with zero Alcatraz footprint.
 6. Adds the workspace to `git safe.directory` so host git can read it despite phantom UID ownership
 
 If the outer repo has no commits (greenfield project), the snapshot step is a no-op and the workspace starts with an empty initial commit.
@@ -170,15 +170,15 @@ You are now inside the container as a non-root agent user. All tools are availab
 In a separate terminal:
 
 ```bash
-.alcatraz/python src/watch_alcatraz.py
+.alcatrazer/python src/watch_alcatraz.py
 ```
 
-The daemon watches `.alcatraz/workspace/` for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
+The daemon watches `.alcatrazer/workspace/` for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
 
 To watch promotion activity:
 
 ```bash
-.alcatraz/python src/inspect_promotion.py
+.alcatrazer/python src/inspect_promotion.py
 ```
 
 ### Resetting Alcatraz
@@ -254,10 +254,10 @@ The promotion script (`src/promote.py`) uses `git fast-export` and `git fast-imp
 If you prefer to promote manually instead of using the daemon:
 
 ```bash
-.alcatraz/python src/promote.py --source .alcatraz/workspace --target .
+.alcatrazer/python src/promote.py --source .alcatrazer/workspace --target .
 
 # Preview what would be promoted:
-.alcatraz/python src/promote.py --source .alcatraz/workspace --target . --dry-run
+.alcatrazer/python src/promote.py --source .alcatrazer/workspace --target . --dry-run
 ```
 
 ### Promotion Modes
@@ -273,7 +273,7 @@ The daemon supports two modes, configured via `mode` in `alcatrazer.toml`:
 If you commit directly to the outer repo on a branch that the daemon is also promoting, the daemon detects the divergence and pauses promotion on that branch. It:
 
 1. Creates a `conflict/resolve-<branch>-<timestamp>` branch containing the agent's version of the work
-2. Logs a warning to `.alcatraz/promotion-daemon.log`
+2. Logs a warning to `.alcatrazer/promotion-daemon.log`
 3. Continues promoting other branches normally
 
 **To resolve:**
@@ -332,7 +332,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 These rules are enforced by the `container/docker-compose.yml` configuration:
 
-1. **Mount only `.alcatraz/workspace/`** as the working volume — never the outer repo or the host home directory.
+1. **Mount only the workspace directory** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
 3. **Never mount `~/.ssh`, `~/.gnupg`, `~/.config`, or `~/.gitconfig`** into the container.
 4. **Never mount the Docker socket** (`/var/run/docker.sock`) — this gives root-equivalent access to the host.
@@ -344,16 +344,16 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 
 1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python.
 2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm alcatraz` — build and enter the container.
-3. `.alcatraz/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
+3. `.alcatrazer/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
-5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatraz/python src/inspect_promotion.py`.
+5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python src/inspect_promotion.py`.
 6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 
 ## Running Tests
 
 ```bash
-.alcatraz/python -m unittest discover -s tests -v
+.alcatrazer/python -m unittest discover -s tests -v
 ```
 
 The test suite covers snapshot (branch detection, extraction, .gitignore filtering, exclusions, CLI, reset warnings), promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.

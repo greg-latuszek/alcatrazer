@@ -8,7 +8,7 @@
 #   3. No mise → offer to install mise, then Python 3.11 via mise
 #   4. User declines everything → ask for manual path to Python 3.11+
 #
-# Creates .alcatraz/python as a symlink to the resolved interpreter.
+# Creates .alcatrazer/python as a symlink to the resolved interpreter.
 #
 # Usage:
 #   src/resolve_python.sh [--alcatraz-dir <dir>]
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ALCATRAZ_DIR="${ALCATRAZ_DIR:-${DEFAULT_PROJECT_DIR}/.alcatraz}"
+ALCATRAZ_DIR="${ALCATRAZ_DIR:-${DEFAULT_PROJECT_DIR}/.alcatrazer}"
 PYTHON_FILE="${ALCATRAZ_DIR}/python"
 
 MIN_MAJOR=3
@@ -109,7 +109,7 @@ if [ -n "${PYTHON3_PATH}" ]; then
             echo "  (resolved from shim ${PYTHON3_PATH})"
         fi
         ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
-        echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
+        echo "Symlinked .alcatrazer/python -> ${REAL_PATH}"
         exit 0
     else
         VERSION=$("${PYTHON3_PATH}" --version 2>&1 || echo "unknown")
@@ -135,7 +135,7 @@ if [ -n "${MISE_PATH}" ]; then
             VERSION=$("${REAL_PATH}" --version 2>&1)
             echo "Installed ${VERSION} via mise at ${REAL_PATH}"
             ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
-            echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
+            echo "Symlinked .alcatrazer/python -> ${REAL_PATH}"
             exit 0
         else
             echo "mise install completed but python3 validation failed."
@@ -167,7 +167,7 @@ if [ -z "${MISE_PATH}" ]; then
                 VERSION=$("${REAL_PATH}" --version 2>&1)
                 echo "Installed ${VERSION} via mise at ${REAL_PATH}"
                 ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
-                echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
+                echo "Symlinked .alcatrazer/python -> ${REAL_PATH}"
                 exit 0
             else
                 echo "mise Python install completed but validation failed."
@@ -189,7 +189,7 @@ if [ -n "${MANUAL_PATH}" ] && validate_python "${MANUAL_PATH}"; then
     VERSION=$("${REAL_PATH}" --version 2>&1)
     echo "Validated ${VERSION} at ${REAL_PATH}"
     ln -sf "${REAL_PATH}" "${PYTHON_FILE}"
-    echo "Symlinked .alcatraz/python -> ${REAL_PATH}"
+    echo "Symlinked .alcatrazer/python -> ${REAL_PATH}"
     exit 0
 fi
 
@@ -198,5 +198,5 @@ echo "ERROR: Python ${MIN_MAJOR}.${MIN_MINOR}+ is required for the promotion dae
 echo "Options:"
 echo "  - Install Python ${MIN_MAJOR}.${MIN_MINOR}+ and re-run this script"
 echo "  - Install mise (https://mise.run) and re-run this script"
-echo "  - Run: src/resolve_python.sh --alcatraz-dir .alcatraz"
+echo "  - Run: src/resolve_python.sh --alcatraz-dir .alcatrazer"
 exit 1

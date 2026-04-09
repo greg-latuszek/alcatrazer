@@ -12,7 +12,7 @@ Author identity priority (lowest to highest):
   3. --author-name / --author-email CLI flags
 
 Usage:
-    .alcatraz/python src/promote.py \\
+    .alcatrazer/python src/promote.py \\
         --source <path-to-source-repo> \\
         --target <path-to-target-repo> \\
         [--author-name "Your Name"] \\
@@ -429,7 +429,7 @@ def main():
 
     source = args.source.resolve()
     target = args.target.resolve()
-    marks_dir = (args.marks_dir or project_dir / ".alcatraz").resolve()
+    marks_dir = (args.marks_dir or project_dir / ".alcatrazer").resolve()
     marks_dir.mkdir(parents=True, exist_ok=True)
 
     # Validate repos

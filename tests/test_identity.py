@@ -124,7 +124,7 @@ class TestGenerateIdentity(unittest.TestCase):
 
 
 class TestStoreRetrieveIdentity(unittest.TestCase):
-    """Verify identity persistence in .alcatraz/agent-identity."""
+    """Verify identity persistence in .alcatrazer/agent-identity."""
 
     def test_store_and_read_back(self):
         from alcatrazer import identity

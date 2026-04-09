@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Auto-promotion daemon — watches .alcatraz/workspace/ for new commits
+Auto-promotion daemon — watches .alcatrazer/workspace/ for new commits
 and promotes them to the outer repo using promote.sh.
 
 Runs on the host side, polling at a configurable interval.
-Silent by default — writes to .alcatraz/promotion-daemon.log.
+Silent by default — writes to .alcatrazer/promotion-daemon.log.
 
 Usage:
-    .alcatraz/python src/watch_alcatraz.py
+    .alcatrazer/python src/watch_alcatraz.py
     src/watch_alcatraz.py [--alcatraz-dir DIR] [--project-dir DIR]
 
 Requires Python 3.11+ (for tomllib).
@@ -113,7 +113,7 @@ def main():
     args = parser.parse_args()
 
     project_dir = args.project_dir.resolve()
-    alcatraz_dir = (args.alcatraz_dir or project_dir / ".alcatraz").resolve()
+    alcatraz_dir = (args.alcatraz_dir or project_dir / ".alcatrazer").resolve()
     pid_file = alcatraz_dir / "promotion-daemon.pid"
     toml_file = project_dir / "alcatrazer.toml"
 

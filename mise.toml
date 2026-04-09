@@ -69,8 +69,8 @@ run = ["./src/initialize_alcatraz.sh --reset"]
 
 [tasks.start-promotion]
 description = "Start the promotion daemon"
-run = [".alcatraz/python src/watch_alcatraz.py"]
+run = [".alcatrazer/python src/watch_alcatraz.py"]
 
 [tasks.tail-promotion-log]
 description = "Tail the promotion daemon log"
-run = [".alcatraz/python src/inspect_promotion.py"]
+run = [".alcatrazer/python src/inspect_promotion.py"]

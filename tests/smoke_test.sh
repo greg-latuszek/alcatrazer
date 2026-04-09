@@ -26,8 +26,8 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected ALCATRAZ_UID from .alcatraz/uid
-EXPECTED_UID=$(cat .alcatraz/uid)
+# Load expected ALCATRAZ_UID from .alcatrazer/uid
+EXPECTED_UID=$(cat .alcatrazer/uid)
 
 PASS=0
 FAIL=0

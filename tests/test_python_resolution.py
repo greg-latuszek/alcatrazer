@@ -84,7 +84,7 @@ class ResolutionTestBase(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatraz")
+        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
         self.fakebin = os.path.join(self.tmpdir, "fakebin")
         os.makedirs(self.alcatraz_dir)
         os.makedirs(self.fakebin)

@@ -6,7 +6,7 @@
 # 1. Ensures .env exists for API keys
 # 2. Finds a UID/GID that does not exist on the host (for container isolation)
 # 3. Resolves Python 3.11+ for the promotion daemon and snapshot tool
-# 4. Creates the inner git repo at .alcatraz/workspace/ with Alcatraz Agent identity
+# 4. Creates the inner git repo at .alcatrazer/workspace/ with Alcatraz Agent identity
 # 5. Snapshots outer repo's main branch into workspace (automatic, no history)
 # 6. Adds workspace to safe.directory so host git can read it
 #
@@ -16,13 +16,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
-ALCATRAZ_DIR="${PROJECT_DIR}/.alcatraz"
+ALCATRAZ_DIR="${PROJECT_DIR}/.alcatrazer"
 WORKSPACE_DIR="${ALCATRAZ_DIR}/workspace"
 ENV_FILE="${PROJECT_DIR}/.env"
 ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
 
 # --- Handle --reset flag ---
-# Files inside .alcatraz/ are owned by the phantom UID and cannot be deleted
+# Files inside .alcatrazer/ are owned by the phantom UID and cannot be deleted
 # by the host user directly. We use a disposable Docker container to clean up.
 
 RESET=false
@@ -37,7 +37,7 @@ done
 if [ "${RESET}" = true ]; then
     if [ -d "${ALCATRAZ_DIR}" ]; then
         # Check for unpromoted work before destroying.
-        # Uses .alcatraz/python from the *previous* init run (still on disk).
+        # Uses .alcatrazer/python from the *previous* init run (still on disk).
         # If Python isn't available (e.g. interrupted first init), skip the warning.
         PYTHON="${ALCATRAZ_DIR}/python"
         if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -d "${WORKSPACE_DIR}/.git" ]; then
@@ -62,13 +62,13 @@ print(count_unpromoted_commits('${WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
             fi
         fi
 
-        echo "Resetting alcatraz..."
+        echo "Resetting alcatrazer..."
         docker run --rm -v "${ALCATRAZ_DIR}:/workspace" ubuntu:24.04 \
             sh -c "rm -rf /workspace/* /workspace/.*" 2>/dev/null || true
         rmdir "${ALCATRAZ_DIR}" 2>/dev/null || true
-        echo "Alcatraz directory cleaned."
+        echo "Alcatrazer directory cleaned."
     else
-        echo "No alcatraz directory to clean."
+        echo "No alcatrazer directory to clean."
     fi
     echo "Re-running initialization..."
     echo ""
@@ -93,7 +93,7 @@ if [ -f "${UID_FILE}" ]; then
     ALCATRAZ_UID=$(cat "${UID_FILE}")
     # Regenerate uid.env in case it was lost (e.g. after reset)
     echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
-    echo "Reusing stored alcatraz UID: ${ALCATRAZ_UID} (from .alcatraz/uid)"
+    echo "Reusing stored alcatraz UID: ${ALCATRAZ_UID} (from .alcatrazer/uid)"
 else
     # Find the first UID >= 1001 that does not exist on the host.
     # This ensures the container user has no matching host account,
@@ -109,13 +109,13 @@ else
     echo "${ALCATRAZ_UID}" > "${UID_FILE}"
     # Also write as env var for docker-compose consumption
     echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
-    echo "Selected alcatraz UID/GID: ${ALCATRAZ_UID} (written to .alcatraz/uid)"
+    echo "Selected alcatraz UID/GID: ${ALCATRAZ_UID} (written to .alcatrazer/uid)"
 fi
 
 # Verify the UID still doesn't exist on this host (in case of machine change)
 if getent passwd "${ALCATRAZ_UID}" >/dev/null 2>&1; then
     echo "WARNING: UID ${ALCATRAZ_UID} now exists on this host!"
-    echo "Delete .alcatraz/uid and re-run this script to pick a new UID."
+    echo "Delete .alcatrazer/uid and re-run this script to pick a new UID."
     exit 1
 fi
 
@@ -131,9 +131,9 @@ if [ -d "${WORKSPACE_DIR}/.git" ]; then
     echo "Alcatraz git repo already exists at ${WORKSPACE_DIR}/.git"
     echo "To reinitialize, run: ./src/initialize_alcatraz.sh --reset"
 else
-    # Create workspace directory inside .alcatraz/
-    # .alcatraz/workspace/ is the only thing mounted into Docker (Principle 2)
-    # Tool state (UID, marks, logs) lives in .alcatraz/ but outside workspace/
+    # Create workspace directory inside .alcatrazer/
+    # .alcatrazer/workspace/ is the only thing mounted into Docker (Principle 2)
+    # Tool state (UID, marks, logs) lives in .alcatrazer/ but outside workspace/
     mkdir -p "${WORKSPACE_DIR}"
 
     # Initialize a fresh git repo
@@ -156,7 +156,7 @@ else
 
     # --- Step 5: Snapshot outer repo into workspace ---
     # Copies current main branch files (no history) into workspace.
-    # Filters .alcatraz/ from .gitignore, excludes .env and .alcatraz/.
+    # Filters .alcatrazer/ from .gitignore, excludes .env and .alcatrazer/.
     # Creates a single "Initial commit" — zero footprint (Principle 2).
 
     "${PYTHON}" "${SCRIPT_DIR}/snapshot.py" "${PROJECT_DIR}" "${WORKSPACE_DIR}"
