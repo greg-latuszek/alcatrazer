@@ -43,9 +43,8 @@ ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
 # No global git identity — the workspace has its own local config
 # (randomly generated identity, set by initialize_alcatraz.sh).
-# These global defaults are standard container settings, not identity.
-RUN git config --global commit.gpgsign false && \
-    git config --global init.defaultBranch main
+# Disable commit signing — no access to host signing keys inside container.
+RUN git config --global commit.gpgsign false
 
 # =============================================================================
 # Stage 2: alcatraz-dev
