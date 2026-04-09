@@ -182,15 +182,44 @@ src/alcatrazer/
 > │   ├── Dockerfile
 > │   ├── docker-compose.yml
 > │   └── entrypoint.sh
-> └── scripts/                <-- bash bootstrap templates
->     ├── initialize_alcatraz.sh
->     └── resolve_python.sh
+> ├── scripts/                <-- bash bootstrap templates
+> │   ├── initialize_alcatraz.sh
+> │   └── resolve_python.sh
+> └── tests/                  <-- bundled test suite (trust & verification)
+>     ├── __init__.py
+>     ├── test_promote.py
+>     ├── test_snapshot.py
+>     ├── test_identity.py
+>     ├── test_initialize.py
+>     ├── test_watch.py
+>     ├── test_python_resolution.py
+>     ├── test_smoke.py        <-- Phase 2: converted from smoke_test.sh
+>     └── seed_alcatraz.sh     <-- test fixture
 > ```
 >
 > **Why inside the package:** `pip install alcatrazer` becomes self-contained. The `alcatrazer init` command copies templates into the user's repo — no separate download step. Same pattern as `cookiecutter`, `django-admin startproject`, etc. Non-Python files are fully supported via `package_data` in `pyproject.toml`.
 
-**Step 0.7** — `Add pyproject.toml package configuration`
-> Configure `pyproject.toml` with package metadata, entry points, `package_data` (to include container/ and scripts/ templates), and the `src` layout. This enables `pip install -e .` for development and future PyPI publishing.
+**Step 0.7** — `Move tests/ into alcatrazer package`
+> `git mv tests/ src/alcatrazer/tests/`, add `__init__.py`. Tests are bundled with the installation so end users can:
+> 1. Run all tests on installed code: `alcatrazer test` — proves installed sources match what was tested on GitHub
+> 2. Read the tests — target audience is developers who want to understand and verify the security model
+>
+> Same pattern as `numpy.test()`, `scipy.test()`, Django's `django.test`. Established practice for trust-critical packages.
+>
+> Update all test discovery commands (mise.toml, README, CI).
+
+**Step 0.8** — `Add alcatrazer test command`
+> Entry point in `pyproject.toml` that runs the bundled test suite. Implementation: `alcatrazer test` invokes `unittest.discover` on the `alcatrazer.tests` package. Optionally accepts `--smoke` flag to also run Docker-based smoke tests (requires Docker).
+>
+> This is a trust feature — the user installs alcatrazer and immediately verifies it works:
+> ```bash
+> pip install alcatrazer
+> alcatrazer test          # run unit tests — verify installed code
+> alcatrazer test --smoke  # also run Docker smoke tests
+> ```
+
+**Step 0.9** — `Add pyproject.toml package configuration`
+> Configure `pyproject.toml` with package metadata, entry points (`alcatrazer` CLI with `init`, `test`, `promote`, `daemon`, `inspect` subcommands), `package_data` (to include container/, scripts/, and tests/ content), and the `src` layout. This enables `pip install -e .` for development and future PyPI publishing.
 
 ### Phase 1: Extract post-Python init logic to Python
 
