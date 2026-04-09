@@ -242,36 +242,99 @@ class TestGenerateWorkspaceDirName(unittest.TestCase):
 
 
 class TestGenerateWorkspaceChoices(unittest.TestCase):
-    """Verify 3 random choices are presented to the user."""
+    """Verify 3 collision-free choices are presented to the user."""
 
     def test_returns_three_choices(self):
         from alcatrazer import identity
-        choices = identity.generate_workspace_choices()
-        self.assertEqual(len(choices), 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            choices = identity.generate_workspace_choices(tmp)
+            self.assertEqual(len(choices), 3)
 
     def test_choices_are_unique(self):
         from alcatrazer import identity
-        choices = identity.generate_workspace_choices()
-        self.assertEqual(len(set(choices)), 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            choices = identity.generate_workspace_choices(tmp)
+            self.assertEqual(len(set(choices)), 3)
 
     def test_choices_are_sorted(self):
         from alcatrazer import identity
-        choices = identity.generate_workspace_choices()
-        self.assertEqual(choices, sorted(choices))
+        with tempfile.TemporaryDirectory() as tmp:
+            choices = identity.generate_workspace_choices(tmp)
+            self.assertEqual(choices, sorted(choices))
 
     def test_calls_generate_workspace_dir_name(self):
         """Verify it delegates to generate_workspace_dir_name."""
         from alcatrazer import identity
-        with patch.object(
-            identity, "generate_workspace_dir_name",
-            side_effect=[".devspace-0001", ".sandbox-0002", ".codelab-0003"],
-        ) as mock:
-            choices = identity.generate_workspace_choices()
-            self.assertEqual(mock.call_count, 3)
-            self.assertEqual(
-                choices,
-                [".codelab-0003", ".devspace-0001", ".sandbox-0002"],
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                identity, "generate_workspace_dir_name",
+                side_effect=[".devspace-0001", ".sandbox-0002", ".codelab-0003"],
+            ) as mock:
+                choices = identity.generate_workspace_choices(tmp)
+                self.assertEqual(mock.call_count, 3)
+                self.assertEqual(
+                    choices,
+                    [".codelab-0003", ".devspace-0001", ".sandbox-0002"],
+                )
+
+    def test_skips_existing_directories(self):
+        """Names that collide with existing dirs are skipped."""
+        from alcatrazer import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            # Pre-create a dir that matches one of the generated names
+            with patch.object(
+                identity, "generate_workspace_dir_name",
+                side_effect=[
+                    ".devspace-0001",   # exists — skip
+                    ".sandbox-0002",    # ok
+                    ".codelab-0003",    # ok
+                    ".runkit-0004",     # ok
+                ],
+            ):
+                os.makedirs(os.path.join(tmp, ".devspace-0001"))
+                choices = identity.generate_workspace_choices(tmp)
+                self.assertEqual(len(choices), 3)
+                self.assertNotIn(".devspace-0001", choices)
+                self.assertIn(".sandbox-0002", choices)
+                self.assertIn(".codelab-0003", choices)
+                self.assertIn(".runkit-0004", choices)
+
+    def test_skips_multiple_collisions(self):
+        """Multiple collisions are handled — keeps generating until 3 found."""
+        from alcatrazer import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                identity, "generate_workspace_dir_name",
+                side_effect=[
+                    ".devspace-0001",   # exists — skip
+                    ".sandbox-0002",    # exists — skip
+                    ".codelab-0003",    # ok
+                    ".runkit-0004",     # ok
+                    ".devbox-0005",     # ok
+                ],
+            ):
+                os.makedirs(os.path.join(tmp, ".devspace-0001"))
+                os.makedirs(os.path.join(tmp, ".sandbox-0002"))
+                choices = identity.generate_workspace_choices(tmp)
+                self.assertEqual(len(choices), 3)
+                self.assertNotIn(".devspace-0001", choices)
+                self.assertNotIn(".sandbox-0002", choices)
+
+    def test_skips_duplicate_names(self):
+        """Duplicate generated names are skipped (uniqueness)."""
+        from alcatrazer import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                identity, "generate_workspace_dir_name",
+                side_effect=[
+                    ".devspace-0001",
+                    ".devspace-0001",   # duplicate — skip
+                    ".sandbox-0002",
+                    ".codelab-0003",
+                ],
+            ):
+                choices = identity.generate_workspace_choices(tmp)
+                self.assertEqual(len(choices), 3)
 
 
 # ── Unit tests: store and retrieve workspace dir ─────────────────────

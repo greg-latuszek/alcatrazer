@@ -181,7 +181,10 @@ Generate generic-looking hidden directory names for the workspace. Same module a
 >
 > A second function draws 3 random names from the pool and returns them as choices for the user.
 
-**Step 2.2** — `Store workspace directory selection`
+**Step 2.2** — `Collision-safe workspace choices`
+> `generate_workspace_choices()` takes a `repo_root` path and only returns names that don't collide with existing directories. If a generated name already exists at `repo_root/.name`, skip it and generate another. Continue until 3 non-colliding names are found. With ~2M combinations, collisions are near-impossible but must be handled.
+
+**Step 2.3** — `Store workspace directory selection`
 > During init, the user picks from 3 options. Selection stored in `.alcatraz/workspace-dir` (just the directory name, e.g., `.devspace-7f3a`). Functions to read/write this file. If file exists, reuse the selection.
 
 ### Phase 3: Wire identity and workspace dir into initialization
