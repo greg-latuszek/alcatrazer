@@ -2,6 +2,7 @@
 Tests for src/identity.py — random agent identity and workspace directory generation.
 
 Phase 1: Identity generation and storage.
+Phase 2: Workspace directory name generation and storage.
 """
 
 import os
@@ -175,6 +176,122 @@ class TestStoreRetrieveIdentity(unittest.TestCase):
             first = identity.ensure_identity(tmp)
             second = identity.ensure_identity(tmp)
             self.assertEqual(first, second)
+
+
+# ── Unit tests: generate_workspace_dir_name ──────────────────────────
+
+
+class TestGenerateWorkspaceDirName(unittest.TestCase):
+    """Verify random workspace directory name generation."""
+
+    def test_returns_string(self):
+        import identity
+        name = identity.generate_workspace_dir_name()
+        self.assertIsInstance(name, str)
+
+    def test_starts_with_dot(self):
+        """Directory name is hidden (starts with dot)."""
+        import identity
+        name = identity.generate_workspace_dir_name()
+        self.assertTrue(name.startswith("."), f"Expected hidden dir, got '{name}'")
+
+    def test_pattern_word_dash_hex(self):
+        """Matches .{word}-{4hex} pattern."""
+        import identity
+        import re
+        for seed in range(50):
+            name = identity.generate_workspace_dir_name(seed=seed)
+            self.assertRegex(
+                name, r"^\.[a-z]+-[0-9a-f]{4}$",
+                f"Name '{name}' doesn't match .word-hex4 pattern",
+            )
+
+    def test_deterministic_with_seed(self):
+        import identity
+        a = identity.generate_workspace_dir_name(seed=42)
+        b = identity.generate_workspace_dir_name(seed=42)
+        self.assertEqual(a, b)
+
+    def test_different_seeds_differ(self):
+        import identity
+        a = identity.generate_workspace_dir_name(seed=1)
+        b = identity.generate_workspace_dir_name(seed=2)
+        self.assertNotEqual(a, b)
+
+    def test_no_alcatraz_in_name(self):
+        import identity
+        for seed in range(200):
+            name = identity.generate_workspace_dir_name(seed=seed)
+            self.assertNotIn("alcatraz", name.lower())
+
+    def test_word_from_pool(self):
+        import identity
+        for seed in range(50):
+            name = identity.generate_workspace_dir_name(seed=seed)
+            # Extract word part: .word-hex -> word
+            word = name[1:].split("-")[0]
+            self.assertIn(word, identity.WORKSPACE_WORDS)
+
+    def test_pool_size(self):
+        import identity
+        self.assertGreaterEqual(len(identity.WORKSPACE_WORDS), 30)
+
+
+# ── Unit tests: generate_workspace_choices ───────────────────────────
+
+
+class TestGenerateWorkspaceChoices(unittest.TestCase):
+    """Verify 3 random choices are presented to the user."""
+
+    def test_returns_three_choices(self):
+        import identity
+        choices = identity.generate_workspace_choices()
+        self.assertEqual(len(choices), 3)
+
+    def test_choices_are_unique(self):
+        import identity
+        choices = identity.generate_workspace_choices()
+        self.assertEqual(len(set(choices)), 3)
+
+    def test_all_choices_are_valid_dir_names(self):
+        import identity
+        import re
+        choices = identity.generate_workspace_choices()
+        for name in choices:
+            self.assertRegex(name, r"^\.[a-z]+-[0-9a-f]{4}$")
+
+    def test_deterministic_with_seed(self):
+        import identity
+        a = identity.generate_workspace_choices(seed=42)
+        b = identity.generate_workspace_choices(seed=42)
+        self.assertEqual(a, b)
+
+
+# ── Unit tests: store and retrieve workspace dir ─────────────────────
+
+
+class TestStoreRetrieveWorkspaceDir(unittest.TestCase):
+    """Verify workspace directory selection persistence."""
+
+    def test_store_and_read_back(self):
+        import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            identity.store_workspace_dir(tmp, ".devspace-7f3a")
+            result = identity.load_workspace_dir(tmp)
+            self.assertEqual(result, ".devspace-7f3a")
+
+    def test_load_returns_none_if_missing(self):
+        import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            result = identity.load_workspace_dir(tmp)
+            self.assertIsNone(result)
+
+    def test_file_contains_just_the_name(self):
+        import identity
+        with tempfile.TemporaryDirectory() as tmp:
+            identity.store_workspace_dir(tmp, ".sandbox-ab12")
+            content = Path(tmp, "workspace-dir").read_text()
+            self.assertEqual(content.strip(), ".sandbox-ab12")
 
 
 if __name__ == "__main__":
