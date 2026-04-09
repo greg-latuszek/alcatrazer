@@ -1,8 +1,8 @@
 """
-Random agent identity generation.
+Random agent identity and workspace directory name generation.
 
-Generates realistic-looking human names and email addresses for use as
-the git identity inside the Alcatraz workspace. Agents see this identity
+Generates realistic-looking human names, email addresses, and generic
+directory names for use inside the Alcatraz workspace. Agents see these
 instead of anything that hints at Alcatrazer.
 """
 
@@ -92,3 +92,50 @@ def ensure_identity(alcatraz_dir: str) -> tuple[str, str]:
     name, email = generate_identity()
     store_identity(alcatraz_dir, name, email)
     return name, email
+
+
+# ── Workspace directory name generation ──────────────────────────────
+
+WORKSPACE_WORDS = [
+    "devspace", "codework", "project", "sandbox", "buildenv", "workspace",
+    "codebase", "devenv", "runspace", "toolbox", "devkit", "workbench",
+    "codelab", "devbox", "buildkit", "taskenv", "codespace", "devroot",
+    "workdir", "appenv", "runtime", "buildbox", "coderun", "devwork",
+    "taskbox", "appspace", "runkit", "codedev", "workenv", "devtask",
+]
+
+
+def generate_workspace_dir_name(seed: int | None = None) -> str:
+    """Generate a random hidden directory name: .{word}-{4hex}."""
+    rng = random.Random(seed)
+    word = rng.choice(WORKSPACE_WORDS)
+    hex4 = f"{rng.randint(0, 0xFFFF):04x}"
+    return f".{word}-{hex4}"
+
+
+def generate_workspace_choices(seed: int | None = None) -> list[str]:
+    """Generate 3 unique workspace directory name choices."""
+    rng = random.Random(seed)
+    choices = set()
+    while len(choices) < 3:
+        word = rng.choice(WORKSPACE_WORDS)
+        hex4 = f"{rng.randint(0, 0xFFFF):04x}"
+        choices.add(f".{word}-{hex4}")
+    return sorted(choices)
+
+
+def store_workspace_dir(alcatraz_dir: str, dirname: str) -> None:
+    """Write workspace directory name to alcatraz_dir/workspace-dir."""
+    path = Path(alcatraz_dir) / "workspace-dir"
+    path.write_text(f"{dirname}\n")
+
+
+def load_workspace_dir(alcatraz_dir: str) -> str | None:
+    """Read workspace directory name from alcatraz_dir/workspace-dir.
+
+    Returns the directory name or None if the file doesn't exist.
+    """
+    path = Path(alcatraz_dir) / "workspace-dir"
+    if not path.exists():
+        return None
+    return path.read_text().strip()
