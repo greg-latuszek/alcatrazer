@@ -113,11 +113,17 @@ def generate_workspace_dir_name(seed: int | None = None) -> str:
     return f".{word}-{hex4}"
 
 
-def generate_workspace_choices() -> list[str]:
-    """Generate 3 unique workspace directory name choices."""
+def generate_workspace_choices(repo_root: str) -> list[str]:
+    """Generate 3 unique workspace directory name choices.
+
+    Skips names that collide with existing directories in repo_root.
+    """
+    root = Path(repo_root)
     choices = set()
     while len(choices) < 3:
-        choices.add(generate_workspace_dir_name())
+        name = generate_workspace_dir_name()
+        if name not in choices and not (root / name).exists():
+            choices.add(name)
     return sorted(choices)
 
 
