@@ -157,9 +157,13 @@ else
     # Initialize a fresh git repo
     git init "${WORKSPACE_DIR}"
 
-    # Set Alcatraz identity - agents will commit under this throwaway identity
-    git -C "${WORKSPACE_DIR}" config user.name "Alcatraz Agent"
-    git -C "${WORKSPACE_DIR}" config user.email "alcatraz@localhost"
+    # Generate random agent identity (or reuse existing one)
+    IDENTITY=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -m alcatrazer.identity "${ALCATRAZ_DIR}")
+    AGENT_NAME=$(echo "${IDENTITY}" | head -1)
+    AGENT_EMAIL=$(echo "${IDENTITY}" | tail -1)
+
+    git -C "${WORKSPACE_DIR}" config user.name "${AGENT_NAME}"
+    git -C "${WORKSPACE_DIR}" config user.email "${AGENT_EMAIL}"
 
     # Disable commit signing - no access to host signing keys
     git -C "${WORKSPACE_DIR}" config commit.gpgsign false
@@ -204,7 +208,9 @@ echo "Alcatraz configuration:"
 echo "  UID/GID:      ${ALCATRAZ_UID} (phantom — does not exist on host)"
 echo "  Workspace:    ${WORKSPACE_DIR}"
 echo "  Python:       ${PYTHON_PATH}"
-echo "  Git identity: Alcatraz Agent <alcatraz@localhost>"
+SUMMARY_NAME=$(head -1 "${ALCATRAZ_DIR}/agent-identity" 2>/dev/null || echo "unknown")
+SUMMARY_EMAIL=$(tail -1 "${ALCATRAZ_DIR}/agent-identity" 2>/dev/null || echo "unknown")
+echo "  Git identity: ${SUMMARY_NAME} <${SUMMARY_EMAIL}>"
 echo ""
 echo "Local git config:"
 git -C "${WORKSPACE_DIR}" config --local --list

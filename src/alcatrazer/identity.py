@@ -142,3 +142,13 @@ def load_workspace_dir(alcatraz_dir: str) -> str | None:
     if not path.exists():
         return None
     return path.read_text().strip()
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <alcatrazer-dir>", file=sys.stderr)
+        sys.exit(1)
+    name, email = ensure_identity(sys.argv[1])
+    print(name)
+    print(email)
