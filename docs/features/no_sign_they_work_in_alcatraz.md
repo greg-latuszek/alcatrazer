@@ -274,3 +274,7 @@ Decisions to evaluate during implementation:
 - **Smoke test scope:** The alcatraz-grep test is a powerful catch-all but may need exceptions for false positives (e.g., if the project IS Alcatrazer being dogfooded).
 - **Migration:** Existing workspaces have "Alcatraz Agent" in their git config and live under `.alcatraz/workspace/`. `--reset` will fix this (re-init with new identity, new workspace dir). No migration of existing workspaces without reset — document this.
 - **docker-compose workspace path:** The mount path needs to reference the chosen directory. Options: generate docker-compose.yml from template, or use env var interpolation (`${WORKSPACE_DIR}`). Env var interpolation is simpler.
+
+### Future Enhancements
+
+- **Docker naming conflicts:** The generic names for Dockerfile stages (`dev-base`, `dev`), docker-compose service (`workspace`), and container name (`workspace`) may conflict with the end user's existing Docker infrastructure. A future enhancement should detect such conflicts during initialization and either prompt the user for alternative names or generate unique suffixes — similar to how we handle workspace directory name collisions.
