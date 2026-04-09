@@ -16,6 +16,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+
+# --- Guard: verify we are at the repository root ---
+# Both .alcatrazer/ and the workspace directory must be created at the repo root.
+
+REPO_ROOT=$(git -C "${PROJECT_DIR}" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "ERROR: Not inside a git repository."
+    echo "Alcatrazer must be initialized from within a git repository."
+    exit 1
+}
+
+if [ "$(cd "${PROJECT_DIR}" && pwd)" != "$(cd "${REPO_ROOT}" && pwd)" ]; then
+    echo "ERROR: Script is not at the repository root."
+    echo "  Expected: ${REPO_ROOT}/src/initialize_alcatraz.sh"
+    echo "  Actual:   ${SCRIPT_DIR}/initialize_alcatraz.sh"
+    echo "Alcatrazer must be installed at the root of your git repository."
+    exit 1
+fi
+
 ALCATRAZ_DIR="${PROJECT_DIR}/.alcatrazer"
 WORKSPACE_DIR="${ALCATRAZ_DIR}/workspace"
 ENV_FILE="${PROJECT_DIR}/.env"
