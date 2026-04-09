@@ -105,6 +105,63 @@ This gives us:
 
 ## Refactoring Plan
 
+### Phase 0: Consolidate Python code into `src/alcatrazer/` package
+
+Prerequisite for everything else. Move all standalone Python modules into the `alcatrazer` package so we have a single importable, pip-installable package.
+
+**Current layout:**
+```
+src/
+├── promote.py              <-- standalone
+├── snapshot.py             <-- standalone
+├── watch_alcatraz.py       <-- standalone
+├── inspect_promotion.py    <-- standalone
+└── alcatrazer/
+    ├── __init__.py
+    └── identity.py         <-- already in the package
+```
+
+**Target layout:**
+```
+src/alcatrazer/
+├── __init__.py
+├── identity.py             <-- already here
+├── promote.py              <-- from src/promote.py
+├── snapshot.py             <-- from src/snapshot.py
+├── daemon.py               <-- from src/watch_alcatraz.py (renamed)
+├── inspect.py              <-- from src/inspect_promotion.py (renamed)
+└── init.py                 <-- new (Phase 1)
+```
+
+**Why:**
+- Single importable package: `from alcatrazer import promote, snapshot, identity`
+- Clean PyPI distribution: `pip install alcatrazer` gives `alcatrazer` package
+- CLI entry points via `pyproject.toml`: `python -m alcatrazer.promote`, `python -m alcatrazer.daemon`, etc.
+- Tests drop `sys.path.insert(0, ...)` hacks, use `from alcatrazer import ...`
+- Module names improve: `watch_alcatraz.py` → `daemon.py`, `inspect_promotion.py` → `inspect.py`
+
+**What stays outside the package:**
+- `src/initialize_alcatraz.sh` — bash bootstrap
+- `src/resolve_python.sh` — bash bootstrap (pre-Python)
+
+**Step 0.1** — `Move promote.py into alcatrazer package`
+> `git mv src/promote.py src/alcatrazer/promote.py`. Update all imports in tests, daemon, init script. Existing `__main__` block keeps working via `python -m alcatrazer.promote`. Update `initialize_alcatraz.sh` and `mise.toml` references.
+
+**Step 0.2** — `Move snapshot.py into alcatrazer package`
+> `git mv src/snapshot.py src/alcatrazer/snapshot.py`. Update imports in tests and init script. The snapshot CLI (`python src/snapshot.py`) becomes `python -m alcatrazer.snapshot`.
+
+**Step 0.3** — `Move watch_alcatraz.py → alcatrazer/daemon.py`
+> `git mv src/watch_alcatraz.py src/alcatrazer/daemon.py`. Rename reflects purpose (it's the promotion daemon, not a watcher). Update imports in tests, mise.toml, README. CLI becomes `python -m alcatrazer.daemon`.
+
+**Step 0.4** — `Move inspect_promotion.py → alcatrazer/inspect.py`
+> `git mv src/inspect_promotion.py src/alcatrazer/inspect.py`. Update imports in tests, mise.toml, README. CLI becomes `python -m alcatrazer.inspect`.
+
+**Step 0.5** — `Remove sys.path hacks from all tests`
+> All test files currently do `sys.path.insert(0, str(Path(...) / "src"))`. With the package under `src/`, tests can use `from alcatrazer import promote` directly (with `PYTHONPATH=src` or a proper `pyproject.toml` config). Clean up all test imports.
+
+**Step 0.6** — `Add pyproject.toml package configuration`
+> Configure `pyproject.toml` with package metadata, entry points, and the `src` layout. This enables `pip install -e .` for development and future PyPI publishing.
+
 ### Phase 1: Extract post-Python init logic to Python
 
 **Step 1.1** — `Create src/alcatrazer/init.py`
