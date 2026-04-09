@@ -113,14 +113,11 @@ def generate_workspace_dir_name(seed: int | None = None) -> str:
     return f".{word}-{hex4}"
 
 
-def generate_workspace_choices(seed: int | None = None) -> list[str]:
+def generate_workspace_choices() -> list[str]:
     """Generate 3 unique workspace directory name choices."""
-    rng = random.Random(seed)
     choices = set()
     while len(choices) < 3:
-        word = rng.choice(WORKSPACE_WORDS)
-        hex4 = f"{rng.randint(0, 0xFFFF):04x}"
-        choices.add(f".{word}-{hex4}")
+        choices.add(generate_workspace_dir_name())
     return sorted(choices)
 
 
