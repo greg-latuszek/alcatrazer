@@ -41,11 +41,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Activate mise shims
 ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
 
-# Hardcoded Alcatraz Agent identity — not configurable by design.
-# This prevents users from accidentally leaking real credentials.
-RUN git config --global user.name "Alcatraz Agent" && \
-    git config --global user.email "alcatraz@localhost" && \
-    git config --global commit.gpgsign false && \
+# No global git identity — the workspace has its own local config
+# (randomly generated identity, set by initialize_alcatraz.sh).
+# These global defaults are standard container settings, not identity.
+RUN git config --global commit.gpgsign false && \
     git config --global init.defaultBranch main
 
 # =============================================================================
