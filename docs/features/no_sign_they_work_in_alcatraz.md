@@ -95,7 +95,7 @@ This is Principle 2: **inmates are not aware they live in Alcatraz.**
 
 ### 1. Git identity: random realistic human name
 
-Generated once per `initialize_alcatraz.sh` run. Stored in `.alcatraz/` for reuse.
+Generated once per `initialize_alcatraz.sh` run. Stored in `.alcatrazer/` for reuse.
 
 **Name generation:**
 - 50 most popular English first names (mix of male/female)
@@ -109,7 +109,7 @@ Generated once per `initialize_alcatraz.sh` run. Stored in `.alcatraz/` for reus
 **Domain pool** — ~20 most popular email domains:
 - gmail.com, yahoo.com, outlook.com, hotmail.com, icloud.com, protonmail.com, aol.com, mail.com, zoho.com, fastmail.com, yandex.com, gmx.com, tutanota.com, live.com, msn.com, me.com, inbox.com, pm.me, hey.com, duck.com
 
-**Storage:** `.alcatraz/agent-name` and `.alcatraz/agent-email` (or a single `.alcatraz/agent-identity` file).
+**Storage:** `.alcatrazer/agent-name` and `.alcatrazer/agent-email` (or a single `.alcatrazer/agent-identity` file).
 
 **Promotion doesn't need it.** `promote.py` uses a blind regex — it overwrites whatever author/committer is in the fast-export stream with the target identity from `alcatrazer.toml`. The agent identity is never matched, just replaced.
 
@@ -132,7 +132,7 @@ The workspace moves out of `.alcatraz/` into its own top-level directory with a 
 **Why:** Docker bind mounts expose the full host path via `/proc/self/mountinfo`. If the workspace lives inside `.alcatraz/`, agents see `.alcatraz` in the mount path. A separate directory with a generic name reveals nothing.
 
 **Directory split:**
-- **`.alcatraz/`** — tool state only: uid, marks, logs, python symlink, agent-identity, config. Never mounted into Docker.
+- **`.alcatrazer/`** — tool state only: uid, marks, logs, python symlink, agent-identity, config. Never mounted into Docker.
 - **`.<random-name>/`** — workspace git repo only. Mounted into Docker as `/workspace`.
 
 **Name generation:** A pool of generic-looking hidden directory names (thousands of combinations). Pattern examples: `.devspace-<hex>/`, `.codework-<hex>/`, `.project-<hex>/`, `.sandbox-<hex>/`. The name should look like a plausible IDE, tool, or project cache directory — nothing unusual.
@@ -143,7 +143,7 @@ The workspace moves out of `.alcatraz/` into its own top-level directory with a 
 3. User picks one
 4. Selection stored in `.alcatraz/workspace-dir` (the directory name, e.g., `.devspace-7f3a`)
 
-**Both directories are gitignored** — `.alcatraz/` and the chosen workspace directory. The init script adds both to `.gitignore` if not already present.
+**Both directories are gitignored** — `.alcatrazer/` and the chosen workspace directory. The init script adds both to `.gitignore` if not already present.
 
 **Impact on codebase:**
 - `docker-compose.yml` reads workspace path from `.alcatraz/workspace-dir` (or a generated env file)
@@ -170,7 +170,7 @@ A Python module that generates realistic-looking human identities for agents. St
 > A Python function that returns a (name, email) tuple. Name from 50 first + 50 last name pools. Email with random pattern: `firstname.lastname{0-2 digits}@domain` or `f_lastname{0-2 digits}@domain`. Domain from pool of ~20. Must be deterministic given a seed (for testing) but random by default.
 
 **Step 1.2** — `Store and retrieve agent identity`
-> Functions to write identity to `.alcatraz/agent-identity` and read it back. Format: two lines, name and email. If file exists, reuse it (identity is stable per workspace). If not, generate and store.
+> Functions to write identity to `.alcatrazer/agent-identity` and read it back. Format: two lines, name and email. If file exists, reuse it (identity is stable per workspace). If not, generate and store.
 
 ### Phase 2: Random workspace directory name generator
 
@@ -185,27 +185,47 @@ Generate generic-looking hidden directory names for the workspace. Same module a
 > `generate_workspace_choices()` takes a `repo_root` path and only returns names that don't collide with existing directories. If a generated name already exists at `repo_root/.name`, skip it and generate another. Continue until 3 non-colliding names are found. With ~2M combinations, collisions are near-impossible but must be handled.
 
 **Step 2.3** — `Store workspace directory selection`
-> During init, the user picks from 3 options. Selection stored in `.alcatraz/workspace-dir` (just the directory name, e.g., `.devspace-7f3a`). Functions to read/write this file. If file exists, reuse the selection.
+> During init, the user picks from 3 options. Selection stored in `.alcatrazer/workspace-dir` (just the directory name, e.g., `.devspace-7f3a`). Functions to read/write this file. If file exists, reuse the selection.
+
+### Phase 2a: Refactor `.alcatraz/` into `.alcatrazer/`
+
+**Why the rename:**
+
+The original name `.alcatraz/` was chosen to suggest "this is the Alcatraz prison where agents work" — because the inner git repo (mounted into Docker) lived there as `.alcatraz/workspace/`. The naming made conceptual sense: agents worked inside Alcatraz.
+
+However, the mount path leak investigation (footprint #7) changed the directory layout. The inner repo now lives in a separately named directory (randomly generated, user-selected) outside `.alcatraz/`. The workspace is no longer "inside Alcatraz" — it's in `.devspace-7f3a/` or similar.
+
+With the workspace gone from `.alcatraz/`, the directory only holds tool state (uid, marks, logs, python symlink, agent identity, config). It is purely Alcatrazer's housekeeping folder. Naming it `.alcatrazer/` makes this immediately clear to end users: "this folder belongs to the alcatrazer tool" — identifiable by name alone, no explanation needed.
+
+**Step 2a.1** — `Rename .alcatraz/ to .alcatrazer/ across codebase`
+> Rename all references: `initialize_alcatraz.sh`, `docker-compose.yml`, `promote.py`, `watch_alcatraz.py`, `snapshot.py`, `inspect_promotion.py`, `.gitignore`, README, all test files, all plan documents. Use `git mv` where applicable. Existing tests must pass after the rename — this is a mechanical refactor, no behavior change.
+>
+> Key files affected:
+> - `initialize_alcatraz.sh`: `ALCATRAZ_DIR` variable, all path references
+> - `docker-compose.yml`: `uid.env` path
+> - `snapshot.py`: `filter_gitignore` now filters `.alcatrazer/` rule instead of `.alcatraz/`
+> - `.gitignore`: `.alcatraz/` → `.alcatrazer/`
+> - All tests referencing `.alcatraz/` paths
 
 ### Phase 3: Wire identity and workspace dir into initialization
 
 Replace hardcoded values in `initialize_alcatraz.sh` and restructure directory layout.
 
 **Step 3.0** — `Verify init runs at repository root`
-> `initialize_alcatraz.sh` currently derives `PROJECT_DIR` from the script's location (`dirname of src/`), not from the actual git repo root. Add a guard that verifies `PROJECT_DIR` matches `git rev-parse --show-toplevel`. Both `.alcatraz/` and the workspace directory must be created at the repository root — running init from a subdirectory or a misplaced script would create them in the wrong location.
+> `initialize_alcatraz.sh` currently derives `PROJECT_DIR` from the script's location (`dirname of src/`), not from the actual git repo root. Add a guard that verifies `PROJECT_DIR` matches `git rev-parse --show-toplevel`. Both `.alcatrazer/` and the workspace directory must be created at the repository root — running init from a subdirectory or a misplaced script would create them in the wrong location.
 
 **Step 3.1** — `Generate identity during init, use in workspace git config`
-> `initialize_alcatraz.sh` calls the identity generator via `.alcatraz/python` to produce `.alcatraz/agent-identity`. Reads name/email from it and sets workspace git config. Replaces hardcoded "Alcatraz Agent" / "alcatraz@localhost".
+> `initialize_alcatraz.sh` calls the identity generator via `.alcatrazer/python` to produce `.alcatrazer/agent-identity`. Reads name/email from it and sets workspace git config. Replaces hardcoded "Alcatraz Agent" / "alcatraz@localhost".
 >
 > The snapshot's initial commit (`snapshot.py`) already uses the workspace's git config — no changes needed there.
 
-**Step 3.2** — `Move workspace out of .alcatraz/ into chosen directory`
-> `initialize_alcatraz.sh` calls the workspace dir generator to prompt the user (or reads existing selection from `.alcatraz/workspace-dir`). Creates the chosen directory at the repo root. Moves git init + snapshot + safe.directory to use the new path. Adds the chosen directory to `.gitignore`.
+**Step 3.2** — `Move workspace out of .alcatrazer/ into chosen directory`
+> `initialize_alcatraz.sh` calls the workspace dir generator to prompt the user (or reads existing selection from `.alcatrazer/workspace-dir`). Creates the chosen directory at the repo root. Moves git init + snapshot + safe.directory to use the new path. Adds the chosen directory to `.gitignore`.
 >
-> All host tools resolve workspace path by reading `.alcatraz/workspace-dir`. A helper function in Python provides this.
+> All host tools resolve workspace path by reading `.alcatrazer/workspace-dir`. A helper function in Python provides this.
 
 **Step 3.3** — `Update docker-compose.yml to use configured workspace path`
-> `docker-compose.yml` reads the workspace directory from an env file or variable. The mount becomes `../<workspace-dir>:/workspace`. The init script generates a `.alcatraz/workspace.env` with `WORKSPACE_DIR=<name>` for docker-compose consumption.
+> `docker-compose.yml` reads the workspace directory from an env file or variable. The mount becomes `../<workspace-dir>:/workspace`. The init script generates a `.alcatrazer/workspace.env` with `WORKSPACE_DIR=<name>` for docker-compose consumption.
 
 ### Phase 4: Remove identity from Dockerfile
 
@@ -219,10 +239,10 @@ The Dockerfile no longer sets git identity. The workspace's local config is suff
 Remove "alcatraz" from the build arg and runtime environment.
 
 **Step 5.1** — `Rename ALCATRAZ_UID to USER_UID`
-> Rename in: Dockerfile (ARG, RUN, error message), docker-compose.yml (build arg), `initialize_alcatraz.sh` (uid.env generation, variable names), smoke_test.sh (all references). The `.alcatraz/uid.env` file content changes from `ALCATRAZ_UID=...` to `USER_UID=...`.
+> Rename in: Dockerfile (ARG, RUN, error message), docker-compose.yml (build arg), `initialize_alcatraz.sh` (uid.env generation, variable names), smoke_test.sh (all references). The `.alcatrazer/uid.env` file content changes from `ALCATRAZ_UID=...` to `USER_UID=...`.
 
 **Step 5.2** — `Remove uid.env from runtime env_file`
-> Remove the `../.alcatraz/uid.env` entry from docker-compose.yml `env_file` list. `USER_UID` is only needed at build time — it's already baked into the `agent` user. Verify with a test that `USER_UID` is not visible in the container's runtime environment.
+> Remove the `../.alcatrazer/uid.env` entry from docker-compose.yml `env_file` list. `USER_UID` is only needed at build time — it's already baked into the `agent` user. Verify with a test that `USER_UID` is not visible in the container's runtime environment.
 
 ### Phase 6: Rename container and service names
 
@@ -236,7 +256,7 @@ Remove "alcatraz" from all Docker naming visible to agents.
 Update the smoke test to verify zero Alcatraz footprint inside the container. This is the safety net — if any future change reintroduces a footprint, this catches it.
 
 **Step 7.1** — `Update smoke test for new identity`
-> Smoke test sections 2, 6, 7 currently assert "Alcatraz Agent". Update to read expected identity from `.alcatraz/agent-identity` and assert against that. Section 3 (env vars) should verify `ALCATRAZ_UID` / `USER_UID` is NOT present in runtime env.
+> Smoke test sections 2, 6, 7 currently assert "Alcatraz Agent". Update to read expected identity from `.alcatrazer/agent-identity` and assert against that. Section 3 (env vars) should verify `ALCATRAZ_UID` / `USER_UID` is NOT present in runtime env.
 
 **Step 7.2** — `Add alcatraz-grep smoke test`
 > New smoke test section: run `env && git config --list && cat /etc/hostname && cat /proc/self/mountinfo` inside the container, pipe through `grep -i alcatraz`. If any match is found, the test fails. This is a catch-all — includes mountinfo to verify the workspace directory separation works.
