@@ -195,6 +195,9 @@ for c in generate_workspace_choices('${PROJECT_DIR}'):
 fi
 WORKSPACE_DIR="${PROJECT_DIR}/${WORKSPACE_NAME}"
 
+# Generate workspace.env for docker-compose consumption
+echo "WORKSPACE_DIR=${WORKSPACE_NAME}" > "${ALCATRAZ_DIR}/workspace.env"
+
 # Add workspace directory to .gitignore if not already present
 GITIGNORE_FILE="${PROJECT_DIR}/.gitignore"
 if [ -f "${GITIGNORE_FILE}" ]; then
