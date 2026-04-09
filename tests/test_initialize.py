@@ -105,5 +105,100 @@ class TestRepoRootGuard(unittest.TestCase):
             self.assertNotIn("not at the repository root", output.lower())
 
 
+class TestIdentityInInit(unittest.TestCase):
+    """Verify init generates random identity instead of hardcoded Alcatraz Agent."""
+
+    def _setup_repo_with_init_script(self, tmp):
+        """Create a git repo with the init script at the correct location."""
+        subprocess.run(["git", "init", tmp], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", tmp, "config", "user.name", "Test"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", tmp, "config", "user.email", "test@test.com"],
+            capture_output=True, check=True,
+        )
+        Path(tmp, "README.md").write_text("test")
+        subprocess.run(
+            ["git", "-C", tmp, "add", "."], capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", tmp, "commit", "-m", "init"],
+            capture_output=True, check=True,
+        )
+        # Copy src/ directory
+        src_dir = Path(tmp) / "src"
+        src_dir.mkdir()
+        for f in ["initialize_alcatraz.sh", "resolve_python.sh", "snapshot.py"]:
+            src_file = PROJECT_DIR / "src" / f
+            dest = src_dir / f
+            dest.write_text(src_file.read_text())
+            dest.chmod(0o755)
+        # Copy alcatrazer package
+        pkg_dir = src_dir / "alcatrazer"
+        pkg_dir.mkdir()
+        for f in (PROJECT_DIR / "src" / "alcatrazer").iterdir():
+            if f.is_file() and f.suffix == ".py":
+                (pkg_dir / f.name).write_text(f.read_text())
+
+    def test_workspace_git_identity_is_not_alcatraz(self):
+        """After init, workspace git config must NOT contain 'Alcatraz Agent'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            result = subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            workspace = Path(tmp) / ".alcatrazer" / "workspace"
+            if workspace.exists():
+                name = subprocess.run(
+                    ["git", "-C", str(workspace), "config", "user.name"],
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                self.assertNotEqual(name, "Alcatraz Agent")
+                self.assertNotIn("alcatraz", name.lower())
+
+    def test_agent_identity_file_created(self):
+        """Init should create .alcatrazer/agent-identity file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            identity_file = Path(tmp) / ".alcatrazer" / "agent-identity"
+            self.assertTrue(identity_file.exists(), "agent-identity file not created")
+            lines = identity_file.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 2, f"Expected 2 lines, got: {lines}")
+
+    def test_workspace_identity_matches_stored_identity(self):
+        """Workspace git config should use the identity from agent-identity file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._setup_repo_with_init_script(tmp)
+            subprocess.run(
+                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                capture_output=True, text=True,
+                cwd=tmp, timeout=60,
+            )
+            identity_file = Path(tmp) / ".alcatrazer" / "agent-identity"
+            workspace = Path(tmp) / ".alcatrazer" / "workspace"
+            if identity_file.exists() and workspace.exists():
+                lines = identity_file.read_text().strip().split("\n")
+                expected_name, expected_email = lines[0], lines[1]
+                actual_name = subprocess.run(
+                    ["git", "-C", str(workspace), "config", "user.name"],
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                actual_email = subprocess.run(
+                    ["git", "-C", str(workspace), "config", "user.email"],
+                    capture_output=True, text=True,
+                ).stdout.strip()
+                self.assertEqual(actual_name, expected_name)
+                self.assertEqual(actual_email, expected_email)
+
+
 if __name__ == "__main__":
     unittest.main()
