@@ -26,7 +26,7 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 cd "${PROJECT_DIR}"
 
-# Load expected ALCATRAZ_UID from .alcatrazer/uid
+# Load expected USER_UID from .alcatrazer/uid
 EXPECTED_UID=$(cat .alcatrazer/uid)
 
 PASS=0
@@ -177,7 +177,7 @@ echo ""
 echo "--- 3. Environment variables ---"
 SECTION=$(get_section "ENV_SECRETS")
 # Only env vars we explicitly pass should appear — no host secrets leaked
-LEAKED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY|ALCATRAZ_UID" || true)
+LEAKED=$(echo "${SECTION}" | grep -ivE "ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY|USER_UID" || true)
 if [ -z "${LEAKED}" ]; then
     pass "No leaked secret-like environment variables from host"
 else
@@ -300,14 +300,14 @@ else
     fail "Cleanup may have failed: ${SECTION}"
 fi
 
-# --- 13. Dockerfile rejects build without ALCATRAZ_UID ---
+# --- 13. Dockerfile rejects build without USER_UID ---
 echo ""
-echo "--- 13. Dockerfile requires ALCATRAZ_UID ---"
-BUILD_OUTPUT=$(docker build --build-arg ALCATRAZ_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
-if echo "${BUILD_OUTPUT}" | grep -q "ALCATRAZ_UID build arg is required"; then
-    pass "Dockerfile rejects build without ALCATRAZ_UID"
+echo "--- 13. Dockerfile requires USER_UID ---"
+BUILD_OUTPUT=$(docker build --build-arg USER_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
+if echo "${BUILD_OUTPUT}" | grep -q "USER_UID build arg is required"; then
+    pass "Dockerfile rejects build without USER_UID"
 else
-    fail "Dockerfile should reject build without ALCATRAZ_UID"
+    fail "Dockerfile should reject build without USER_UID"
 fi
 
 # --- Summary ---

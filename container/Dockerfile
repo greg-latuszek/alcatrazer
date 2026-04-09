@@ -11,8 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Phantom UID — does not exist on the host. If the container escapes,
 # the process cannot write to any host files.
-ARG ALCATRAZ_UID
-RUN test -n "${ALCATRAZ_UID}" || { echo "ERROR: ALCATRAZ_UID build arg is required. Run ./initialize_alcatraz.sh first."; exit 1; }
+ARG USER_UID
+RUN test -n "${USER_UID}" || { echo "ERROR: USER_UID build arg is required. Run initialization to obtain proper UID (see README for details)."; exit 1; }
 
 # System dependencies for the security/orchestration layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with the phantom UID
-RUN groupadd --gid ${ALCATRAZ_UID} agent && \
-    useradd --uid ${ALCATRAZ_UID} --gid ${ALCATRAZ_UID} --create-home --shell /bin/bash agent
+RUN groupadd --gid ${USER_UID} agent && \
+    useradd --uid ${USER_UID} --gid ${USER_UID} --create-home --shell /bin/bash agent
 
 # Install mise and Claude Code CLI as agent user
 USER agent

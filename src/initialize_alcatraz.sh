@@ -119,36 +119,39 @@ if [ ! -f "${ENV_FILE}" ]; then
     fi
 fi
 
-# --- Step 2: Determine alcatraz UID/GID ---
+# --- Step 2: Determine container user UID/GID ---
 
 UID_FILE="${ALCATRAZ_DIR}/uid"
 
 if [ -f "${UID_FILE}" ]; then
-    ALCATRAZ_UID=$(cat "${UID_FILE}")
-    # Regenerate uid.env in case it was lost (e.g. after reset)
-    echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
-    echo "Reusing stored alcatraz UID: ${ALCATRAZ_UID} (from .alcatrazer/uid)"
+    USER_UID=$(cat "${UID_FILE}")
+    echo "Reusing stored UID: ${USER_UID} (from .alcatrazer/uid)"
 else
     # Find the first UID >= 1001 that does not exist on the host.
     # This ensures the container user has no matching host account,
     # so even if the container escapes, the process cannot write to
     # any host files (no home dir, no owned files, no shell).
-    ALCATRAZ_UID=1001
-    while getent passwd "${ALCATRAZ_UID}" >/dev/null 2>&1 || \
-          getent group "${ALCATRAZ_UID}" >/dev/null 2>&1; do
-        ALCATRAZ_UID=$((ALCATRAZ_UID + 1))
+    USER_UID=1001
+    while getent passwd "${USER_UID}" >/dev/null 2>&1 || \
+          getent group "${USER_UID}" >/dev/null 2>&1; do
+        USER_UID=$((USER_UID + 1))
     done
 
     mkdir -p "${ALCATRAZ_DIR}"
-    echo "${ALCATRAZ_UID}" > "${UID_FILE}"
-    # Also write as env var for docker-compose consumption
-    echo "ALCATRAZ_UID=${ALCATRAZ_UID}" > "${ALCATRAZ_DIR}/uid.env"
-    echo "Selected alcatraz UID/GID: ${ALCATRAZ_UID} (written to .alcatrazer/uid)"
+    echo "${USER_UID}" > "${UID_FILE}"
+    echo "Selected UID/GID: ${USER_UID} (written to .alcatrazer/uid)"
+fi
+
+# Write USER_UID to .env for docker-compose build arg interpolation
+if grep -q "^USER_UID=" "${ENV_FILE}" 2>/dev/null; then
+    sed -i "s|^USER_UID=.*|USER_UID=${USER_UID}|" "${ENV_FILE}"
+else
+    echo "USER_UID=${USER_UID}" >> "${ENV_FILE}"
 fi
 
 # Verify the UID still doesn't exist on this host (in case of machine change)
-if getent passwd "${ALCATRAZ_UID}" >/dev/null 2>&1; then
-    echo "WARNING: UID ${ALCATRAZ_UID} now exists on this host!"
+if getent passwd "${USER_UID}" >/dev/null 2>&1; then
+    echo "WARNING: UID ${USER_UID} now exists on this host!"
     echo "Delete .alcatrazer/uid and re-run this script to pick a new UID."
     exit 1
 fi
@@ -273,8 +276,8 @@ fi
 PYTHON_PATH=$(readlink -f "${ALCATRAZ_DIR}/python" 2>/dev/null || echo "not resolved")
 
 echo ""
-echo "Alcatraz configuration:"
-echo "  UID/GID:      ${ALCATRAZ_UID} (phantom — does not exist on host)"
+echo "Alcatrazer configuration:"
+echo "  UID/GID:      ${USER_UID} (phantom — does not exist on host)"
 echo "  Workspace:    ${WORKSPACE_DIR}"
 echo "  Python:       ${PYTHON_PATH}"
 SUMMARY_NAME=$(head -1 "${ALCATRAZ_DIR}/agent-identity" 2>/dev/null || echo "unknown")
