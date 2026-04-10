@@ -226,7 +226,7 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
     #   - The directory itself is created by the host user (e.g., UID 1000)
     #   - Files INSIDE are created by agents in Docker under the phantom UID (e.g., 1007)
     #   - The host user cannot delete phantom-UID files directly
-    #   - We use a disposable ubuntu:24.04 container (runs as root, UID 0) to remove
+    #   - We use a disposable alpine:3 container (runs as root, UID 0) to remove
     #     the contents — root can delete files regardless of ownership
     #   - After contents are removed, Python rmdir() removes the now-empty directory
     #     (owned by the host user, so no permission issue)
@@ -234,7 +234,7 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
         subprocess.run(
             ["docker", "run", "--rm",
              "-v", f"{workspace_dir}:/workspace",
-             "ubuntu:24.04",
+             "alpine:3",
              "sh", "-c", "rm -rf /workspace/* /workspace/.*"],
             capture_output=True,
         )
@@ -248,7 +248,7 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
     subprocess.run(
         ["docker", "run", "--rm",
          "-v", f"{alcatrazer_dir}:/workspace",
-         "ubuntu:24.04",
+         "alpine:3",
          "sh", "-c", "rm -rf /workspace/* /workspace/.*"],
         capture_output=True,
     )
