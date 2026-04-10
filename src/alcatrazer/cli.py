@@ -2,13 +2,36 @@
 
 Usage:
     alcatrazer init     — install Alcatrazer into the current git repository
+    alcatrazer test     — run bundled test suite to verify installation
     alcatrazer update   — update tool files in an existing installation
     alcatrazer version  — show version
 """
 
 import sys
+import unittest
 
 from alcatrazer import __version__
+
+
+def run_tests(smoke: bool = False) -> int:
+    """Run the bundled test suite. Returns 0 on success, 1 on failure."""
+    from pathlib import Path
+    tests_dir = str(Path(__file__).resolve().parent / "tests")
+    loader = unittest.TestLoader()
+    suite = loader.discover(tests_dir)
+    if not smoke:
+        # Exclude Docker smoke tests by default (require Docker to be set up)
+        filtered = unittest.TestSuite()
+        for group in suite:
+            for test_group in group:
+                for test in test_group:
+                    test_name = str(test)
+                    if "smoke" not in test_name.lower():
+                        filtered.addTest(test)
+        suite = filtered
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    return 0 if result.wasSuccessful() else 1
 
 
 def main():
@@ -17,6 +40,7 @@ def main():
         print()
         print("Usage:")
         print("  alcatrazer init      Install into the current git repository")
+        print("  alcatrazer test      Run bundled tests to verify installation")
         print("  alcatrazer update    Update tool files in existing installation")
         print("  alcatrazer version   Show version")
         print()
@@ -28,6 +52,9 @@ def main():
 
     if command == "version":
         print(f"alcatrazer {__version__}")
+    elif command == "test":
+        smoke = "--smoke" in sys.argv
+        sys.exit(run_tests(smoke=smoke))
     elif command == "init":
         print(f"alcatrazer {__version__} — init")
         print()
