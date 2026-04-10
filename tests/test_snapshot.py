@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Add src/ to path so we can import snapshot directly
+# TODO: Remove once pyproject.toml handles src layout (Step 0.9)
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
