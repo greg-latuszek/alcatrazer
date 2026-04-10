@@ -1,0 +1,38 @@
+# Alcatrazer configuration
+# This file is version controlled — it captures decisions about how
+# Alcatrazer is used in this repository.
+
+[promotion]
+# Identity used when promoting commits from the agent workspace
+# to the outer repository. Overrides git config (local > global).
+# Can be further overridden by --author-name / --author-email CLI flags.
+name = "Your Name"
+email = "your@email.com"
+
+[tools]
+# Default tool versions installed in the container.
+# Agents can override these via mise.toml in their workspace.
+python = "3.13"
+node = "22"
+bun = "latest"
+
+[promotion-daemon]
+# Polling interval in seconds
+interval = 5
+
+# Which branches to promote from the inner repo:
+#   "all"    — every branch (full git tree with all history)
+#   A branch name — only that branch, e.g. "main" or "master"
+#   Or a list of glob patterns: ["main", "feature/*"]
+branches = "all"
+
+# Conflict handling mode:
+#   "mirror"        — promote to same branch names, seamless sync (default)
+#   "alcatraz-tree" — promote to alcatraz/* namespace, user merges manually
+mode = "mirror"
+
+# Logging verbosity: "normal" or "detailed" (for troubleshooting)
+verbosity = "normal"
+
+# Maximum log file size before rotation (in KB)
+max_log_size = 512

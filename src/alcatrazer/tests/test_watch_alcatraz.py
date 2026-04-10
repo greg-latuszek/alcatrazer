@@ -20,7 +20,8 @@ from pathlib import Path
 
 
 def project_dir():
-    return Path(__file__).resolve().parent.parent
+    # tests/ is at src/alcatrazer/tests/ — project root is 3 levels up
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def python_bin():
@@ -32,8 +33,8 @@ def python_bin():
     return sys.executable
 
 
-DAEMON_SCRIPT = str(project_dir() / "src" / "watch_alcatraz.py")
-INSPECT_SCRIPT = str(project_dir() / "src" / "inspect_promotion.py")
+DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
+INSPECT_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "inspect.py")
 PYTHON = python_bin()
 
 
@@ -321,7 +322,7 @@ class TestSignalHandling(unittest.TestCase):
                       f"SIGINT should produce clean exit, got {returncode}")
 
 
-SEED_SCRIPT = str(project_dir() / "tests" / "seed_alcatraz.sh")
+SEED_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "tests" / "seed_alcatraz.sh")
 
 PROMOTED_NAME = "Test User"
 PROMOTED_EMAIL = "test@example.com"
@@ -915,7 +916,7 @@ class TestInspectPromotion(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No log file", result.stdout)
-        self.assertIn("watch_alcatraz.py", result.stdout)
+        self.assertIn("alcatrazer.daemon", result.stdout)
 
     def test_starts_tailing_when_log_exists(self):
         """Should start tailing when log file exists (we kill it quickly)."""

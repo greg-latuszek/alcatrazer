@@ -66,8 +66,8 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 │   ├── resolve_python.sh           <-- bash: four-tier Python 3.11+ detection
 │   ├── snapshot.py                 <-- Python: snapshots outer repo into workspace
 │   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
-│   ├── watch_alcatraz.py           <-- Python: auto-promotion daemon
-│   ├── inspect_promotion.py        <-- Python: live log viewer
+│   ├── daemon.py                   <-- Python: auto-promotion daemon
+│   ├── inspect.py                  <-- Python: live log viewer
 │   └── alcatrazer/                 <-- Python package
 │       ├── __init__.py
 │       └── identity.py             <-- random agent identity + workspace dir name generation
@@ -140,7 +140,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 ### 1. Initialize Alcatraz
 
 ```bash
-./src/initialize_alcatraz.sh
+./src/alcatrazer/scripts/initialize_alcatraz.sh
 ```
 
 This script:
@@ -169,8 +169,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Build and run
 
 ```bash
-docker compose -f container/docker-compose.yml build
-docker compose -f container/docker-compose.yml run --rm workspace
+docker compose -f src/alcatrazer/container/docker-compose.yml build
+docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
@@ -180,7 +180,7 @@ You are now inside the container as a non-root agent user. All tools are availab
 In a separate terminal:
 
 ```bash
-.alcatrazer/python src/watch_alcatraz.py
+.alcatrazer/python -m alcatrazer.daemon
 ```
 
 The daemon watches the workspace directory for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
@@ -188,7 +188,7 @@ The daemon watches the workspace directory for new commits and automatically pro
 To watch promotion activity:
 
 ```bash
-.alcatrazer/python src/inspect_promotion.py
+.alcatrazer/python -m alcatrazer.inspect
 ```
 
 ### Resetting Alcatraz
@@ -196,7 +196,7 @@ To watch promotion activity:
 Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
 
 ```bash
-./src/initialize_alcatraz.sh --reset
+./src/alcatrazer/scripts/initialize_alcatraz.sh --reset
 ```
 
 If the workspace has commits that haven't been promoted to the outer repo, you'll be warned before anything is destroyed:
@@ -212,7 +212,7 @@ Proceeding with --reset will discard them.
 To skip the prompt (e.g., in scripts):
 
 ```bash
-./src/initialize_alcatraz.sh --reset --force
+./src/alcatrazer/scripts/initialize_alcatraz.sh --reset --force
 ```
 
 After reset, the workspace is re-snapshotted from the outer repo's current main branch — picking up any changes that were merged since the last initialization.
@@ -252,7 +252,7 @@ max_log_size = 512
 
 ## Promoting Agent Work
 
-The promotion script (`src/promote.py`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+The promotion script (`alcatrazer.promote`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
 
 - Preserves full branch and merge topology (branches, merge commits, parent chains)
 - Rewrites author/committer from the agent's random identity to the host user's identity
@@ -265,10 +265,10 @@ If you prefer to promote manually instead of using the daemon:
 
 ```bash
 # Replace <workspace> with your workspace directory name (from .alcatrazer/workspace-dir)
-.alcatrazer/python src/promote.py --source <workspace> --target .
+.alcatrazer/python -m alcatrazer.promote --source <workspace> --target .
 
 # Preview what would be promoted:
-.alcatrazer/python src/promote.py --source <workspace> --target . --dry-run
+.alcatrazer/python -m alcatrazer.promote --source <workspace> --target . --dry-run
 ```
 
 ### Promotion Modes
@@ -341,7 +341,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 ## Docker Container Rules
 
-These rules are enforced by the `container/docker-compose.yml` configuration:
+These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` configuration:
 
 1. **Mount only the workspace directory** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
@@ -353,18 +353,18 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 
 ## Workflow
 
-1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
-2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm workspace` — build and enter the container.
-3. `.alcatrazer/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
+1. `./src/alcatrazer/scripts/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
+2. `docker compose -f src/alcatrazer/container/docker-compose.yml build && docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace` — build and enter the container.
+3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
-5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python src/inspect_promotion.py`.
+5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
 6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 
 ## Running Tests
 
 ```bash
-.alcatrazer/python -m unittest discover -s tests -v
+.alcatrazer/python -m unittest discover -s src/alcatrazer/tests -v
 ```
 
 The test suite covers identity generation (name/email pools, workspace dir naming, collision avoidance), initialization (repo root guard, identity wiring, workspace separation), snapshot (branch detection, extraction, .gitignore filtering, exclusions, CLI, reset warnings), promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.

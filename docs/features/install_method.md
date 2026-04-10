@@ -8,40 +8,35 @@ A simple one-liner that installs Alcatrazer into any existing git repository. Th
 
 ## Key Principle: Zero Pollution
 
-Alcatrazer must not pollute the target repository. All tool files live inside `.alcatraz/` (already gitignored). The only things that touch the repo proper are:
+Alcatrazer must not pollute the target repository. The only things that touch the repo proper are:
 
 - `alcatrazer.toml` — version controlled, captures project decisions
-- `.gitignore` entry for `.alcatraz/`
+- `.gitignore` entries for `.alcatrazer/`, `.<workspace>/`, and `.env`
 - `.env.example` — template for API keys
 
-Everything else — scripts, Docker files, daemon, promotion logic — lives inside `.alcatraz/`:
+Everything else — scripts, Docker files, daemon, promotion logic, tool state — lives inside `.alcatrazer/`. The agent workspace lives in a separate randomly named directory (e.g., `.devspace-7f3a/`) to prevent leaking "alcatrazer" via Docker's `/proc/self/mountinfo`.
 
 ```
 target-repo/
 ├── .git/
-├── .gitignore              <-- updated: adds .alcatraz/ and .env
-├── .env.example            <-- created
-├── alcatrazer.toml         <-- created (version controlled)
-└── .alcatraz/              <-- gitignored, everything else lives here
-    ├── container/
-    │   ├── Dockerfile
-    │   ├── docker-compose.yml
-    │   └── entrypoint.sh
-    ├── src/
-    │   ├── initialize_alcatraz.sh
-    │   ├── resolve_python.sh
-    │   ├── promote.py
-    │   ├── watch_alcatraz.py
-    │   └── inspect_promotion.py
-    ├── workspace/           <-- mounted into Docker
-    │   └── .git/
-    ├── python -> /usr/bin/python3
-    ├── uid
-    ├── uid.env
-    └── ... (marks, logs, PID, etc.)
+├── .gitignore              <-- updated: adds .alcatrazer/, .<workspace>/, .env
+├── .env                    <-- API keys + USER_UID + WORKSPACE_DIR
+├── .env.example            <-- template for API keys
+├── alcatrazer.toml         <-- created from template, user's promotion identity
+├── .alcatrazer/            <-- gitignored, tool state (never mounted into Docker)
+│   ├── python -> ...       <-- symlink to resolved Python 3.11+
+│   ├── uid                 <-- phantom UID
+│   ├── agent-identity      <-- randomly generated name + email
+│   ├── workspace-dir       <-- name of the workspace directory
+│   ├── promote-export-marks
+│   ├── promote-import-marks
+│   └── ... (logs, PID, etc.)
+└── .<workspace>/           <-- gitignored, randomly named (e.g., .devspace-7f3a/)
+    ├── .git/               <-- inner git (random agent identity, no remote)
+    └── ... agent work ...
 ```
 
-This is a layout change from development (where `src/` and `container/` are at repo root). In a deployed installation, they move inside `.alcatraz/`. The development repo is Alcatrazer's own source code; an installed repo is someone else's project using Alcatrazer as a tool.
+For installation via PyPI, all tool code is inside the `alcatrazer` package — Python modules, Docker templates (`container/`), bash scripts (`scripts/`), and config template (`templates/alcatrazer.toml`). The `alcatrazer init` command copies what's needed into the target repo.
 
 ## Installation Options
 
@@ -193,21 +188,28 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
 
 Build order for the real installer (before first PyPI publish):
 
-### Step 1: Bundle tool files as package data
-Copy Dockerfile, entrypoint, scripts (promote.py, watch_alcatraz.py, etc.) into `src/alcatrazer/data/`. Hatch auto-includes everything under `src/alcatrazer/` in the wheel.
+### Step 1: Bundle tool files as package data ✅
+All tool files are now inside `src/alcatrazer/` — Python modules, Docker templates (`container/`), bash scripts (`scripts/`), tests (`tests/`), and config template (`templates/alcatrazer.toml`). Hatch auto-includes everything under `src/alcatrazer/` in the wheel.
 
 ### Step 2: Implement `alcatrazer init`
 Interactive CLI that:
-- Detects git repo, reads git config for default identity
-- Asks questions (name, email, tool versions, promotion mode)
-- Writes `alcatrazer.toml` and `.env.example` to repo root
-- Extracts tool files from package data into `.alcatraz/`
-- Updates `.gitignore` (adds `.alcatraz/` and `.env`)
-- Creates `.alcatraz/python` symlink (from `sys.executable`)
-- Optionally runs full initialization (UID, workspace, safe.directory)
+
+1. **Verify git repo** — confirm we're inside a git repo, at the repo root
+2. **Detect user identity from git config** — read `user.name` and `user.email` from local git config (repo-specific) first, fall back to global. Present to user:
+   ```
+   Detected git identity: Grzegorz Latuszek <latuszek.grzegorz@gmail.com>
+   Use this for promoted commits? [Y/n]
+   ```
+   If user declines, prompt for name and email.
+3. **Write `alcatrazer.toml`** — copy from `src/alcatrazer/templates/alcatrazer.toml`, fill in the confirmed name/email in the `[promotion]` section. Optionally ask about tool versions and daemon settings (or accept defaults).
+4. **Write `.env.example`** — template for API keys
+5. **Extract tool files** — copy `scripts/`, `container/` from package into `.alcatrazer/` (or wherever the deployed layout puts them)
+6. **Update `.gitignore`** — add `.alcatrazer/` and `.env` entries
+7. **Create `.alcatrazer/python` symlink** — from `sys.executable` (the Python that's running `alcatrazer init`)
+8. **Run initialization** — optionally run the full init flow: UID detection, workspace directory selection (3 random choices), random agent identity, git init + snapshot, safe.directory
 
 ### Step 3: Implement `alcatrazer update`
-Re-extracts tool files from package data into `.alcatraz/`, preserving `alcatrazer.toml` and all state (workspace, marks, UID, logs).
+Re-extracts tool files from package data into `.alcatrazer/`, preserving `alcatrazer.toml` and all state (workspace, marks, UID, logs, agent identity, workspace-dir selection).
 
 ### Step 4: Write `install.sh` (curl|bash bootstrap)
 Thin bash script: resolve Python 3.11+ (four-tier), create temp venv, `pip install alcatrazer`, run `alcatrazer init`, delete temp venv. ~50 lines.
@@ -217,8 +219,8 @@ Thin bash script: resolve Python 3.11+ (four-tier), create temp venv, `pip insta
 - Integration test: run `alcatrazer init` in a temp git repo, verify layout
 - Test `install.sh` with faked PATH (same approach as resolve_python tests)
 
-### Step 6: Post-installation verification tests
-See "Trust and Verification" section below — bundle tests and source into `.alcatraz/` so end users can verify the installed tool.
+### Step 6: Post-installation verification tests ✅
+Tests are now bundled inside the package (`src/alcatrazer/tests/`). End users run `alcatrazer test` to verify installation. See "Trust and Verification" section below.
 
 ### Step 7: Publish to PyPI
 `uvx twine upload dist/*` — first real release (0.1.0).
@@ -273,31 +275,16 @@ diff -r .alcatraz/src/ <(curl -sL https://github.com/.../archive/v1.0.tar.gz | t
 
 The `alcatrazer verify` command (future) could automate this — download the release tarball, compare checksums file-by-file, report any differences.
 
-### What gets bundled in `.alcatraz/`
+### What the user gets
 
-The installation includes both tool files AND their tests, so the user has the complete picture:
+The `alcatrazer` PyPI package is self-contained. After `pip install alcatrazer`, the user has:
+- Python modules (promote, snapshot, daemon, inspect, identity) — readable source
+- Docker templates (Dockerfile, docker-compose.yml, entrypoint.sh) — readable
+- Bash bootstrap scripts (initialize_alcatraz.sh, resolve_python.sh) — readable
+- Config template (alcatrazer.toml with defaults) — readable
+- Bundled test suite — runnable via `alcatrazer test`
 
-```
-.alcatraz/
-├── src/                    <-- the tool (readable source)
-│   ├── promote.py
-│   ├── watch_alcatraz.py
-│   ├── inspect_promotion.py
-│   ├── initialize_alcatraz.sh
-│   └── resolve_python.sh
-├── container/              <-- Docker infrastructure (readable)
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── entrypoint.sh
-├── tests/                  <-- verification tests (runnable)
-│   ├── test_promote.py
-│   ├── test_watch_alcatraz.py
-│   ├── test_python_resolution.py
-│   ├── seed_alcatraz.sh
-│   └── smoke_test.sh       <-- Docker integration test
-├── workspace/              <-- agent workspace
-└── ... (state files)
-```
+The user can inspect any of these before or after installation. `alcatrazer test` runs the same tests developers run.
 
 ### Target audience
 

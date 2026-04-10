@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Auto-promotion daemon — watches .alcatrazer/workspace/ for new commits
-and promotes them to the outer repo using promote.sh.
+Auto-promotion daemon — watches workspace for new commits
+and promotes them to the outer repo.
 
 Runs on the host side, polling at a configurable interval.
 Silent by default — writes to .alcatrazer/promotion-daemon.log.
 
 Usage:
-    .alcatrazer/python src/watch_alcatraz.py
-    src/watch_alcatraz.py [--alcatraz-dir DIR] [--project-dir DIR]
+    .alcatrazer/python -m alcatrazer.daemon
+    .alcatrazer/python -m alcatrazer.daemon [--alcatraz-dir DIR] [--project-dir DIR]
 
 Requires Python 3.11+ (for tomllib).
 """
@@ -33,8 +33,7 @@ import tomllib
 from pathlib import Path
 
 # Import promote module (same package)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import promote as promote_mod
+from alcatrazer import promote as promote_mod
 
 
 # --- Default config ---

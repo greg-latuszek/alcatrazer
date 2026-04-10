@@ -33,11 +33,11 @@ run = [
 
 [tasks.test]
 description = "Run all tests"
-run = ["python -m unittest discover -s tests -v"]
+run = ["python -m unittest discover -s src/alcatrazer/tests -v"]
 
 [tasks.test-fast]
 description = "Run unit tests only (skip slow integration tests)"
-run = ["python -m unittest discover -s tests -v -k 'not TestDaemon and not TestConflict and not TestBranch and not TestAlcatraz and not TestLogRotation'"]
+run = ["python -m unittest discover -s src/alcatrazer/tests -v -k 'not TestDaemon and not TestConflict and not TestBranch and not TestAlcatraz and not TestLogRotation'"]
 
 [tasks.lint]
 description = "Run linter"
@@ -53,24 +53,24 @@ run = ["uv build"]
 
 [tasks.docker-build]
 description = "Build the Alcatraz container"
-run = ["docker compose -f container/docker-compose.yml build"]
+run = ["docker compose -f src/alcatrazer/container/docker-compose.yml build"]
 
 [tasks.docker-run]
 description = "Run the workspace container"
-run = ["docker compose -f container/docker-compose.yml run --rm workspace"]
+run = ["docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace"]
 
 [tasks.init]
 description = "Initialize Alcatraz (workspace, UID, Python)"
-run = ["./src/initialize_alcatraz.sh"]
+run = ["./src/alcatrazer/scripts/initialize_alcatraz.sh"]
 
 [tasks.init-reset]
 description = "Reset and reinitialize Alcatraz"
-run = ["./src/initialize_alcatraz.sh --reset"]
+run = ["./src/alcatrazer/scripts/initialize_alcatraz.sh --reset"]
 
 [tasks.start-promotion]
 description = "Start the promotion daemon"
-run = [".alcatrazer/python src/watch_alcatraz.py"]
+run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.daemon"]
 
 [tasks.tail-promotion-log]
 description = "Tail the promotion daemon log"
-run = [".alcatrazer/python src/inspect_promotion.py"]
+run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.inspect"]

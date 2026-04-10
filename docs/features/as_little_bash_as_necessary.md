@@ -1,6 +1,6 @@
 # As Little Bash as Necessary
 
-## Status: Planning
+## Status: Complete
 
 ## Problem
 
@@ -240,24 +240,24 @@ src/alcatrazer/
 **Step 2.2** — `Remove tests/smoke_test.sh`
 > Once the Python smoke test passes, remove the bash version.
 
-### Phase 3: Evaluate remaining bash
+### Phase 3: Evaluate remaining bash ✅
 
-**Step 3.1** — `Review seed_alcatraz.sh`
-> Decide if converting to Python adds value. Likely keep as-is — it's 80 lines of idiomatic git scripting that rarely changes.
+**Step 3.1** — `Review seed_alcatraz.sh` ✅
+> **Keep as-is.** 80 lines of idiomatic git scripting (checkout, merge, commit). Converting to Python would wrap the same commands in `subprocess.run()` — more verbose, no benefit. Rarely changes.
 
-**Step 3.2** — `Review resolve_python.sh`
-> Cannot be converted (bootstrap). Review for any cleanup opportunities within bash.
+**Step 3.2** — `Review resolve_python.sh` ✅
+> **Keep as-is.** 202 lines, must stay bash (bootstrap — runs before Python exists). Fixed one outdated path reference in error message.
 
-## Expected Outcome
+## Outcome
 
 | File | Before | After |
 |------|--------|-------|
-| initialize_alcatraz.sh | 292 lines | ~80 lines (thin wrapper) |
-| resolve_python.sh | 202 lines | 202 lines (unchanged) |
-| smoke_test.sh | 369 lines | 0 lines (deleted, replaced by test_smoke.py) |
-| seed_alcatraz.sh | 80 lines | 80 lines (unchanged) |
-| entrypoint.sh | 19 lines | 19 lines (unchanged) |
-| **Total bash** | **962 lines** | **~381 lines** |
-| **Reduction** | | **~60%** |
+| initialize_alcatraz.sh | 294 lines | 102 lines (thin wrapper) |
+| resolve_python.sh | 202 lines | 202 lines (unchanged, bootstrap) |
+| smoke_test.sh | 370 lines | 0 lines (deleted → test_smoke.py) |
+| seed_alcatraz.sh | 80 lines | 80 lines (unchanged, idiomatic) |
+| entrypoint.sh | 19 lines | 19 lines (unchanged, Docker) |
+| **Total bash** | **965 lines** | **403 lines** |
+| **Reduction** | | **58%** |
 
-New Python code replaces ~581 lines of bash with maintainable, testable Python — integrated into the existing `src/alcatrazer/` package and `tests/` unittest suite.
+All Python code consolidated into `src/alcatrazer/` package. Tests bundled. `alcatrazer test` command available. 195 tests (160 unit + 35 smoke, smoke skipped without Docker).

@@ -1,13 +1,13 @@
 # Configuration:
 #   .env — API keys, USER_UID, WORKSPACE_DIR (managed by init script and user)
 #
-# Run from project root: docker compose -f container/docker-compose.yml ...
+# Run from project root: docker compose -f src/alcatrazer/container/docker-compose.yml ...
 
 services:
   workspace:
     build:
-      context: ..
-      dockerfile: container/Dockerfile
+      context: ../../..
+      dockerfile: src/alcatrazer/container/Dockerfile
       target: dev
       args:
         USER_UID: ${USER_UID:?Run initialization first (see README)}
@@ -18,7 +18,7 @@ services:
     volumes:
       # Mount the workspace directory (separate from .alcatrazer/, randomly named)
       # WORKSPACE_DIR is set in .env by the init script
-      - ../${WORKSPACE_DIR:?Run initialization first (see README)}:/workspace
+      - ../../../${WORKSPACE_DIR:?Run initialization first (see README)}:/workspace
       # Claude Code OAuth credentials (read-only, just the credentials file,
       # not the whole ~/.claude/ directory which may contain project memories/settings)
       - ~/.claude/.credentials.json:/home/agent/.claude/.credentials.json:ro
@@ -28,7 +28,7 @@ services:
       - npm-cache:/home/agent/.npm
       - bun-cache:/home/agent/.bun/install/cache
     env_file:
-      - ../.env
+      - ../../../.env
     stdin_open: true
     tty: true
 

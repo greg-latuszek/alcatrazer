@@ -18,7 +18,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+# Script lives at src/alcatrazer/scripts/ — project root is 3 levels up
+DEFAULT_PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # --- Parse arguments ---
 
@@ -198,5 +199,5 @@ echo "ERROR: Python ${MIN_MAJOR}.${MIN_MINOR}+ is required for the promotion dae
 echo "Options:"
 echo "  - Install Python ${MIN_MAJOR}.${MIN_MINOR}+ and re-run this script"
 echo "  - Install mise (https://mise.run) and re-run this script"
-echo "  - Run: src/resolve_python.sh --alcatraz-dir .alcatrazer"
+echo "  - Run: src/alcatrazer/scripts/resolve_python.sh --alcatraz-dir .alcatrazer"
 exit 1
