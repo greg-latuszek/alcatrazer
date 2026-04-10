@@ -14,7 +14,7 @@ from pathlib import Path
 
 # TODO: Remove once pyproject.toml handles src layout (Step 0.9)
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 
 
 def git(repo: str, *args: str) -> str:
@@ -679,7 +679,8 @@ class TestCountUnpromotedCommits(unittest.TestCase):
 
 # ── End-to-end: snapshot.py CLI entry point ──────────────────────────
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+# tests/ is at src/alcatrazer/tests/ — project root is 3 levels up
+PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 SNAPSHOT_SCRIPT = str(PROJECT_DIR / "src" / "alcatrazer" / "snapshot.py")
 
 

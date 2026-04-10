@@ -20,7 +20,8 @@ from pathlib import Path
 
 
 def project_dir():
-    return Path(__file__).resolve().parent.parent
+    # tests/ is at src/alcatrazer/tests/ — project root is 3 levels up
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def python_bin():
@@ -321,7 +322,7 @@ class TestSignalHandling(unittest.TestCase):
                       f"SIGINT should produce clean exit, got {returncode}")
 
 
-SEED_SCRIPT = str(project_dir() / "tests" / "seed_alcatraz.sh")
+SEED_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "tests" / "seed_alcatraz.sh")
 
 PROMOTED_NAME = "Test User"
 PROMOTED_EMAIL = "test@example.com"

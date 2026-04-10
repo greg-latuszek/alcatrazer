@@ -364,7 +364,7 @@ These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` co
 ## Running Tests
 
 ```bash
-.alcatrazer/python -m unittest discover -s tests -v
+.alcatrazer/python -m unittest discover -s src/alcatrazer/tests -v
 ```
 
 The test suite covers identity generation (name/email pools, workspace dir naming, collision avoidance), initialization (repo root guard, identity wiring, workspace separation), snapshot (branch detection, extraction, .gitignore filtering, exclusions, CLI, reset warnings), promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.

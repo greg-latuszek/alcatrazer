@@ -10,7 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+# tests/ is at src/alcatrazer/tests/ — project root is 3 levels up
+PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 INIT_SCRIPT = str(PROJECT_DIR / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")
 
 
