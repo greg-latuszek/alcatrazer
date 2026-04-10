@@ -66,7 +66,7 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 │   ├── resolve_python.sh           <-- bash: four-tier Python 3.11+ detection
 │   ├── snapshot.py                 <-- Python: snapshots outer repo into workspace
 │   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
-│   ├── watch_alcatraz.py           <-- Python: auto-promotion daemon
+│   ├── daemon.py                   <-- Python: auto-promotion daemon
 │   ├── inspect_promotion.py        <-- Python: live log viewer
 │   └── alcatrazer/                 <-- Python package
 │       ├── __init__.py
@@ -180,7 +180,7 @@ You are now inside the container as a non-root agent user. All tools are availab
 In a separate terminal:
 
 ```bash
-.alcatrazer/python src/watch_alcatraz.py
+.alcatrazer/python -m alcatrazer.daemon
 ```
 
 The daemon watches the workspace directory for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
@@ -355,7 +355,7 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 
 1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
 2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm workspace` — build and enter the container.
-3. `.alcatrazer/python src/watch_alcatraz.py` — start the promotion daemon (separate terminal).
+3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
 5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python src/inspect_promotion.py`.
 6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.

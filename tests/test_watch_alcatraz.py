@@ -32,7 +32,7 @@ def python_bin():
     return sys.executable
 
 
-DAEMON_SCRIPT = str(project_dir() / "src" / "watch_alcatraz.py")
+DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
 INSPECT_SCRIPT = str(project_dir() / "src" / "inspect_promotion.py")
 PYTHON = python_bin()
 
