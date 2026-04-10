@@ -67,9 +67,8 @@ if [ "${RESET}" = true ]; then
         # If Python isn't available (e.g. interrupted first init), skip the warning.
         PYTHON="${ALCATRAZ_DIR}/python"
         if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -n "${RESET_WORKSPACE_DIR}" ] && [ -d "${RESET_WORKSPACE_DIR}/.git" ]; then
-            UNPROMOTED=$("${PYTHON}" -c "
-import sys; sys.path.insert(0, '${SCRIPT_DIR}')
-from snapshot import count_unpromoted_commits
+            UNPROMOTED=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -c "
+from alcatrazer.snapshot import count_unpromoted_commits
 print(count_unpromoted_commits('${RESET_WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
 " 2>/dev/null || echo "0")
             if [ "${UNPROMOTED}" -gt 0 ] 2>/dev/null; then
@@ -253,7 +252,7 @@ else
     # Also excludes the workspace dir name from snapshot (in case it was tracked).
     # Creates a single "Initial commit" — zero footprint (Principle 2).
 
-    "${PYTHON}" "${SCRIPT_DIR}/snapshot.py" "${PROJECT_DIR}" "${WORKSPACE_DIR}"
+    PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -m alcatrazer.snapshot "${PROJECT_DIR}" "${WORKSPACE_DIR}"
 fi
 
 # --- Step 6: Add safe.directory so host git can read the workspace ---

@@ -130,7 +130,7 @@ class TestIdentityInInit(unittest.TestCase):
         # Copy src/ directory
         src_dir = Path(tmp) / "src"
         src_dir.mkdir()
-        for f in ["initialize_alcatraz.sh", "resolve_python.sh", "snapshot.py"]:
+        for f in ["initialize_alcatraz.sh", "resolve_python.sh"]:
             src_file = PROJECT_DIR / "src" / f
             dest = src_dir / f
             dest.write_text(src_file.read_text())
@@ -246,7 +246,7 @@ class TestWorkspaceSeparation(unittest.TestCase):
         # Copy src/ directory
         src_dir = Path(tmp) / "src"
         src_dir.mkdir()
-        for f in ["initialize_alcatraz.sh", "resolve_python.sh", "snapshot.py"]:
+        for f in ["initialize_alcatraz.sh", "resolve_python.sh"]:
             src_file = PROJECT_DIR / "src" / f
             dest = src_dir / f
             dest.write_text(src_file.read_text())
