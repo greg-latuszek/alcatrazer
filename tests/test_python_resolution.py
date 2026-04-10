@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-RESOLVE_SCRIPT = str(PROJECT_DIR / "src" / "resolve_python.sh")
+RESOLVE_SCRIPT = str(PROJECT_DIR / "src" / "alcatrazer" / "scripts" / "resolve_python.sh")
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 

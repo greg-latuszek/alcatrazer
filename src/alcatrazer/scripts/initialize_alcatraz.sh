@@ -16,7 +16,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+# Script lives at src/alcatrazer/scripts/ — project root is 3 levels up
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # --- Guard: verify we are at the repository root ---
 # Both .alcatrazer/ and the workspace directory must be created at the repo root.
@@ -35,6 +36,7 @@ if [ "$(cd "${PROJECT_DIR}" && pwd)" != "$(cd "${REPO_ROOT}" && pwd)" ]; then
     exit 1
 fi
 
+SRC_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ALCATRAZ_DIR="${PROJECT_DIR}/.alcatrazer"
 ENV_FILE="${PROJECT_DIR}/.env"
 ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
@@ -67,7 +69,7 @@ if [ "${RESET}" = true ]; then
         # If Python isn't available (e.g. interrupted first init), skip the warning.
         PYTHON="${ALCATRAZ_DIR}/python"
         if [ "${FORCE}" = false ] && [ -x "${PYTHON}" ] && [ -n "${RESET_WORKSPACE_DIR}" ] && [ -d "${RESET_WORKSPACE_DIR}/.git" ]; then
-            UNPROMOTED=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -c "
+            UNPROMOTED=$(PYTHONPATH="${SRC_DIR}" "${PYTHON}" -c "
 from alcatrazer.snapshot import count_unpromoted_commits
 print(count_unpromoted_commits('${RESET_WORKSPACE_DIR}', '${ALCATRAZ_DIR}'))
 " 2>/dev/null || echo "0")
@@ -173,7 +175,7 @@ else
     # First init — prompt user to select a workspace directory name
     echo ""
     echo "Choose a workspace directory name (this will be mounted into Docker):"
-    CHOICES=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -c "
+    CHOICES=$(PYTHONPATH="${SRC_DIR}" "${PYTHON}" -c "
 from alcatrazer.identity import generate_workspace_choices
 for c in generate_workspace_choices('${PROJECT_DIR}'):
     print(c)
@@ -228,7 +230,7 @@ else
     git init "${WORKSPACE_DIR}"
 
     # Generate random agent identity (or reuse existing one)
-    IDENTITY=$(PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -m alcatrazer.identity "${ALCATRAZ_DIR}")
+    IDENTITY=$(PYTHONPATH="${SRC_DIR}" "${PYTHON}" -m alcatrazer.identity "${ALCATRAZ_DIR}")
     AGENT_NAME=$(echo "${IDENTITY}" | head -1)
     AGENT_EMAIL=$(echo "${IDENTITY}" | tail -1)
 
@@ -252,7 +254,7 @@ else
     # Also excludes the workspace dir name from snapshot (in case it was tracked).
     # Creates a single "Initial commit" — zero footprint (Principle 2).
 
-    PYTHONPATH="${SCRIPT_DIR}" "${PYTHON}" -m alcatrazer.snapshot "${PROJECT_DIR}" "${WORKSPACE_DIR}"
+    PYTHONPATH="${SRC_DIR}" "${PYTHON}" -m alcatrazer.snapshot "${PROJECT_DIR}" "${WORKSPACE_DIR}"
 fi
 
 # --- Step 6: Add safe.directory so host git can read the workspace ---

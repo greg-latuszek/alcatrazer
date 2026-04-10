@@ -140,7 +140,7 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 ### 1. Initialize Alcatraz
 
 ```bash
-./src/initialize_alcatraz.sh
+./src/alcatrazer/scripts/initialize_alcatraz.sh
 ```
 
 This script:
@@ -169,8 +169,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Build and run
 
 ```bash
-docker compose -f container/docker-compose.yml build
-docker compose -f container/docker-compose.yml run --rm workspace
+docker compose -f src/alcatrazer/container/docker-compose.yml build
+docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
@@ -196,7 +196,7 @@ To watch promotion activity:
 Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
 
 ```bash
-./src/initialize_alcatraz.sh --reset
+./src/alcatrazer/scripts/initialize_alcatraz.sh --reset
 ```
 
 If the workspace has commits that haven't been promoted to the outer repo, you'll be warned before anything is destroyed:
@@ -212,7 +212,7 @@ Proceeding with --reset will discard them.
 To skip the prompt (e.g., in scripts):
 
 ```bash
-./src/initialize_alcatraz.sh --reset --force
+./src/alcatrazer/scripts/initialize_alcatraz.sh --reset --force
 ```
 
 After reset, the workspace is re-snapshotted from the outer repo's current main branch — picking up any changes that were merged since the last initialization.
@@ -341,7 +341,7 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 ## Docker Container Rules
 
-These rules are enforced by the `container/docker-compose.yml` configuration:
+These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` configuration:
 
 1. **Mount only the workspace directory** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
@@ -353,8 +353,8 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 
 ## Workflow
 
-1. `./src/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
-2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm workspace` — build and enter the container.
+1. `./src/alcatrazer/scripts/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
+2. `docker compose -f src/alcatrazer/container/docker-compose.yml build && docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace` — build and enter the container.
 3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
 5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.

@@ -18,7 +18,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
+# Script lives at src/alcatrazer/scripts/ — project root is 3 levels up
+DEFAULT_PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 # --- Parse arguments ---
 

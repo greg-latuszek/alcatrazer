@@ -42,7 +42,7 @@ echo "  Alcatraz Smoke Test"
 echo "========================================="
 
 # Run all checks inside a single container invocation and capture output
-OUTPUT=$(docker compose -f container/docker-compose.yml run --rm workspace bash -c '
+OUTPUT=$(docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace bash -c '
 # Delimiter-separated sections for reliable parsing
 echo "===SECTION:ID==="
 id
@@ -327,7 +327,7 @@ fi
 # --- 13. Dockerfile rejects build without USER_UID ---
 echo ""
 echo "--- 13. Dockerfile requires USER_UID ---"
-BUILD_OUTPUT=$(docker build --build-arg USER_UID="" -f "${PROJECT_DIR}/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
+BUILD_OUTPUT=$(docker build --build-arg USER_UID="" -f "${PROJECT_DIR}/src/alcatrazer/container/Dockerfile" "${PROJECT_DIR}" 2>&1 || true)
 if echo "${BUILD_OUTPUT}" | grep -q "USER_UID build arg is required"; then
     pass "Dockerfile rejects build without USER_UID"
 else
@@ -339,7 +339,7 @@ fi
 # footprint visible inside the container, this test catches it.
 echo ""
 echo "--- 14. Zero alcatraz footprint ---"
-FOOTPRINT_OUTPUT=$(docker compose -f container/docker-compose.yml run --rm workspace bash -c '
+FOOTPRINT_OUTPUT=$(docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace bash -c '
 {
     echo "=== ENV ==="
     env 2>/dev/null

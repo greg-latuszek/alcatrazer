@@ -11,23 +11,24 @@ import unittest
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-INIT_SCRIPT = str(PROJECT_DIR / "src" / "initialize_alcatraz.sh")
+INIT_SCRIPT = str(PROJECT_DIR / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")
 
 
 class TestRepoRootGuard(unittest.TestCase):
     """Verify initialize_alcatraz.sh refuses to run outside repo root."""
 
     def test_fails_when_script_not_at_repo_root(self):
-        """Script placed in a subdirectory (not repo root/src/) should fail."""
+        """Script placed in a subdirectory (not repo root) should fail."""
         with tempfile.TemporaryDirectory() as tmp:
             # Create a git repo
             subprocess.run(
                 ["git", "init", tmp], capture_output=True, check=True,
             )
-            # Place the script in a wrong location: repo_root/deep/src/
-            wrong_src = Path(tmp) / "deep" / "src"
-            wrong_src.mkdir(parents=True)
-            script_copy = wrong_src / "initialize_alcatraz.sh"
+            # Place the script at wrong depth: repo_root/deep/src/alcatrazer/scripts/
+            # Script derives PROJECT_DIR as 3 levels up → repo_root/deep/ (not repo root)
+            wrong_scripts = Path(tmp) / "deep" / "src" / "alcatrazer" / "scripts"
+            wrong_scripts.mkdir(parents=True)
+            script_copy = wrong_scripts / "initialize_alcatraz.sh"
             script_copy.write_text(Path(INIT_SCRIPT).read_text())
             script_copy.chmod(0o755)
 
@@ -80,22 +81,22 @@ class TestRepoRootGuard(unittest.TestCase):
                 capture_output=True, check=True,
             )
 
-            # Place script correctly at repo_root/src/
-            src_dir = Path(tmp) / "src"
-            src_dir.mkdir()
-            script_copy = src_dir / "initialize_alcatraz.sh"
-            script_copy.write_text(Path(INIT_SCRIPT).read_text())
-            script_copy.chmod(0o755)
-
-            # Also copy resolve_python.sh since init calls it
-            resolve_copy = src_dir / "resolve_python.sh"
-            resolve_copy.write_text(
-                (PROJECT_DIR / "src" / "resolve_python.sh").read_text()
-            )
-            resolve_copy.chmod(0o755)
+            # Place scripts at repo_root/src/alcatrazer/scripts/
+            scripts_dir = Path(tmp) / "src" / "alcatrazer" / "scripts"
+            scripts_dir.mkdir(parents=True)
+            for f in ["initialize_alcatraz.sh", "resolve_python.sh"]:
+                src_file = PROJECT_DIR / "src" / "alcatrazer" / "scripts" / f
+                dest = scripts_dir / f
+                dest.write_text(src_file.read_text())
+                dest.chmod(0o755)
+            # Copy alcatrazer package
+            pkg_dir = Path(tmp) / "src" / "alcatrazer"
+            for f in (PROJECT_DIR / "src" / "alcatrazer").iterdir():
+                if f.is_file() and f.suffix == ".py":
+                    (pkg_dir / f.name).write_text(f.read_text())
 
             result = subprocess.run(
-                [str(script_copy)],
+                [str(scripts_dir / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp,
                 timeout=30,
@@ -127,17 +128,15 @@ class TestIdentityInInit(unittest.TestCase):
             ["git", "-C", tmp, "commit", "-m", "init"],
             capture_output=True, check=True,
         )
-        # Copy src/ directory
-        src_dir = Path(tmp) / "src"
-        src_dir.mkdir()
+        # Copy src/alcatrazer/ package (scripts + Python modules)
+        pkg_dir = Path(tmp) / "src" / "alcatrazer"
+        scripts_dir = pkg_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
         for f in ["initialize_alcatraz.sh", "resolve_python.sh"]:
-            src_file = PROJECT_DIR / "src" / f
-            dest = src_dir / f
+            src_file = PROJECT_DIR / "src" / "alcatrazer" / "scripts" / f
+            dest = scripts_dir / f
             dest.write_text(src_file.read_text())
             dest.chmod(0o755)
-        # Copy alcatrazer package
-        pkg_dir = src_dir / "alcatrazer"
-        pkg_dir.mkdir()
         for f in (PROJECT_DIR / "src" / "alcatrazer").iterdir():
             if f.is_file() and f.suffix == ".py":
                 (pkg_dir / f.name).write_text(f.read_text())
@@ -160,7 +159,7 @@ class TestIdentityInInit(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".testws-0001\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -182,7 +181,7 @@ class TestIdentityInInit(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".testws-0002\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -200,7 +199,7 @@ class TestIdentityInInit(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".testws-0003\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -243,17 +242,15 @@ class TestWorkspaceSeparation(unittest.TestCase):
             ["git", "-C", tmp, "commit", "-m", "init"],
             capture_output=True, check=True,
         )
-        # Copy src/ directory
-        src_dir = Path(tmp) / "src"
-        src_dir.mkdir()
+        # Copy src/alcatrazer/ package (scripts + Python modules)
+        pkg_dir = Path(tmp) / "src" / "alcatrazer"
+        scripts_dir = pkg_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
         for f in ["initialize_alcatraz.sh", "resolve_python.sh"]:
-            src_file = PROJECT_DIR / "src" / f
-            dest = src_dir / f
+            src_file = PROJECT_DIR / "src" / "alcatrazer" / "scripts" / f
+            dest = scripts_dir / f
             dest.write_text(src_file.read_text())
             dest.chmod(0o755)
-        # Copy alcatrazer package
-        pkg_dir = src_dir / "alcatrazer"
-        pkg_dir.mkdir()
         for f in (PROJECT_DIR / "src" / "alcatrazer").iterdir():
             if f.is_file() and f.suffix == ".py":
                 (pkg_dir / f.name).write_text(f.read_text())
@@ -268,7 +265,7 @@ class TestWorkspaceSeparation(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".devspace-test\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -291,7 +288,7 @@ class TestWorkspaceSeparation(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".sandbox-abcd\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -307,7 +304,7 @@ class TestWorkspaceSeparation(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".codework-ef01\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )
@@ -325,7 +322,7 @@ class TestWorkspaceSeparation(unittest.TestCase):
             (alcatrazer_dir / "workspace-dir").write_text(".devbox-1234\n")
 
             subprocess.run(
-                [str(Path(tmp) / "src" / "initialize_alcatraz.sh")],
+                [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
                 capture_output=True, text=True,
                 cwd=tmp, timeout=60,
             )

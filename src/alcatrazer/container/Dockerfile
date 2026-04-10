@@ -72,7 +72,7 @@ RUN python --version && node --version && bun --version && \
 # Back to root for entrypoint (drops to agent after chown)
 USER root
 
-COPY --chmod=755 container/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 src/alcatrazer/container/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
 
