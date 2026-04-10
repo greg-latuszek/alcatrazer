@@ -261,20 +261,22 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
 
 def main() -> None:
     """Entry point called by initialize_alcatraz.sh after Python resolution."""
-    if len(sys.argv) < 3:
-        print(
-            f"Usage: {sys.argv[0]} <project-dir> <alcatrazer-dir> [--reset] [--force]",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    import argparse
 
-    project_dir = Path(sys.argv[1]).resolve()
-    alcatrazer_dir = Path(sys.argv[2]).resolve()
-    reset = "--reset" in sys.argv
-    force = "--force" in sys.argv
+    parser = argparse.ArgumentParser(
+        description="Post-Python initialization for Alcatrazer.",
+    )
+    parser.add_argument("project_dir", type=Path, help="Repository root directory")
+    parser.add_argument("alcatrazer_dir", type=Path, help="Alcatrazer state directory (.alcatrazer/)")
+    parser.add_argument("--reset", action="store_true", help="Reset workspace and reinitialize")
+    parser.add_argument("--force", action="store_true", help="Skip unpromoted work warning during reset")
 
-    if reset:
-        handle_reset(project_dir, alcatrazer_dir, force=force)
+    args = parser.parse_args()
+    project_dir = args.project_dir.resolve()
+    alcatrazer_dir = args.alcatrazer_dir.resolve()
+
+    if args.reset:
+        handle_reset(project_dir, alcatrazer_dir, force=args.force)
         print("Re-running initialization...")
         print()
 
