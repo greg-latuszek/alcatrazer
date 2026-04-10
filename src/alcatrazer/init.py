@@ -114,15 +114,15 @@ def init_workspace(project_dir: Path, alcatrazer_dir: Path,
     # Generate random agent identity (or reuse existing one)
     name, email = ensure_identity(str(alcatrazer_dir))
 
-    _git(str(workspace_dir), "config", "user.name", name)
-    _git(str(workspace_dir), "config", "user.email", email)
+    _git(str(workspace_dir), "config", "--local", "user.name", name)
+    _git(str(workspace_dir), "config", "--local", "user.email", email)
 
     # Disable commit signing — no access to host signing keys
-    _git(str(workspace_dir), "config", "commit.gpgsign", "false")
+    _git(str(workspace_dir), "config", "--local", "commit.gpgsign", "false")
 
     # Override signing key paths with empty values to prevent leaking host paths
-    _git(str(workspace_dir), "config", "user.signingkey", "")
-    _git(str(workspace_dir), "config", "gpg.ssh.allowedSignersFile", "")
+    _git(str(workspace_dir), "config", "--local", "user.signingkey", "")
+    _git(str(workspace_dir), "config", "--local", "gpg.ssh.allowedSignersFile", "")
 
     print()
     print(f"Workspace git repo initialized at: {workspace_dir}")
