@@ -46,6 +46,7 @@ packages = ["src/alcatrazer"]
 "src/alcatrazer/scripts" = "alcatrazer/scripts"
 "src/alcatrazer/tests/seed_alcatraz.sh" = "alcatrazer/tests/seed_alcatraz.sh"
 "src/alcatrazer/tests/smoke_test.sh" = "alcatrazer/tests/smoke_test.sh"
+"src/alcatrazer/templates" = "alcatrazer/templates"
 
 # --- Development dependencies ---
 
