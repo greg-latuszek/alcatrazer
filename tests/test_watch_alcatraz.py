@@ -33,7 +33,7 @@ def python_bin():
 
 
 DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
-INSPECT_SCRIPT = str(project_dir() / "src" / "inspect_promotion.py")
+INSPECT_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "inspect.py")
 PYTHON = python_bin()
 
 
@@ -915,7 +915,7 @@ class TestInspectPromotion(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No log file", result.stdout)
-        self.assertIn("watch_alcatraz.py", result.stdout)
+        self.assertIn("alcatrazer.daemon", result.stdout)
 
     def test_starts_tailing_when_log_exists(self):
         """Should start tailing when log file exists (we kill it quickly)."""

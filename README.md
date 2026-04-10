@@ -67,7 +67,7 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 │   ├── snapshot.py                 <-- Python: snapshots outer repo into workspace
 │   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
 │   ├── daemon.py                   <-- Python: auto-promotion daemon
-│   ├── inspect_promotion.py        <-- Python: live log viewer
+│   ├── inspect.py                  <-- Python: live log viewer
 │   └── alcatrazer/                 <-- Python package
 │       ├── __init__.py
 │       └── identity.py             <-- random agent identity + workspace dir name generation
@@ -188,7 +188,7 @@ The daemon watches the workspace directory for new commits and automatically pro
 To watch promotion activity:
 
 ```bash
-.alcatrazer/python src/inspect_promotion.py
+.alcatrazer/python -m alcatrazer.inspect
 ```
 
 ### Resetting Alcatraz
@@ -357,7 +357,7 @@ These rules are enforced by the `container/docker-compose.yml` configuration:
 2. `docker compose -f container/docker-compose.yml build && docker compose -f container/docker-compose.yml run --rm workspace` — build and enter the container.
 3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
-5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python src/inspect_promotion.py`.
+5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
 6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
 7. Human pushes the promoted commits to GitHub from the outer repo.
 

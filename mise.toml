@@ -73,4 +73,4 @@ run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.daemon"]
 
 [tasks.tail-promotion-log]
 description = "Tail the promotion daemon log"
-run = [".alcatrazer/python src/inspect_promotion.py"]
+run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.inspect"]
