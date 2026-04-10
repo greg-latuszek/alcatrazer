@@ -222,6 +222,14 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
     print("Resetting alcatrazer...")
 
     # Clean workspace directory (separate from .alcatrazer/)
+    # UID ownership chain:
+    #   - The directory itself is created by the host user (e.g., UID 1000)
+    #   - Files INSIDE are created by agents in Docker under the phantom UID (e.g., 1007)
+    #   - The host user cannot delete phantom-UID files directly
+    #   - We use a disposable ubuntu:24.04 container (runs as root, UID 0) to remove
+    #     the contents — root can delete files regardless of ownership
+    #   - After contents are removed, Python rmdir() removes the now-empty directory
+    #     (owned by the host user, so no permission issue)
     if workspace_dir and workspace_dir.is_dir():
         subprocess.run(
             ["docker", "run", "--rm",
@@ -236,7 +244,7 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
             pass
         print("Workspace directory cleaned.")
 
-    # Clean .alcatrazer/
+    # Clean .alcatrazer/ — same ownership pattern as above
     subprocess.run(
         ["docker", "run", "--rm",
          "-v", f"{alcatrazer_dir}:/workspace",
