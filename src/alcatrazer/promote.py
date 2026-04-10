@@ -12,7 +12,7 @@ Author identity priority (lowest to highest):
   3. --author-name / --author-email CLI flags
 
 Usage:
-    .alcatrazer/python src/promote.py \\
+    .alcatrazer/python -m alcatrazer.promote \\
         --source <path-to-source-repo> \\
         --target <path-to-target-repo> \\
         [--author-name "Your Name"] \\

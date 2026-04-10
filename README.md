@@ -252,7 +252,7 @@ max_log_size = 512
 
 ## Promoting Agent Work
 
-The promotion script (`src/promote.py`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+The promotion script (`alcatrazer.promote`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
 
 - Preserves full branch and merge topology (branches, merge commits, parent chains)
 - Rewrites author/committer from the agent's random identity to the host user's identity
@@ -265,10 +265,10 @@ If you prefer to promote manually instead of using the daemon:
 
 ```bash
 # Replace <workspace> with your workspace directory name (from .alcatrazer/workspace-dir)
-.alcatrazer/python src/promote.py --source <workspace> --target .
+.alcatrazer/python -m alcatrazer.promote --source <workspace> --target .
 
 # Preview what would be promoted:
-.alcatrazer/python src/promote.py --source <workspace> --target . --dry-run
+.alcatrazer/python -m alcatrazer.promote --source <workspace> --target . --dry-run
 ```
 
 ### Promotion Modes

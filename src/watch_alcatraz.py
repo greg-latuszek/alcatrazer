@@ -32,9 +32,9 @@ import threading
 import tomllib
 from pathlib import Path
 
-# Import promote module (same package)
+# Import promote module from alcatrazer package
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import promote as promote_mod
+from alcatrazer import promote as promote_mod
 
 
 # --- Default config ---

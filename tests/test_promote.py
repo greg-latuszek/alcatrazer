@@ -15,9 +15,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-# Add src/ to path so we can import promote directly
+# Add src/ to path so we can import alcatrazer package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import promote as promote_mod
+from alcatrazer import promote as promote_mod
 
 SEED_SCRIPT = str(Path(__file__).resolve().parent / "seed_alcatraz.sh")
 

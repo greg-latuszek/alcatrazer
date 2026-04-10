@@ -599,7 +599,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def test_zero_after_full_promotion(self):
         """After promoting all commits, count should be 0."""
         import snapshot
-        import promote as promote_mod
+        from alcatrazer import promote as promote_mod
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             target = str(Path(tmp) / "target")
@@ -623,7 +623,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def test_partial_promotion(self):
         """Promote some commits, add more — count reflects only new ones."""
         import snapshot
-        import promote as promote_mod
+        from alcatrazer import promote as promote_mod
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             target = str(Path(tmp) / "target")
@@ -835,7 +835,7 @@ class TestResetUnpromotedWarning(unittest.TestCase):
     def test_reset_detects_zero_after_full_promotion(self):
         """After promoting everything, reset should show no warning."""
         import snapshot
-        import promote as promote_mod
+        from alcatrazer import promote as promote_mod
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -868,7 +868,7 @@ class TestResetUnpromotedWarning(unittest.TestCase):
     def test_reset_scenario_partial_promotion(self):
         """Promote some work, agent adds more — reset detects the new ones."""
         import snapshot
-        import promote as promote_mod
+        from alcatrazer import promote as promote_mod
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
