@@ -199,5 +199,5 @@ echo "ERROR: Python ${MIN_MAJOR}.${MIN_MINOR}+ is required for the promotion dae
 echo "Options:"
 echo "  - Install Python ${MIN_MAJOR}.${MIN_MINOR}+ and re-run this script"
 echo "  - Install mise (https://mise.run) and re-run this script"
-echo "  - Run: src/resolve_python.sh --alcatraz-dir .alcatrazer"
+echo "  - Run: src/alcatrazer/scripts/resolve_python.sh --alcatraz-dir .alcatrazer"
 exit 1
