@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed for creating GitHub Releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(python -c "
+          import sys; sys.path.insert(0, 'src')
+          from alcatrazer import __version__; print(__version__)
+          ")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "ERROR: Tag v${TAG_VERSION} does not match __version__=${PKG_VERSION}"
+            exit 1
+          fi
+          echo "Version verified: ${PKG_VERSION}"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Build package
+        run: uv build
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd src/alcatrazer
+          find . -type f | sort | xargs sha256sum > /tmp/SHA256SUMS
+          echo "Generated checksums for $(wc -l < /tmp/SHA256SUMS) files"
+          cat /tmp/SHA256SUMS
+
+      # - name: Publish to PyPI
+      #   env:
+      #     TWINE_USERNAME: __token__
+      #     TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+      #   run: |
+      #     pip install twine
+      #     twine upload dist/*
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/* /tmp/SHA256SUMS
