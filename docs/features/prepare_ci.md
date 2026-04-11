@@ -201,16 +201,16 @@ CI can't enforce lint until the baseline is clean. Issues to address:
 - May need its own setup step or a dedicated test that bootstraps minimally
 - Can defer to after first PyPI publish if too complex initially
 
-## Open Questions
+## Open Questions (deferred — not blocking Steps 1-5)
 
-1. **Smoke tests in CI:** The smoke tests require a fully initialized environment 
-(Docker image built, workspace set up, phantom UID). 
-How much setup is needed in CI? Can we simplify the prerequisites, 
-or do we need a dedicated "CI bootstrap" that runs `initialize_alcatraz.sh` in the runner?
+1. **Smoke tests in CI (Step 6):** The smoke tests require a fully initialized environment: 
+`.alcatrazer/` state (uid, agent-identity), built Docker image, `docker compose`, 
+`alcatrazer.toml` + `.env` at project root. That's essentially the full `initialize_alcatraz.sh` 
+flow plus `docker compose build` inside the CI runner. Solve when we get to Step 6.
 
-2. **PyPI trusted publishers:** GitHub Actions supports PyPI trusted publishers 
+2. **PyPI trusted publishers (after PyPI recovery):** GitHub Actions supports PyPI trusted publishers 
 (OIDC-based, no API token needed). More secure than a stored secret. 
-Worth setting up when PyPI access is recovered?
+Evaluate when PyPI access is recovered.
 
 ## Current State
 
