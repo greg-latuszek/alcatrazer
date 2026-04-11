@@ -34,7 +34,7 @@ target-repo/
 │   ├── workspace-dir         <-- name of the workspace directory
 │   ├── promote-export-marks
 │   ├── promote-import-marks
-│   ├── src/                  <-- all tool code lives here (scripts, Docker templates, Python modules)
+│   ├── src/alcatrazer/       <-- full package tree copied from PyPI wheel (Python modules, container/, scripts/, templates/, tests/)
 │   └── ... (logs, PID, etc.)
 └── .<workspace>/             <-- gitignored, randomly named (e.g., .devspace-7f3a/)
     ├── .git/                 <-- inner git (random agent identity, no remote)
@@ -169,9 +169,7 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
    b. Re-run `init` with `--upgrade` flag — same effect, explicit intent
    c. Manual: user downloads new version and replaces `.alcatrazer/src/`
 
-3. **Development vs. deployment layout:** Our dev repo has `src/` and `container/` at repo root. Deployed installations have them inside `.alcatrazer/`. The scripts need to auto-detect their location — probably via `Path(__file__).resolve().parent` which already works regardless of where the file sits. Need to verify all scripts use relative path resolution.
-
-4. **Domain / URL for curl installer:**
+3. **Domain / URL for curl installer:**
    **Decision:** Start with raw GitHub URL (free, zero setup):
    `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh`
 
@@ -179,13 +177,14 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
    - GitHub Pages on the repo → `https://greg-latuszek.github.io/alcatrazer/install.sh`
    - Custom domain on GitHub Pages → `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh` (**costs money**)
    
-   Note: `https://github.com/<user>/<repo>/install` is NOT a valid GitHub URL pattern. GitHub only serves raw files via `raw.githubusercontent.com`, release assets, or GitHub Pages.
+   Note: `https://github.com/<user>/<repo>/install` is NOT a valid GitHub URL pattern. 
+   GitHub only serves raw files via `raw.githubusercontent.com`, release assets, or GitHub Pages.
 
-5. **Should the installer also run initialization?** 
+4. **Should the installer also run initialization?** 
 The init command could offer to run the full initialization (UID, workspace, safe.directory) as the final step, 
 or leave it as a separate command. Running it immediately gives a better "one command to set up" experience.
 
-6. **The `.alcatrazer/python` symlink:** 
+5. **The `.alcatrazer/python` symlink:** 
 The curl|bash path creates it during Python resolution. 
 But pipx/uvx users also need it for the daemon. 
 Should `alcatrazer init` create the symlink too (detecting the Python that's running it via `sys.executable`)?
@@ -227,7 +226,8 @@ Interactive CLI that:
 Optionally ask about tool versions and daemon settings (or accept defaults).
 4. **Write `.env.example`** — template for API keys
 5. **Extract tool files** 
-— copy `scripts/`, `container/` from package into `.alcatrazer/` (or wherever the deployed layout puts them)
+— copy the full `src/alcatrazer/` tree from the PyPI package into `.alcatrazer/src/alcatrazer/` 
+(Python modules, container/, scripts/, templates/, tests/ — same layout as the dev repo)
 6. **Update `.gitignore`** — add `.alcatrazer/` and `.env` entries
 7. **Create `.alcatrazer/python` symlink** — from `sys.executable` (the Python that's running `alcatrazer init`)
 8. **Run initialization** 
@@ -235,7 +235,7 @@ Optionally ask about tool versions and daemon settings (or accept defaults).
 random agent identity, git init + snapshot, safe.directory
 
 ### Step 3: Implement `alcatrazer update`
-Re-extracts tool files from package data into `.alcatrazer/`, preserving `alcatrazer.toml` 
+Re-extracts `src/alcatrazer/` from package data into `.alcatrazer/src/alcatrazer/`, preserving `alcatrazer.toml` 
 and all state (workspace, marks, UID, logs, agent identity, workspace-dir selection).
 
 ### Step 4: Write `install.sh` (curl|bash bootstrap)
