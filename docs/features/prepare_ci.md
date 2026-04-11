@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-## Status: Planning
+## Status: Steps 1-5 done, Step 6 requires manual GitHub config
 
 ## Goal
 
@@ -160,49 +160,37 @@ See [design_principles.md](../design_principles.md) — "Checksum Verification v
 
 ## Implementation Plan
 
-### Step 1: Fix stale reference in pyproject.toml
+### Step 1: Fix stale reference in pyproject.toml ✅
 
-`pyproject.toml` line 48 includes `smoke_test.sh` in force-include — 
-that file no longer exists (refactored to `test_smoke.py`). Remove it.
+Removed `smoke_test.sh` force-include and all redundant force-include entries 
+(hatch auto-discovers everything under `src/alcatrazer/`). Also moved `test_smoke.py` 
+to `src/alcatrazer/integration_tests/` for clean separation from unit tests.
 
-### Step 2: Make codebase pass lint and format checks
+### Step 2: Make codebase pass lint and format checks ✅
 
-The codebase currently has 47 lint errors and 13 files need reformatting. 
-CI can't enforce lint until the baseline is clean. Issues to address:
+Fixed 47 lint errors across 13 files. Suppressed UP036 globally — 
+version guard blocks give friendly errors when scripts are run directly with old Python.
 
-- **Formatting**: `ruff format` on all files (mechanical, safe)
-- **E501**: Lines over 100 chars — mostly in tests and help strings
-- **I001**: Import sorting — auto-fixable
-- **SIM105/SIM108/SIM115**: Style suggestions — review case by case
-- **UP036**: Version guard blocks (`if sys.version_info < (3, 11)`) — 
-  ruff flags these because `requires-python = ">=3.11"` in pyproject.toml. 
-  But these guards give a friendly error when someone runs a script directly 
-  with an older Python, bypassing pip's version check. 
-  **Decision:** suppress UP036 globally — the guards protect the deployed-from-source path
-
-### Step 3: Create `.github/workflows/ci.yml`
+### Step 3: Create `.github/workflows/ci.yml` ✅
 
 - Lint job (ruff check + ruff format --check)
 - Test matrix (Python 3.11, 3.12, 3.13)
-- Build job (uv build + upload artifact)
+- Build job (uv build + upload artifact, 90-day retention)
 - Triggers on push to any branch + PRs to main
-- Verify it passes on a real push
 
-### Step 4: Create `.github/workflows/smoke.yml`
+### Step 4: Create `.github/workflows/smoke.yml` ✅
 
 - Docker smoke tests — triggers on push to `main` only (after merge)
-- Requires: full environment setup in CI (initialize_alcatraz.sh, Docker image build)
-- May need its own setup step or a dedicated test that bootstraps minimally
+- Non-interactive bootstrap: UID, identity, workspace, snapshot, Docker image build
+- Draft — may need iteration for CI-specific edge cases
 
-### Step 5: Create `.github/workflows/release.yml`
+### Step 5: Create `.github/workflows/release.yml` ✅
 
 - Triggers on version tag (`v*`)
-- Version tag verification (tag matches `__version__`)
-- Build wheel
-- SHA256SUMS generation
-- GitHub Release creation with SHA256SUMS attached
+- Verifies tag matches `__version__`
+- Builds wheel, generates SHA256SUMS from `src/alcatrazer/`
+- Creates GitHub Release with wheel, sdist, and SHA256SUMS attached
 - PyPI publish step present but **commented out** (no PyPI access yet)
-- Test with a dry run on a test tag first
 
 ### Step 6: Enable branch protection on `main`
 
