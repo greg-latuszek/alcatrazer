@@ -88,6 +88,21 @@ Everything else lives inside `.alcatrazer/` (gitignored).
 
 *Source: [install_method.md](features/install_method.md)*
 
+### Per-Repo Install, Not Global
+
+Each repository gets its own copy of alcatrazer source code inside `.alcatrazer/src/alcatrazer/`. 
+There is no shared global installation.
+
+**Why:** Version independence. If you have 10 repos using alcatrazer, each one controls its own version. 
+Repo A can stay on 0.2.0 while repo B upgrades to 0.3.0. A bug in a new release doesn't hit every project 
+at once — you update each repo when you're ready.
+
+The alternative — a single shared install (e.g., `~/.alcatrazer/` or a persistent `pipx install`) — 
+would mean one update affects all projects simultaneously. That's a risk we don't want to impose.
+
+The duplication cost is low: alcatrazer is stdlib-only, the source tree is small, 
+and `.alcatrazer/` is gitignored — it never enters version control or gets pushed anywhere.
+
 ### Workspace Is a Sibling, Not a Child
 
 The agent workspace lives in a separate, randomly named top-level directory (e.g., `.devspace-7f3a/`), 
