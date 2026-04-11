@@ -30,6 +30,7 @@ def python_bin():
     if python_file.is_symlink() or python_file.exists():
         return str(python_file.resolve())
     import sys
+
     return sys.executable
 
 
@@ -51,12 +52,13 @@ class TestConfigLoading(unittest.TestCase):
         pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
         if os.path.exists(pid_file):
             try:
-                pid = int(open(pid_file).read().strip())
+                pid = int(Path(pid_file).read_text().strip())
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_toml(self, content):
@@ -67,9 +69,12 @@ class TestConfigLoading(unittest.TestCase):
     def _start_daemon(self, extra_args=None):
         """Start daemon and return the Popen object."""
         cmd = [
-            PYTHON, DAEMON_SCRIPT,
-            "--alcatraz-dir", self.alcatraz_dir,
-            "--project-dir", self.tmpdir,
+            PYTHON,
+            DAEMON_SCRIPT,
+            "--alcatraz-dir",
+            self.alcatraz_dir,
+            "--project-dir",
+            self.tmpdir,
         ]
         if extra_args:
             cmd.extend(extra_args)
@@ -83,10 +88,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_interval_from_toml(self):
         """Daemon should read the interval value from alcatrazer.toml."""
-        self._write_toml(
-            "[promotion-daemon]\n"
-            "interval = 42\n"
-        )
+        self._write_toml("[promotion-daemon]\ninterval = 42\n")
         proc = self._start_daemon()
         try:
             # Daemon is running — we can't directly inspect its internal state,
@@ -99,12 +101,12 @@ class TestConfigLoading(unittest.TestCase):
     def test_reads_all_config_keys(self):
         """Daemon should parse all [promotion-daemon] config keys without error."""
         self._write_toml(
-            '[promotion-daemon]\n'
-            'interval = 3\n'
+            "[promotion-daemon]\n"
+            "interval = 3\n"
             'branches = "main"\n'
             'mode = "mirror"\n'
             'verbosity = "detailed"\n'
-            'max_log_size = 256\n'
+            "max_log_size = 256\n"
         )
         proc = self._start_daemon()
         try:
@@ -125,7 +127,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_handles_missing_daemon_section(self):
         """Daemon should use defaults when [promotion-daemon] section is missing."""
-        self._write_toml("[promotion]\nname = \"Test\"\n")
+        self._write_toml('[promotion]\nname = "Test"\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
@@ -135,11 +137,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_branch_list_config(self):
         """Daemon should handle branches as a TOML list."""
-        self._write_toml(
-            '[promotion-daemon]\n'
-            'interval = 2\n'
-            'branches = ["main", "feature/*"]\n'
-        )
+        self._write_toml('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should handle branch list")
@@ -158,13 +156,15 @@ class TestWorkspaceCheck(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_exits_when_workspace_missing(self):
         """Daemon should exit non-zero when workspace/.git doesn't exist."""
         result = subprocess.run(
             [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("workspace", result.stderr.lower() + result.stdout.lower())
@@ -174,7 +174,8 @@ class TestWorkspaceCheck(unittest.TestCase):
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace"))
         result = subprocess.run(
             [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(result.returncode, 0)
 
@@ -194,20 +195,27 @@ class TestPidGuard(unittest.TestCase):
     def tearDown(self):
         if os.path.exists(self.pid_file):
             try:
-                pid = int(open(self.pid_file).read().strip())
+                pid = int(Path(self.pid_file).read_text().strip())
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.tmpdir],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.tmpdir,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(0.5)
         return proc
@@ -217,7 +225,7 @@ class TestPidGuard(unittest.TestCase):
         proc = self._start_daemon()
         try:
             self.assertTrue(os.path.exists(self.pid_file))
-            stored_pid = int(open(self.pid_file).read().strip())
+            stored_pid = int(Path(self.pid_file).read_text().strip())
             self.assertEqual(stored_pid, proc.pid)
         finally:
             proc.send_signal(signal.SIGTERM)
@@ -228,10 +236,16 @@ class TestPidGuard(unittest.TestCase):
         proc1 = self._start_daemon()
         try:
             result = subprocess.run(
-                [PYTHON, DAEMON_SCRIPT,
-                 "--alcatraz-dir", self.alcatraz_dir,
-                 "--project-dir", self.tmpdir],
-                capture_output=True, text=True,
+                [
+                    PYTHON,
+                    DAEMON_SCRIPT,
+                    "--alcatraz-dir",
+                    self.alcatraz_dir,
+                    "--project-dir",
+                    self.tmpdir,
+                ],
+                capture_output=True,
+                text=True,
             )
             self.assertNotEqual(result.returncode, 0)
             output = result.stderr.lower() + result.stdout.lower()
@@ -264,7 +278,7 @@ class TestPidGuard(unittest.TestCase):
         proc = self._start_daemon()
         try:
             self.assertTrue(os.path.exists(self.pid_file))
-            stored_pid = int(open(self.pid_file).read().strip())
+            stored_pid = int(Path(self.pid_file).read_text().strip())
             self.assertEqual(stored_pid, proc.pid)
         finally:
             proc.send_signal(signal.SIGTERM)
@@ -285,21 +299,28 @@ class TestSignalHandling(unittest.TestCase):
         pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
         if os.path.exists(pid_file):
             try:
-                pid = int(open(pid_file).read().strip())
+                pid = int(Path(pid_file).read_text().strip())
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_sigterm_exits_cleanly(self):
         """SIGTERM should cause a clean exit (returncode 0)."""
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.tmpdir],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.tmpdir,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(0.5)
         proc.send_signal(signal.SIGTERM)
@@ -309,17 +330,24 @@ class TestSignalHandling(unittest.TestCase):
     def test_sigint_exits_cleanly(self):
         """SIGINT (Ctrl+C) should cause a clean exit."""
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.tmpdir],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.tmpdir,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(0.5)
         proc.send_signal(signal.SIGINT)
         returncode = proc.wait(timeout=5)
         # SIGINT may produce 0 or -2 (128+2) depending on implementation
-        self.assertIn(returncode, [0, -2, 130],
-                      f"SIGINT should produce clean exit, got {returncode}")
+        self.assertIn(
+            returncode, [0, -2, 130], f"SIGINT should produce clean exit, got {returncode}"
+        )
 
 
 SEED_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "tests" / "seed_alcatraz.sh")
@@ -332,7 +360,9 @@ def git(repo: str, *args: str) -> str:
     """Run a git command, return stdout."""
     result = subprocess.run(
         ["git", "-C", repo, *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -370,12 +400,12 @@ class TestDaemonPromotion(unittest.TestCase):
         # Write alcatrazer.toml with promotion identity and fast polling
         toml_path = os.path.join(self.test_project, "alcatrazer.toml")
         Path(toml_path).write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
         )
 
         # Create marks dir
@@ -391,14 +421,21 @@ class TestDaemonPromotion(unittest.TestCase):
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         return proc
 
@@ -411,8 +448,9 @@ class TestDaemonPromotion(unittest.TestCase):
 
             # Verify commits appeared in the outer repo
             target_msgs = git(self.test_project, "log", "--all", "--format=%s").splitlines()
-            self.assertIn("initial commit", target_msgs,
-                          "Seeded commits should appear in outer repo")
+            self.assertIn(
+                "initial commit", target_msgs, "Seeded commits should appear in outer repo"
+            )
             self.assertIn("merge feature/auth into main", target_msgs)
         finally:
             proc.send_signal(signal.SIGTERM)
@@ -487,6 +525,7 @@ class TestLogRotation(unittest.TestCase):
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_log_rotates_when_exceeding_max_size(self):
@@ -494,13 +533,13 @@ class TestLogRotation(unittest.TestCase):
         # Set max_log_size to 1 KB so rotation triggers quickly
         toml_path = os.path.join(self.test_project, "alcatrazer.toml")
         Path(toml_path).write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
-            f'max_log_size = 1\n'  # 1 KB — will rotate very quickly
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
+            f"max_log_size = 1\n"  # 1 KB — will rotate very quickly
         )
 
         # Pre-fill the log with > 1 KB of data to trigger rotation on first cycle
@@ -508,17 +547,22 @@ class TestLogRotation(unittest.TestCase):
         log_file.write_text("x" * 2048 + "\n")
 
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         try:
             time.sleep(3)
 
             rotated_log = Path(self.alcatraz_dir) / "promotion-daemon.log.1"
-            self.assertTrue(rotated_log.exists(),
-                            "Rotated log file (.log.1) should exist")
+            self.assertTrue(rotated_log.exists(), "Rotated log file (.log.1) should exist")
             # Current log should be smaller than the rotated one
             self.assertTrue(log_file.exists(), "Current log should exist")
         finally:
@@ -544,7 +588,8 @@ class TestBranchFiltering(unittest.TestCase):
         git(self.test_project, "add", ".gitkeep")
         git(self.test_project, "commit", "-m", "init outer repo")
 
-        # Create workspace with seeded history (has main, feature/auth, agent/backend, agent/frontend)
+        # Create workspace with seeded history
+        # (has main, feature/auth, agent/backend, agent/frontend)
         os.makedirs(self.workspace)
         subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
         git(self.workspace, "config", "user.name", "Alcatraz Agent")
@@ -564,26 +609,33 @@ class TestBranchFiltering(unittest.TestCase):
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_toml(self, branches_value):
         toml_path = os.path.join(self.test_project, "alcatrazer.toml")
         Path(toml_path).write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
-            f'branches = {branches_value}\n'
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
+            f"branches = {branches_value}\n"
         )
 
     def _start_daemon(self):
         return subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
     def _target_branches(self):
@@ -664,12 +716,12 @@ class _ConflictTestBase(unittest.TestCase):
 
         # Write toml
         Path(self.test_project, "alcatrazer.toml").write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
         )
         os.makedirs(self.alcatraz_dir, exist_ok=True)
 
@@ -683,15 +735,23 @@ class _ConflictTestBase(unittest.TestCase):
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
         return subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+
 
 class TestConflictDetection(_ConflictTestBase):
     """Integration test: daemon handles conflicts when outer repo diverges."""
@@ -725,7 +785,9 @@ class TestConflictDetection(_ConflictTestBase):
             time.sleep(3)
 
             # Check that a conflict branch was created
-            all_branches = git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+            all_branches = git(
+                self.test_project, "branch", "--format=%(refname:short)"
+            ).splitlines()
             conflict_branches = [b for b in all_branches if b.startswith("conflict/resolve-")]
             self.assertTrue(
                 len(conflict_branches) > 0,
@@ -794,12 +856,12 @@ class TestConflictDetection(_ConflictTestBase):
 
         # Configure to promote all branches
         Path(self.test_project, "alcatrazer.toml").write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
             f'branches = "all"\n'
         )
 
@@ -807,7 +869,9 @@ class TestConflictDetection(_ConflictTestBase):
         proc2 = self._start_daemon()
         try:
             time.sleep(3)
-            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            branches = set(
+                git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+            )
             # The new feature branch should be promoted despite main being conflicted
             self.assertIn("feature/new-work", branches)
         finally:
@@ -906,13 +970,15 @@ class TestInspectPromotion(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_exits_when_no_log_file(self):
         """Should exit non-zero with helpful message when log doesn't exist."""
         result = subprocess.run(
             [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No log file", result.stdout)
@@ -925,7 +991,8 @@ class TestInspectPromotion(unittest.TestCase):
 
         proc = subprocess.Popen(
             [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(0.5)
         proc.send_signal(signal.SIGINT)
@@ -960,12 +1027,12 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
         Path(self.test_project, "alcatrazer.toml").write_text(
-            f'[promotion]\n'
+            f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
-            f'\n'
-            f'[promotion-daemon]\n'
-            f'interval = 1\n'
+            f"\n"
+            f"[promotion-daemon]\n"
+            f"interval = 1\n"
             f'mode = "alcatraz-tree"\n'
         )
         os.makedirs(self.alcatraz_dir, exist_ok=True)
@@ -980,19 +1047,28 @@ class TestAlcatrazTreeMode(unittest.TestCase):
             except (ProcessLookupError, ValueError):
                 pass
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_promotes_into_alcatraz_namespace(self):
         """In alcatraz-tree mode, inner main becomes outer alcatraz/main."""
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         try:
             time.sleep(3)
-            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            branches = set(
+                git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+            )
             self.assertIn("alcatraz/main", branches)
             self.assertIn("alcatraz/feature/auth", branches)
             # Original main should still be outer repo's own main (not overwritten)
@@ -1006,10 +1082,16 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         """alcatraz-tree mode should never conflict — separate namespace."""
         # Do initial promotion
         proc = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(3)
         proc.send_signal(signal.SIGTERM)
@@ -1028,19 +1110,29 @@ class TestAlcatrazTreeMode(unittest.TestCase):
 
         # Restart daemon — should promote without conflict
         proc2 = subprocess.Popen(
-            [PYTHON, DAEMON_SCRIPT,
-             "--alcatraz-dir", self.alcatraz_dir,
-             "--project-dir", self.test_project],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.test_project,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         try:
             time.sleep(3)
-            branches = set(git(self.test_project, "branch", "--format=%(refname:short)").splitlines())
+            branches = set(
+                git(self.test_project, "branch", "--format=%(refname:short)").splitlines()
+            )
             # No conflict branches should exist
             conflict_branches = [b for b in branches if b.startswith("conflict/")]
             self.assertEqual(conflict_branches, [])
             # Agent work should be in alcatraz/main
-            alcatraz_msgs = git(self.test_project, "log", "alcatraz/main", "--format=%s").splitlines()
+            alcatraz_msgs = git(
+                self.test_project, "log", "alcatraz/main", "--format=%s"
+            ).splitlines()
             self.assertIn("agent more work", alcatraz_msgs)
             # Human work should still be on main
             main_msgs = git(self.test_project, "log", "main", "--format=%s").splitlines()

@@ -8,12 +8,13 @@ Phase 3: Orchestrator (snapshot_workspace) — full flow integration.
 
 import os
 import subprocess
+
+# TODO: Remove once pyproject.toml handles src layout (Step 0.9)
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-# TODO: Remove once pyproject.toml handles src layout (Step 0.9)
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 
 
@@ -21,7 +22,9 @@ def git(repo: str, *args: str) -> str:
     """Run a git command in the given repo, return stdout."""
     result = subprocess.run(
         ["git", "-C", repo, *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -30,7 +33,8 @@ def make_repo(path: str, branch: str = "main") -> None:
     """Create a git repo with one commit on the given branch."""
     subprocess.run(
         ["git", "init", "-b", branch, path],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     git(path, "config", "user.name", "Test")
     git(path, "config", "user.email", "test@test.com")
@@ -47,6 +51,7 @@ class TestRequireGitRepo(unittest.TestCase):
 
     def test_returns_repo_root_for_valid_repo(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp)
             root = snapshot.require_git_repo(tmp)
@@ -54,6 +59,7 @@ class TestRequireGitRepo(unittest.TestCase):
 
     def test_returns_root_from_subdirectory(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp)
             subdir = Path(tmp) / "sub" / "deep"
@@ -63,12 +69,13 @@ class TestRequireGitRepo(unittest.TestCase):
 
     def test_raises_for_non_git_directory(self):
         from alcatrazer import snapshot
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(snapshot.NotAGitRepoError):
-                snapshot.require_git_repo(tmp)
+
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(snapshot.NotAGitRepoError):
+            snapshot.require_git_repo(tmp)
 
     def test_error_message_is_informative(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(snapshot.NotAGitRepoError) as ctx:
                 snapshot.require_git_repo(tmp)
@@ -83,12 +90,14 @@ class TestDetectDefaultBranch(unittest.TestCase):
 
     def test_detects_main_branch(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp, branch="main")
             self.assertEqual(snapshot.detect_default_branch(tmp), "main")
 
     def test_detects_master_branch(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp, branch="master")
             self.assertEqual(snapshot.detect_default_branch(tmp), "master")
@@ -96,6 +105,7 @@ class TestDetectDefaultBranch(unittest.TestCase):
     def test_origin_head_takes_priority(self):
         """When origin/HEAD exists, it wins over local branch existence."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             # Create a "remote" repo with main branch
             remote = Path(tmp) / "remote"
@@ -106,7 +116,8 @@ class TestDetectDefaultBranch(unittest.TestCase):
             local = Path(tmp) / "local"
             subprocess.run(
                 ["git", "clone", str(remote), str(local)],
-                capture_output=True, check=True,
+                capture_output=True,
+                check=True,
             )
             # Also create a master branch locally
             git(str(local), "branch", "master")
@@ -117,6 +128,7 @@ class TestDetectDefaultBranch(unittest.TestCase):
     def test_origin_head_points_to_master(self):
         """origin/HEAD pointing to master is respected."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             remote = Path(tmp) / "remote"
             remote.mkdir()
@@ -125,22 +137,27 @@ class TestDetectDefaultBranch(unittest.TestCase):
             local = Path(tmp) / "local"
             subprocess.run(
                 ["git", "clone", str(remote), str(local)],
-                capture_output=True, check=True,
+                capture_output=True,
+                check=True,
             )
             self.assertEqual(snapshot.detect_default_branch(str(local)), "master")
 
     def test_returns_none_for_empty_repo(self):
         """A freshly git-init'd repo with no commits returns None."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(
-                ["git", "init", tmp], capture_output=True, check=True,
+                ["git", "init", tmp],
+                capture_output=True,
+                check=True,
             )
             self.assertIsNone(snapshot.detect_default_branch(tmp))
 
     def test_raises_when_both_exist_without_origin_head(self):
         """If both main and master exist locally with no origin/HEAD, fail."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp, branch="main")
             git(tmp, "branch", "master")
@@ -150,6 +167,7 @@ class TestDetectDefaultBranch(unittest.TestCase):
 
     def test_ambiguous_error_message_lists_branches(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             make_repo(tmp, branch="main")
             git(tmp, "branch", "master")
@@ -169,6 +187,7 @@ class TestExtractSnapshot(unittest.TestCase):
 
     def test_extracts_files_from_main(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -180,6 +199,7 @@ class TestExtractSnapshot(unittest.TestCase):
 
     def test_extracts_nested_directories(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -201,6 +221,7 @@ class TestExtractSnapshot(unittest.TestCase):
     def test_noop_for_none_branch(self):
         """None branch (empty repo) is a no-op — no files extracted."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             os.makedirs(workspace)
@@ -213,6 +234,7 @@ class TestExtractSnapshot(unittest.TestCase):
     def test_only_tracked_files_extracted(self):
         """Untracked files in outer repo are not in the snapshot."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -234,6 +256,7 @@ class TestFilterGitignore(unittest.TestCase):
 
     def test_removes_alcatrazer_rule(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
             gitignore.write_text("node_modules/\n.alcatrazer/\n*.pyc\n")
@@ -242,6 +265,7 @@ class TestFilterGitignore(unittest.TestCase):
 
     def test_removes_alcatrazer_rule_without_trailing_slash(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
             gitignore.write_text(".alcatrazer\nother\n")
@@ -251,6 +275,7 @@ class TestFilterGitignore(unittest.TestCase):
     def test_does_not_filter_alcatrazer_substring(self):
         """Rules like .alcatrazer-something/ must NOT be filtered."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
             gitignore.write_text(".alcatrazer-tools/\n.alcatrazer/\n")
@@ -259,6 +284,7 @@ class TestFilterGitignore(unittest.TestCase):
 
     def test_removes_file_if_empty_after_filter(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
             gitignore.write_text(".alcatrazer/\n")
@@ -268,11 +294,13 @@ class TestFilterGitignore(unittest.TestCase):
     def test_noop_if_no_gitignore(self):
         """No .gitignore file — nothing to filter, no error."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             snapshot.filter_gitignore(tmp)  # should not raise
 
     def test_preserves_comments_and_blank_lines(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             gitignore = Path(tmp) / ".gitignore"
             gitignore.write_text("# Build output\n\n.alcatrazer/\ndist/\n")
@@ -288,6 +316,7 @@ class TestExclusions(unittest.TestCase):
 
     def test_env_excluded_even_if_tracked(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -303,6 +332,7 @@ class TestExclusions(unittest.TestCase):
 
     def test_alcatrazer_dir_excluded_even_if_tracked(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -321,6 +351,7 @@ class TestExclusions(unittest.TestCase):
     def test_regular_files_not_excluded(self):
         """Sanity check — normal files come through."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -342,10 +373,13 @@ class TestCreateInitialCommit(unittest.TestCase):
 
     def test_creates_commit_with_files(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -359,10 +393,13 @@ class TestCreateInitialCommit(unittest.TestCase):
 
     def test_commit_message_is_generic(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -375,10 +412,13 @@ class TestCreateInitialCommit(unittest.TestCase):
 
     def test_all_files_are_committed(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -396,10 +436,13 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_empty_commit_for_greenfield(self):
         """No files → empty initial commit (allow-empty)."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -411,10 +454,13 @@ class TestCreateInitialCommit(unittest.TestCase):
 
     def test_exactly_one_commit(self):
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -428,10 +474,13 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_commit_uses_workspace_identity(self):
         """Commit must use the identity configured in the workspace, not host."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -460,6 +509,7 @@ class TestSnapshotWorkspace(unittest.TestCase):
     def test_full_flow_with_existing_repo(self):
         """Outer repo with files → workspace has snapshot + initial commit."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -489,11 +539,14 @@ class TestSnapshotWorkspace(unittest.TestCase):
     def test_full_flow_with_empty_repo(self):
         """Empty outer repo (no commits) → workspace has empty initial commit."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             subprocess.run(
-                ["git", "init", outer], capture_output=True, check=True,
+                ["git", "init", outer],
+                capture_output=True,
+                check=True,
             )
             init_workspace(workspace)
             snapshot.snapshot_workspace(outer, workspace)
@@ -502,15 +555,13 @@ class TestSnapshotWorkspace(unittest.TestCase):
             msg = git(workspace, "log", "--format=%s")
             self.assertEqual(msg, "Initial commit")
             # No files besides .git
-            files = [
-                f.name for f in Path(workspace).iterdir()
-                if f.name != ".git"
-            ]
+            files = [f.name for f in Path(workspace).iterdir() if f.name != ".git"]
             self.assertEqual(files, [])
 
     def test_full_flow_excludes_env_and_alcatrazer(self):
         """Even if .env and .alcatrazer/ are tracked, they don't enter workspace."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -532,6 +583,7 @@ class TestSnapshotWorkspace(unittest.TestCase):
     def test_not_a_git_repo_raises(self):
         """Running snapshot_workspace from a non-git dir raises."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -543,6 +595,7 @@ class TestSnapshotWorkspace(unittest.TestCase):
     def test_no_outer_history_leaks(self):
         """Workspace must have no trace of outer repo's git history."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -573,7 +626,9 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def _make_workspace_with_commits(self, workspace: str, n: int) -> None:
         """Create a workspace with n commits beyond initial."""
         subprocess.run(
-            ["git", "init", workspace], capture_output=True, check=True,
+            ["git", "init", workspace],
+            capture_output=True,
+            check=True,
         )
         git(workspace, "config", "user.name", "Alcatraz Agent")
         git(workspace, "config", "user.email", "alcatraz@localhost")
@@ -586,6 +641,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def test_all_unpromoted_when_no_marks(self):
         """No marks file = never promoted = all commits are unpromoted."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             marks_dir = str(Path(tmp) / "marks")
@@ -598,8 +654,9 @@ class TestCountUnpromotedCommits(unittest.TestCase):
 
     def test_zero_after_full_promotion(self):
         """After promoting all commits, count should be 0."""
-        from alcatrazer import snapshot
         from alcatrazer import promote as promote_mod
+        from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             target = str(Path(tmp) / "target")
@@ -609,11 +666,15 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             self._make_workspace_with_commits(workspace, 2)
             # Create target repo and promote
             subprocess.run(
-                ["git", "init", target], capture_output=True, check=True,
+                ["git", "init", target],
+                capture_output=True,
+                check=True,
             )
             promote_mod.promote(
-                source=Path(workspace), target=Path(target),
-                name="Test", email="test@test.com",
+                source=Path(workspace),
+                target=Path(target),
+                name="Test",
+                email="test@test.com",
                 marks_dir=Path(marks_dir),
             )
 
@@ -622,8 +683,9 @@ class TestCountUnpromotedCommits(unittest.TestCase):
 
     def test_partial_promotion(self):
         """Promote some commits, add more — count reflects only new ones."""
-        from alcatrazer import snapshot
         from alcatrazer import promote as promote_mod
+        from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             target = str(Path(tmp) / "target")
@@ -632,11 +694,15 @@ class TestCountUnpromotedCommits(unittest.TestCase):
 
             self._make_workspace_with_commits(workspace, 2)
             subprocess.run(
-                ["git", "init", target], capture_output=True, check=True,
+                ["git", "init", target],
+                capture_output=True,
+                check=True,
             )
             promote_mod.promote(
-                source=Path(workspace), target=Path(target),
-                name="Test", email="test@test.com",
+                source=Path(workspace),
+                target=Path(target),
+                name="Test",
+                email="test@test.com",
                 marks_dir=Path(marks_dir),
             )
 
@@ -654,12 +720,15 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def test_workspace_with_no_commits(self):
         """Empty workspace (git init, no commits) returns 0."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             marks_dir = str(Path(tmp) / "marks")
             os.makedirs(marks_dir)
             subprocess.run(
-                ["git", "init", workspace], capture_output=True, check=True,
+                ["git", "init", workspace],
+                capture_output=True,
+                check=True,
             )
 
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
@@ -668,6 +737,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
     def test_workspace_does_not_exist(self):
         """Non-existent workspace returns 0 (nothing to warn about)."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "nonexistent")
             marks_dir = str(Path(tmp) / "marks")
@@ -702,7 +772,8 @@ class TestSnapshotCLI(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(Path(workspace, "file.txt").exists())
@@ -716,13 +787,16 @@ class TestSnapshotCLI(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             subprocess.run(
-                ["git", "init", outer], capture_output=True, check=True,
+                ["git", "init", outer],
+                capture_output=True,
+                check=True,
             )
             init_workspace(workspace)
 
             result = subprocess.run(
                 [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             msg = git(workspace, "log", "--format=%s")
@@ -738,7 +812,8 @@ class TestSnapshotCLI(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             self.assertNotEqual(result.returncode, 0)
 
@@ -746,7 +821,8 @@ class TestSnapshotCLI(unittest.TestCase):
         """CLI exits non-zero with wrong number of arguments."""
         result = subprocess.run(
             [sys.executable, SNAPSHOT_SCRIPT],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Usage", result.stderr)
@@ -757,16 +833,16 @@ class TestSnapshotCLI(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
             make_repo(outer)
-            Path(outer, ".gitignore").write_text(
-                "node_modules/\n.alcatrazer/\n*.pyc\n"
-            )
+            Path(outer, ".gitignore").write_text("node_modules/\n.alcatrazer/\n*.pyc\n")
             git(outer, "add", ".gitignore")
             git(outer, "commit", "-m", "add gitignore")
 
             init_workspace(workspace)
             subprocess.run(
                 [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             )
 
             gitignore = Path(workspace, ".gitignore").read_text()
@@ -787,7 +863,9 @@ class TestSnapshotCLI(unittest.TestCase):
             init_workspace(workspace)
             subprocess.run(
                 [sys.executable, SNAPSHOT_SCRIPT, outer, workspace],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             )
 
             self.assertFalse(Path(workspace, ".env").exists())
@@ -808,6 +886,7 @@ class TestResetUnpromotedWarning(unittest.TestCase):
     def test_reset_detects_unpromoted_after_agent_work(self):
         """Full scenario: snapshot → agents commit → detect unpromoted."""
         from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -835,8 +914,9 @@ class TestResetUnpromotedWarning(unittest.TestCase):
 
     def test_reset_detects_zero_after_full_promotion(self):
         """After promoting everything, reset should show no warning."""
-        from alcatrazer import snapshot
         from alcatrazer import promote as promote_mod
+        from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -855,11 +935,15 @@ class TestResetUnpromotedWarning(unittest.TestCase):
 
             # Promote everything to outer
             subprocess.run(
-                ["git", "init", target], capture_output=True, check=True,
+                ["git", "init", target],
+                capture_output=True,
+                check=True,
             )
             promote_mod.promote(
-                source=Path(workspace), target=Path(target),
-                name="Dev", email="dev@example.com",
+                source=Path(workspace),
+                target=Path(target),
+                name="Dev",
+                email="dev@example.com",
                 marks_dir=Path(marks_dir),
             )
 
@@ -868,8 +952,9 @@ class TestResetUnpromotedWarning(unittest.TestCase):
 
     def test_reset_scenario_partial_promotion(self):
         """Promote some work, agent adds more — reset detects the new ones."""
-        from alcatrazer import snapshot
         from alcatrazer import promote as promote_mod
+        from alcatrazer import snapshot
+
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
@@ -888,11 +973,15 @@ class TestResetUnpromotedWarning(unittest.TestCase):
 
             # Promote
             subprocess.run(
-                ["git", "init", target], capture_output=True, check=True,
+                ["git", "init", target],
+                capture_output=True,
+                check=True,
             )
             promote_mod.promote(
-                source=Path(workspace), target=Path(target),
-                name="Dev", email="dev@example.com",
+                source=Path(workspace),
+                target=Path(target),
+                name="Dev",
+                email="dev@example.com",
                 marks_dir=Path(marks_dir),
             )
 

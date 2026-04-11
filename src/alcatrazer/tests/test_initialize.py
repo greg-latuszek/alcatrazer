@@ -4,7 +4,6 @@ Tests for src/initialize_alcatraz.sh — initialization script guards.
 Step 3.0: Verify init runs at repository root.
 """
 
-import os
 import subprocess
 import tempfile
 import unittest
@@ -23,7 +22,9 @@ class TestRepoRootGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             # Create a git repo
             subprocess.run(
-                ["git", "init", tmp], capture_output=True, check=True,
+                ["git", "init", tmp],
+                capture_output=True,
+                check=True,
             )
             # Place the script at wrong depth: repo_root/deep/src/alcatrazer/scripts/
             # Script derives PROJECT_DIR as 3 levels up → repo_root/deep/ (not repo root)
@@ -35,7 +36,8 @@ class TestRepoRootGuard(unittest.TestCase):
 
             result = subprocess.run(
                 [str(script_copy)],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
                 cwd=tmp,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -52,7 +54,8 @@ class TestRepoRootGuard(unittest.TestCase):
 
             result = subprocess.run(
                 [str(script_copy)],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
                 cwd=tmp,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -63,23 +66,30 @@ class TestRepoRootGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             # Create a git repo with a commit
             subprocess.run(
-                ["git", "init", tmp], capture_output=True, check=True,
+                ["git", "init", tmp],
+                capture_output=True,
+                check=True,
             )
             subprocess.run(
                 ["git", "-C", tmp, "config", "user.name", "Test"],
-                capture_output=True, check=True,
+                capture_output=True,
+                check=True,
             )
             subprocess.run(
                 ["git", "-C", tmp, "config", "user.email", "test@test.com"],
-                capture_output=True, check=True,
+                capture_output=True,
+                check=True,
             )
             Path(tmp, "README.md").write_text("test")
             subprocess.run(
-                ["git", "-C", tmp, "add", "."], capture_output=True, check=True,
+                ["git", "-C", tmp, "add", "."],
+                capture_output=True,
+                check=True,
             )
             subprocess.run(
                 ["git", "-C", tmp, "commit", "-m", "init"],
-                capture_output=True, check=True,
+                capture_output=True,
+                check=True,
             )
 
             # Place scripts at repo_root/src/alcatrazer/scripts/
@@ -98,7 +108,8 @@ class TestRepoRootGuard(unittest.TestCase):
 
             result = subprocess.run(
                 [str(scripts_dir / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
                 cwd=tmp,
                 timeout=30,
             )
@@ -115,19 +126,24 @@ class TestIdentityInInit(unittest.TestCase):
         subprocess.run(["git", "init", tmp], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", tmp, "config", "user.name", "Test"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         subprocess.run(
             ["git", "-C", tmp, "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         Path(tmp, "README.md").write_text("test")
         subprocess.run(
-            ["git", "-C", tmp, "add", "."], capture_output=True, check=True,
+            ["git", "-C", tmp, "add", "."],
+            capture_output=True,
+            check=True,
         )
         subprocess.run(
             ["git", "-C", tmp, "commit", "-m", "init"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         # Copy src/alcatrazer/ package (scripts + Python modules)
         pkg_dir = Path(tmp) / "src" / "alcatrazer"
@@ -161,14 +177,17 @@ class TestIdentityInInit(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             workspace = self._resolve_workspace(tmp)
             if workspace and workspace.exists():
                 name = subprocess.run(
                     ["git", "-C", str(workspace), "config", "user.name"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 ).stdout.strip()
                 self.assertNotEqual(name, "Alcatraz Agent")
                 self.assertNotIn("alcatraz", name.lower())
@@ -183,8 +202,10 @@ class TestIdentityInInit(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             identity_file = Path(tmp) / ".alcatrazer" / "agent-identity"
             self.assertTrue(identity_file.exists(), "agent-identity file not created")
@@ -201,8 +222,10 @@ class TestIdentityInInit(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             identity_file = Path(tmp) / ".alcatrazer" / "agent-identity"
             workspace = self._resolve_workspace(tmp)
@@ -211,11 +234,13 @@ class TestIdentityInInit(unittest.TestCase):
                 expected_name, expected_email = lines[0], lines[1]
                 actual_name = subprocess.run(
                     ["git", "-C", str(workspace), "config", "user.name"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 ).stdout.strip()
                 actual_email = subprocess.run(
                     ["git", "-C", str(workspace), "config", "user.email"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 ).stdout.strip()
                 self.assertEqual(actual_name, expected_name)
                 self.assertEqual(actual_email, expected_email)
@@ -229,19 +254,24 @@ class TestWorkspaceSeparation(unittest.TestCase):
         subprocess.run(["git", "init", tmp], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", tmp, "config", "user.name", "Test"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         subprocess.run(
             ["git", "-C", tmp, "config", "user.email", "test@test.com"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         Path(tmp, "README.md").write_text("test")
         subprocess.run(
-            ["git", "-C", tmp, "add", "."], capture_output=True, check=True,
+            ["git", "-C", tmp, "add", "."],
+            capture_output=True,
+            check=True,
         )
         subprocess.run(
             ["git", "-C", tmp, "commit", "-m", "init"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         # Copy src/alcatrazer/ package (scripts + Python modules)
         pkg_dir = Path(tmp) / "src" / "alcatrazer"
@@ -267,8 +297,10 @@ class TestWorkspaceSeparation(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             # Workspace should be at repo_root/.devspace-test, NOT .alcatrazer/workspace
             self.assertTrue(
@@ -290,8 +322,10 @@ class TestWorkspaceSeparation(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             stored = (alcatrazer_dir / "workspace-dir").read_text().strip()
             self.assertEqual(stored, ".sandbox-abcd")
@@ -306,8 +340,10 @@ class TestWorkspaceSeparation(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             gitignore = Path(tmp, ".gitignore")
             self.assertTrue(gitignore.exists())
@@ -324,8 +360,10 @@ class TestWorkspaceSeparation(unittest.TestCase):
 
             subprocess.run(
                 [str(Path(tmp) / "src" / "alcatrazer" / "scripts" / "initialize_alcatraz.sh")],
-                capture_output=True, text=True,
-                cwd=tmp, timeout=60,
+                capture_output=True,
+                text=True,
+                cwd=tmp,
+                timeout=60,
             )
             # The outer repo has README.md — it should be in the workspace
             workspace = Path(tmp, ".devbox-1234")

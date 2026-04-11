@@ -57,15 +57,13 @@ def resolve_branches(source: Path, branches_config) -> list[str]:
     # Get all branch names from the source repo
     result = subprocess.run(
         ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     all_branches = result.stdout.strip().splitlines() if result.stdout.strip() else []
 
     # Normalize to list of patterns
-    if isinstance(branches_config, str):
-        patterns = [branches_config]
-    else:
-        patterns = list(branches_config)
+    patterns = [branches_config] if isinstance(branches_config, str) else list(branches_config)
 
     # Match patterns against actual branches
     matched = set()
@@ -81,13 +79,15 @@ def git(repo: Path, *args: str) -> str:
     """Run a git command in the given repo, return stdout."""
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 
 
-def resolve_identity(target_repo: Path, toml_file: Path,
-                     cli_name: str, cli_email: str) -> tuple[str, str]:
+def resolve_identity(
+    target_repo: Path, toml_file: Path, cli_name: str, cli_email: str
+) -> tuple[str, str]:
     """Resolve author identity via the three-layer priority chain."""
     # Layer 1: git config (local > global, same as git does)
     name = git(target_repo, "config", "user.name")
@@ -126,23 +126,26 @@ def rewrite_identity(stream: str, name: str, email: str) -> str:
     stream = re.sub(
         r"^(author) .+ <.+> (.+)$",
         rf"\1 {name} <{email}> \2",
-        stream, flags=re.MULTILINE,
+        stream,
+        flags=re.MULTILINE,
     )
     stream = re.sub(
         r"^(committer) .+ <.+> (.+)$",
         rf"\1 {name} <{email}> \2",
-        stream, flags=re.MULTILINE,
+        stream,
+        flags=re.MULTILINE,
     )
     return stream
 
 
-def dry_run(source: Path, marks_dir: Path, name: str, email: str,
-            branches: str | list = "all") -> None:
+def dry_run(
+    source: Path, marks_dir: Path, name: str, email: str, branches: str | list = "all"
+) -> None:
     """Show what would be promoted without modifying anything."""
     export_marks = marks_dir / "promote-export-marks"
     refs = resolve_branches(source, branches)
 
-    cmd = ["git", "-C", str(source), "fast-export"] + refs
+    cmd = ["git", "-C", str(source), "fast-export", *refs]
     if export_marks.exists():
         cmd.append(f"--import-marks={export_marks}")
 
@@ -173,13 +176,20 @@ def rewrite_refs(stream: str, namespace: str) -> str:
     return re.sub(
         r"^(commit|reset) refs/heads/(.+)$",
         rf"\1 refs/heads/{namespace}/\2",
-        stream, flags=re.MULTILINE,
+        stream,
+        flags=re.MULTILINE,
     )
 
 
-def promote(source: Path, target: Path, marks_dir: Path,
-            name: str, email: str, branches: str | list = "all",
-            namespace: str = "") -> None:
+def promote(
+    source: Path,
+    target: Path,
+    marks_dir: Path,
+    name: str,
+    email: str,
+    branches: str | list = "all",
+    namespace: str = "",
+) -> None:
     """Run fast-export | rewrite identity | fast-import pipeline.
 
     If namespace is set, branch names are prefixed: main -> <namespace>/main.
@@ -190,7 +200,7 @@ def promote(source: Path, target: Path, marks_dir: Path,
     refs = resolve_branches(source, branches)
 
     # Build fast-export command
-    export_cmd = ["git", "-C", str(source), "fast-export"] + refs
+    export_cmd = ["git", "-C", str(source), "fast-export", *refs]
     if export_marks.exists():
         export_cmd.append(f"--import-marks={export_marks}")
     export_cmd.append(f"--export-marks={export_marks}")
@@ -248,7 +258,8 @@ def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
     for branch in branches:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--verify", f"refs/heads/{branch}"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             tips[branch] = result.stdout.strip()
@@ -258,15 +269,22 @@ def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
 def find_conflict_branches(target: Path, branch: str) -> list[str]:
     """Find conflict/resolve-<branch>-* branches in the target repo."""
     result = subprocess.run(
-        ["git", "-C", str(target), "branch", "--format=%(refname:short)",
-         "--list", f"conflict/resolve-{branch}-*"],
-        capture_output=True, text=True,
+        [
+            "git",
+            "-C",
+            str(target),
+            "branch",
+            "--format=%(refname:short)",
+            "--list",
+            f"conflict/resolve-{branch}-*",
+        ],
+        capture_output=True,
+        text=True,
     )
     return [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
 
-def check_resolved_conflicts(target: Path, marks_dir: Path,
-                             paused_branches: set) -> set:
+def check_resolved_conflicts(target: Path, marks_dir: Path, paused_branches: set) -> set:
     """Check if any paused branch's conflict branch has been deleted/merged.
 
     Returns the set of branches that should be unpaused.
@@ -286,8 +304,7 @@ def check_resolved_conflicts(target: Path, marks_dir: Path,
     return resolved
 
 
-def detect_diverged_branches(target: Path, marks_dir: Path,
-                             branch_names: list[str]) -> set[str]:
+def detect_diverged_branches(target: Path, marks_dir: Path, branch_names: list[str]) -> set[str]:
     """Detect branches where the outer repo has diverged from last promotion.
 
     A branch has diverged if its current tip in the target repo differs from
@@ -304,8 +321,12 @@ def detect_diverged_branches(target: Path, marks_dir: Path,
 
 
 def promote_with_conflict_handling(
-    source: Path, target: Path, marks_dir: Path,
-    name: str, email: str, branches: str | list = "all",
+    source: Path,
+    target: Path,
+    marks_dir: Path,
+    name: str,
+    email: str,
+    branches: str | list = "all",
     paused_branches: set | None = None,
 ) -> dict[str, str]:
     """Promote branches, handling conflicts in mirror mode.
@@ -329,7 +350,8 @@ def promote_with_conflict_handling(
         # Get actual branch names from source
         result = subprocess.run(
             ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         branch_names = result.stdout.strip().splitlines() if result.stdout.strip() else []
     else:
@@ -354,8 +376,9 @@ def promote_with_conflict_handling(
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         conflict_ref = f"conflict/resolve-{b}-{timestamp}"
         try:
-            _promote_single_branch(source, target, marks_dir, name, email,
-                                   b, target_ref=conflict_ref)
+            _promote_single_branch(
+                source, target, marks_dir, name, email, b, target_ref=conflict_ref
+            )
             results[b] = "conflict"
             paused_branches.add(b)
         except Exception:
@@ -380,9 +403,13 @@ def promote_with_conflict_handling(
 
 
 def _promote_single_branch(
-    source: Path, target: Path, marks_dir: Path,
-    name: str, email: str,
-    branch: str, target_ref: str | None = None,
+    source: Path,
+    target: Path,
+    marks_dir: Path,
+    name: str,
+    email: str,
+    branch: str,
+    target_ref: str | None = None,
 ) -> None:
     """Promote a single branch, optionally to a different ref name."""
     marks_dir.mkdir(parents=True, exist_ok=True)
@@ -407,7 +434,8 @@ def _promote_single_branch(
         stream = re.sub(
             rf"^commit refs/heads/{re.escape(branch)}$",
             f"commit refs/heads/{target_ref}",
-            stream, flags=re.MULTILINE,
+            stream,
+            flags=re.MULTILINE,
         )
 
     subprocess.run(import_cmd, input=stream, text=True, check=True)

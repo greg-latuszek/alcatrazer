@@ -20,7 +20,6 @@ These tests require Docker and a built container image.
 Skipped by default in 'alcatrazer test' — run with 'alcatrazer test --smoke'.
 """
 
-import os
 import re
 import subprocess
 import unittest
@@ -48,7 +47,7 @@ COMPOSE_FILE = str(project_dir() / "src" / "alcatrazer" / "container" / "docker-
 
 # Bash script that runs inside the container to collect all test data
 # in delimiter-separated sections for reliable parsing.
-CONTAINER_SCRIPT = r'''
+CONTAINER_SCRIPT = r"""
 echo "===SECTION:ID==="
 id
 echo "===SECTION:WHOAMI==="
@@ -118,7 +117,7 @@ git commit -m "smoke test: cleanup" 2>/dev/null
 git reset --hard HEAD~3 2>/dev/null
 echo "CLEANED"
 echo "===SECTION:END==="
-'''
+"""
 
 
 def _docker_available() -> bool:
@@ -126,7 +125,9 @@ def _docker_available() -> bool:
     if not Path(COMPOSE_FILE).exists():
         return False
     result = subprocess.run(
-        ["docker", "info"], capture_output=True, timeout=10,
+        ["docker", "info"],
+        capture_output=True,
+        timeout=10,
     )
     return result.returncode == 0
 
@@ -143,9 +144,21 @@ class TestContainerIsolation(unittest.TestCase):
         """Run the container once, capture all section output."""
         cls.expected = _load_expected_values()
         result = subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE,
-             "run", "--rm", "workspace", "bash", "-c", CONTAINER_SCRIPT],
-            capture_output=True, text=True, timeout=120,
+            [
+                "docker",
+                "compose",
+                "-f",
+                COMPOSE_FILE,
+                "run",
+                "--rm",
+                "workspace",
+                "bash",
+                "-c",
+                CONTAINER_SCRIPT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         cls.output = result.stdout + result.stderr
 
@@ -175,13 +188,15 @@ class TestContainerIsolation(unittest.TestCase):
 
     def test_global_git_config_no_alcatraz(self):
         section = self._section("GITCONFIG")
-        self.assertNotIn("alcatraz", section.lower(),
-                         f"Global git config contains 'alcatraz': {section}")
+        self.assertNotIn(
+            "alcatraz", section.lower(), f"Global git config contains 'alcatraz': {section}"
+        )
 
     def test_no_host_signing_key_paths(self):
         section = self._section("GITCONFIG")
-        self.assertNotRegex(section, r"signingkey\s*=\s*/.",
-                            "Global git config leaks host signing key path")
+        self.assertNotRegex(
+            section, r"signingkey\s*=\s*/.", "Global git config leaks host signing key path"
+        )
 
     def test_signing_key_empty(self):
         section = self._section("SIGNINGKEY")
@@ -197,7 +212,8 @@ class TestContainerIsolation(unittest.TestCase):
         for line in section.splitlines():
             if line.strip():
                 self.assertRegex(
-                    line, r"ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY",
+                    line,
+                    r"ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY",
                     f"Unexpected secret-like env var: {line}",
                 )
 
@@ -254,8 +270,9 @@ class TestContainerIsolation(unittest.TestCase):
 
     def test_workspace_git_config_no_alcatraz(self):
         section = self._section("WORKSPACE_GIT_CONFIG")
-        self.assertNotIn("alcatraz", section.lower(),
-                         f"Workspace git config contains 'alcatraz': {section}")
+        self.assertNotIn(
+            "alcatraz", section.lower(), f"Workspace git config contains 'alcatraz': {section}"
+        )
 
     # --- 7. Git commit ---
 
@@ -266,8 +283,9 @@ class TestContainerIsolation(unittest.TestCase):
 
     def test_commit_identity_no_alcatraz(self):
         section = self._section("COMMIT_TEST")
-        self.assertNotIn("alcatraz", section.lower(),
-                         f"Commit identity contains 'alcatraz': {section}")
+        self.assertNotIn(
+            "alcatraz", section.lower(), f"Commit identity contains 'alcatraz': {section}"
+        )
 
     # --- 8. Branch and merge ---
 
@@ -321,9 +339,10 @@ class TestDockerfileBuildGuard(unittest.TestCase):
     def test_dockerfile_rejects_empty_uid(self):
         dockerfile = str(project_dir() / "src" / "alcatrazer" / "container" / "Dockerfile")
         result = subprocess.run(
-            ["docker", "build", "--build-arg", "USER_UID=",
-             "-f", dockerfile, str(project_dir())],
-            capture_output=True, text=True, timeout=60,
+            ["docker", "build", "--build-arg", "USER_UID=", "-f", dockerfile, str(project_dir())],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         self.assertIn("USER_UID build arg is required", result.stdout + result.stderr)
 
@@ -337,17 +356,27 @@ class TestZeroAlcatrazFootprint(unittest.TestCase):
 
     def test_no_alcatraz_in_container(self):
         result = subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE,
-             "run", "--rm", "workspace", "bash", "-c",
-             "{ env; git config --global --list; "
-             "git -C /workspace config --local --list; "
-             "hostname; cat /proc/self/mountinfo; } "
-             "| grep -i alcatraz || echo CLEAN"],
-            capture_output=True, text=True, timeout=60,
+            [
+                "docker",
+                "compose",
+                "-f",
+                COMPOSE_FILE,
+                "run",
+                "--rm",
+                "workspace",
+                "bash",
+                "-c",
+                "{ env; git config --global --list; "
+                "git -C /workspace config --local --list; "
+                "hostname; cat /proc/self/mountinfo; } "
+                "| grep -i alcatraz || echo CLEAN",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         output = result.stdout + result.stderr
-        self.assertIn("CLEAN", output,
-                      f"Alcatraz footprint detected inside container: {output}")
+        self.assertIn("CLEAN", output, f"Alcatraz footprint detected inside container: {output}")
 
 
 if __name__ == "__main__":

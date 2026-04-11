@@ -16,6 +16,7 @@ from alcatrazer import __version__
 def run_tests(smoke: bool = False) -> int:
     """Run the bundled test suite. Returns 0 on success, 1 on failure."""
     from pathlib import Path
+
     tests_dir = str(Path(__file__).resolve().parent / "tests")
     loader = unittest.TestLoader()
     suite = loader.discover(tests_dir)
