@@ -47,9 +47,33 @@ Four trust layers:
 1. **Open source on GitHub** — anyone can read the code
 2. **Installed source is readable** — extracted as plain Python/bash, not bytecode or obfuscated
 3. **Bundled verification tests** — user runs `alcatrazer test` to prove security properties
-4. **Diff against GitHub** — user can verify installed code matches published source
+4. **Checksum verification against GitHub** — see below
 
 *Source: [install_method.md](features/install_method.md)*
+
+### Checksum Verification via Independent Channel
+
+Installed source code must be verifiable against an independent trust anchor — not against checksums 
+shipped inside the package itself (a tampered package would contain tampered checksums).
+
+**The trust anchor:** Each release publishes a `SHA256SUMS` file as a **GitHub Releases asset** — 
+one hash per source file. This is the independent channel: published separately from the PyPI package. 
+Convention follows Go, Terraform, Kubernetes, Node.js, rustup.
+
+**Why two channels matter:** PyPI verifies download integrity (what you downloaded is what was uploaded), 
+but says nothing about whether the upload matches the GitHub source. A compromised PyPI account could push 
+a modified package that passes all PyPI checks. The GitHub-hosted checksums close that gap — 
+the attacker would need to compromise both PyPI and GitHub.
+
+**The real proof is manual.** The user downloads `SHA256SUMS` from GitHub themselves, 
+then runs `sha256sum -c` against the files in `.alcatrazer/src/alcatrazer/`. 
+No alcatrazer code involved — just standard Unix tools and the user's own eyes.
+
+**`alcatrazer verify` is a convenience, not proof.** Since the command is part of the package it claims 
+to verify, a compromised version could fake the result. The command must be transparent about this: 
+it shows its own source code, explains every step it performs, and prints the equivalent manual commands 
+so the user can copy-paste and do it themselves. Target audience is programmers — 
+they can and should verify the verifier.
 
 ### Stdlib Only — No Third-Party Dependencies
 

@@ -254,6 +254,17 @@ End users run `alcatrazer test` to verify installation. See "Trust and Verificat
 ### Step 7: Publish to PyPI
 `uvx twine upload dist/*` — first real release (0.1.0).
 
+### Step 8: Publish `SHA256SUMS` on GitHub Releases
+Generate checksums of all source files in `src/alcatrazer/` at the tagged commit, 
+upload as a GitHub Releases asset alongside the release notes. 
+This is the independent trust anchor — see "Trust and Verification" section below.
+
+```bash
+# At release time, from the tagged commit:
+cd src/alcatrazer && find . -type f | sort | xargs sha256sum > SHA256SUMS
+# Then attach SHA256SUMS to the GitHub Release via gh CLI or web UI
+```
+
 ---
 
 ## Trust and Verification
@@ -304,16 +315,27 @@ These tests verify:
 - Promotion rewrites identity correctly (no alcatraz identity leaks to outer repo)
 - Files inside workspace are owned by phantom UID
 
-**Layer 4: Diff against GitHub.** 
-The user can verify that what's installed matches the published source:
+**Layer 4: Checksum verification via independent channel.** 
+Each release publishes a `SHA256SUMS` file as a GitHub Releases asset — one hash per source file. 
+This is an independent channel from PyPI: a compromised PyPI account can push a modified package, 
+but the attacker would also need to compromise GitHub to fake the checksums.
+
+The real proof is manual — no alcatrazer code involved:
 
 ```bash
 # "Is what I installed the same as what's on GitHub?"
-diff -r .alcatrazer/src/ <(curl -sL https://github.com/.../archive/v1.0.tar.gz | tar xzf - --strip=1 -C /tmp/alcatrazer-check && echo /tmp/alcatrazer-check/src/)
+# 1. Download checksums from GitHub (independent of PyPI)
+curl -sL https://github.com/greg-latuszek/alcatrazer/releases/download/v0.3.0/SHA256SUMS -o /tmp/SHA256SUMS
+
+# 2. Verify with standard Unix tools
+cd .alcatrazer/src/alcatrazer/
+sha256sum -c /tmp/SHA256SUMS
 ```
 
-The `alcatrazer verify` command (future) could automate this — download the release tarball, 
-compare checksums file-by-file, report any differences.
+`alcatrazer verify` automates this as a convenience — but since the command is part of the package 
+it claims to verify, a compromised version could fake the result. The command is transparent about this: 
+it shows its own source code, explains every step, and prints the equivalent manual commands 
+so the user can copy-paste and replicate independently.
 
 ### What the user gets
 
