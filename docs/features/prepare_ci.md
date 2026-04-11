@@ -157,14 +157,29 @@ See [design_principles.md](../design_principles.md) — "Checksum Verification v
 `pyproject.toml` line 48 includes `smoke_test.sh` in force-include — 
 that file no longer exists (refactored to `test_smoke.py`). Remove it.
 
-### Step 2: Create `.github/workflows/ci.yml`
+### Step 2: Make codebase pass lint and format checks
 
-- Lint job (ruff)
+The codebase currently has 47 lint errors and 13 files need reformatting. 
+CI can't enforce lint until the baseline is clean. Issues to address:
+
+- **Formatting**: `ruff format` on all files (mechanical, safe)
+- **E501**: Lines over 100 chars — mostly in tests and help strings
+- **I001**: Import sorting — auto-fixable
+- **SIM105/SIM108/SIM115**: Style suggestions — review case by case
+- **UP036**: Version guard blocks (`if sys.version_info < (3, 11)`) — 
+  ruff flags these because `requires-python = ">=3.11"` in pyproject.toml. 
+  But these guards give a friendly error when someone runs a script directly 
+  with an older Python, bypassing pip's version check. 
+  **Decision:** suppress UP036 globally — the guards protect the deployed-from-source path
+
+### Step 3: Create `.github/workflows/ci.yml`
+
+- Lint job (ruff check + ruff format --check)
 - Test matrix (Python 3.11, 3.12, 3.13)
-- Build job (uv build)
-- Verify it passes on a real push/PR
+- Build job (uv build + upload artifact)
+- Verify it passes on a real push
 
-### Step 3: Create `.github/workflows/release.yml`
+### Step 4: Create `.github/workflows/release.yml`
 
 - Version tag verification
 - Build wheel
@@ -173,13 +188,13 @@ that file no longer exists (refactored to `test_smoke.py`). Remove it.
 - PyPI publish step present but **commented out** (no PyPI access yet)
 - Test with a dry run on a test tag first
 
-### Step 4: Enable branch protection on `main`
+### Step 5: Enable branch protection on `main`
 
 - Development happens on feature branches, only merges to main allowed
 - Require CI to pass before merge
 - Configure via GitHub repo settings → Branches → Branch protection rules
 
-### Step 5: Smoke tests in CI (stretch goal)
+### Step 6: Smoke tests in CI (stretch goal)
 
 - Docker-based smoke tests on release tags
 - Requires: initializing the full environment in CI
