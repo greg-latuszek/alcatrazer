@@ -28,11 +28,11 @@ No reason to look elsewhere.
 - Job timeout: 6 hours
 - Artifact storage: 10 GB
 
-## Workflow 1: `ci.yml` — Every Push and PR
+## Workflow 1: `ci.yml` — Every Push (any branch)
 
 Triggers: push to any branch, pull requests targeting `main`. 
-Lightweight (no Docker), so cheap to run on every push — 
-catches issues early while developing on feature branches, not just at merge time.
+Lightweight (no Docker), cheap to run on every push — 
+catches issues early while developing on feature branches.
 
 ### Jobs
 
@@ -44,7 +44,7 @@ catches issues early while developing on feature branches, not just at merge tim
 
 **`test`**
 - Matrix: Python 3.11, 3.12, 3.13 (we claim `>=3.11` in pyproject.toml)
-- `python -m unittest discover -s src/alcatrazer/tests -v -k 'not smoke'`
+- `python -m unittest discover -s src/alcatrazer/tests -v` (excluding smoke tests)
 - Runs unit tests and integration tests (daemon, promotion, snapshot, identity, etc.)
 - No Docker required — smoke tests are excluded
 - Depends on: `lint` (don't waste CI minutes testing code that doesn't lint)
@@ -66,23 +66,32 @@ catches issues early while developing on feature branches, not just at merge tim
 - No dependency on local mise/uv/venv setup — CI installs everything from scratch
 - Built wheel is available for manual testing before PyPI access is recovered
 
-## Workflow 2: `release.yml` — On Version Tag
+## Workflow 2: `smoke.yml` — Merge to Main
 
-Triggers: push of tags matching `v*` (e.g., `v0.1.0`, `v0.3.0`).
+Triggers: push to `main` only (i.e., after a PR merge). 
+Runs Docker smoke tests to verify container isolation — heavier, so only on main, not every branch.
 
 ### Jobs
 
-**`verify`**
-- Same as ci.yml: lint + test matrix + build
-- Must pass before publishing anything
-
-**`smoke`** (optional, separate job)
-- Docker smoke tests: `python -m unittest discover -s src/alcatrazer/tests -v -k 'smoke'`
+**`smoke`**
+- Runs after ci.yml passes (ci.yml triggers on the same push to main)
+- Docker smoke tests: verify phantom UID, no credential leaks, no Docker socket, 
+  no git remotes, zero alcatraz footprint
 - Requires: Docker (available on GitHub Actions Linux runners)
-- Requires: `initialize_alcatraz.sh` to set up the environment first
-- May need: `alcatrazer.toml`, `.env`, Docker image build
-- This is the heaviest job — runs only on release, not every PR
-- Depends on: `verify`
+- Requires: `initialize_alcatraz.sh` to set up the environment, Docker image build
+- May need: `alcatrazer.toml`, `.env`
+
+### What this proves
+
+- Container isolation works on a clean machine, not just the developer's laptop
+- Docker-level security properties hold after the merged changes
+
+## Workflow 3: `release.yml` — On Version Tag
+
+Triggers: push of tags matching `v*` (e.g., `v0.1.0`, `v0.3.0`). 
+The developer decides when to release — may accumulate multiple merges to main before tagging.
+
+### Jobs
 
 **`publish`**
 - Verify tag version matches `__version__` in `src/alcatrazer/__init__.py`
@@ -92,7 +101,6 @@ Triggers: push of tags matching `v*` (e.g., `v0.1.0`, `v0.3.0`).
 - Create GitHub Release with:
   - `SHA256SUMS` file attached
   - Auto-generated release notes (or changelog)
-- Depends on: `verify` (and `smoke` if enabled)
 
 ### Secrets required
 
@@ -177,36 +185,37 @@ CI can't enforce lint until the baseline is clean. Issues to address:
 - Lint job (ruff check + ruff format --check)
 - Test matrix (Python 3.11, 3.12, 3.13)
 - Build job (uv build + upload artifact)
+- Triggers on push to any branch + PRs to main
 - Verify it passes on a real push
 
-### Step 4: Create `.github/workflows/release.yml`
+### Step 4: Create `.github/workflows/smoke.yml`
 
-- Version tag verification
+- Docker smoke tests — triggers on push to `main` only (after merge)
+- Requires: full environment setup in CI (initialize_alcatraz.sh, Docker image build)
+- May need its own setup step or a dedicated test that bootstraps minimally
+
+### Step 5: Create `.github/workflows/release.yml`
+
+- Triggers on version tag (`v*`)
+- Version tag verification (tag matches `__version__`)
 - Build wheel
 - SHA256SUMS generation
 - GitHub Release creation with SHA256SUMS attached
 - PyPI publish step present but **commented out** (no PyPI access yet)
 - Test with a dry run on a test tag first
 
-### Step 5: Enable branch protection on `main`
+### Step 6: Enable branch protection on `main`
 
 - Development happens on feature branches, only merges to main allowed
-- Require CI to pass before merge
+- Require ci.yml to pass before merge
 - Configure via GitHub repo settings → Branches → Branch protection rules
 
-### Step 6: Smoke tests in CI (stretch goal)
+## Open Questions (deferred — not blocking Steps 1-3)
 
-- Docker-based smoke tests on release tags
-- Requires: initializing the full environment in CI
-- May need its own setup step or a dedicated test that bootstraps minimally
-- Can defer to after first PyPI publish if too complex initially
-
-## Open Questions (deferred — not blocking Steps 1-5)
-
-1. **Smoke tests in CI (Step 6):** The smoke tests require a fully initialized environment: 
+1. **Smoke tests in CI (Step 4):** The smoke tests require a fully initialized environment: 
 `.alcatrazer/` state (uid, agent-identity), built Docker image, `docker compose`, 
 `alcatrazer.toml` + `.env` at project root. That's essentially the full `initialize_alcatraz.sh` 
-flow plus `docker compose build` inside the CI runner. Solve when we get to Step 6.
+flow plus `docker compose build` inside the CI runner. Solve when we get to Step 4.
 
 2. **PyPI trusted publishers (after PyPI recovery):** GitHub Actions supports PyPI trusted publishers 
 (OIDC-based, no API token needed). More secure than a stored secret. 
