@@ -32,12 +32,16 @@ run = [
 ]
 
 [tasks.test]
-description = "Run all tests"
+description = "Run unit + integration tests (no Docker)"
 run = ["python -m unittest discover -s src/alcatrazer/tests -v"]
 
 [tasks.test-fast]
 description = "Run unit tests only (skip slow integration tests)"
 run = ["python -m unittest discover -s src/alcatrazer/tests -v -k 'not TestDaemon and not TestConflict and not TestBranch and not TestAlcatraz and not TestLogRotation'"]
+
+[tasks.test-smoke]
+description = "Run Docker smoke tests (requires initialized environment + built image)"
+run = ["python -m unittest discover -s src/alcatrazer/integration_tests -v"]
 
 [tasks.lint]
 description = "Run linter"

@@ -15,6 +15,7 @@ Usage:
     .alcatrazer/python -m alcatrazer.init <project-dir> <alcatrazer-dir> --reset [--force]
 """
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -32,7 +33,8 @@ from alcatrazer.snapshot import count_unpromoted_commits, snapshot_workspace
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", repo, *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -95,8 +97,7 @@ def resolve_workspace_dir(project_dir: Path, alcatrazer_dir: Path) -> Path:
     return workspace_dir
 
 
-def init_workspace(project_dir: Path, alcatrazer_dir: Path,
-                   workspace_dir: Path) -> None:
+def init_workspace(project_dir: Path, alcatrazer_dir: Path, workspace_dir: Path) -> None:
     """Initialize git repo in workspace with random identity + snapshot."""
     if (workspace_dir / ".git").is_dir():
         print(f"Workspace git repo already exists at {workspace_dir}/.git")
@@ -108,7 +109,8 @@ def init_workspace(project_dir: Path, alcatrazer_dir: Path,
     # Initialize a fresh git repo
     subprocess.run(
         ["git", "init", str(workspace_dir)],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
 
     # Generate random agent identity (or reuse existing one)
@@ -136,7 +138,8 @@ def add_safe_directory(workspace_dir: Path) -> None:
     workspace_abs = str(workspace_dir.resolve())
     result = subprocess.run(
         ["git", "config", "--global", "--get-all", "safe.directory"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     existing = result.stdout.strip().splitlines()
     if workspace_abs in existing:
@@ -181,11 +184,12 @@ def print_summary(alcatrazer_dir: Path, workspace_dir: Path) -> None:
     print("Next steps:")
     print("  1. Fill in API keys in .env")
     print("  2. Run: docker compose -f src/alcatrazer/container/docker-compose.yml build")
-    print("  3. Run: docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace")
+    print(
+        "  3. Run: docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace"
+    )
 
 
-def handle_reset(project_dir: Path, alcatrazer_dir: Path,
-                 force: bool = False) -> None:
+def handle_reset(project_dir: Path, alcatrazer_dir: Path, force: bool = False) -> None:
     """Handle --reset: check for unpromoted work, clean directories."""
     if not alcatrazer_dir.is_dir():
         print("No alcatrazer directory to clean.")
@@ -201,11 +205,15 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
     # Check for unpromoted work
     if not force and workspace_dir and (workspace_dir / ".git").is_dir():
         unpromoted = count_unpromoted_commits(
-            str(workspace_dir), str(alcatrazer_dir),
+            str(workspace_dir),
+            str(alcatrazer_dir),
         )
         if unpromoted > 0:
             print()
-            print(f"Warning: {unpromoted} commit(s) in workspace have not been promoted to outer repo.")
+            print(
+                f"Warning: {unpromoted} commit(s) in workspace have not been promoted"
+                " to outer repo."
+            )
             print("Proceeding with --reset will discard them.")
             print()
             print("  1. Proceed — discard workspace, re-snapshot, reinitialize")
@@ -232,30 +240,40 @@ def handle_reset(project_dir: Path, alcatrazer_dir: Path,
     #     (owned by the host user, so no permission issue)
     if workspace_dir and workspace_dir.is_dir():
         subprocess.run(
-            ["docker", "run", "--rm",
-             "-v", f"{workspace_dir}:/workspace",
-             "alpine:3",
-             "sh", "-c", "rm -rf /workspace/* /workspace/.*"],
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{workspace_dir}:/workspace",
+                "alpine:3",
+                "sh",
+                "-c",
+                "rm -rf /workspace/* /workspace/.*",
+            ],
             capture_output=True,
         )
-        try:
+        with contextlib.suppress(OSError):
             workspace_dir.rmdir()
-        except OSError:
-            pass
         print("Workspace directory cleaned.")
 
     # Clean .alcatrazer/ — same ownership pattern as above
     subprocess.run(
-        ["docker", "run", "--rm",
-         "-v", f"{alcatrazer_dir}:/workspace",
-         "alpine:3",
-         "sh", "-c", "rm -rf /workspace/* /workspace/.*"],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{alcatrazer_dir}:/workspace",
+            "alpine:3",
+            "sh",
+            "-c",
+            "rm -rf /workspace/* /workspace/.*",
+        ],
         capture_output=True,
     )
-    try:
+    with contextlib.suppress(OSError):
         alcatrazer_dir.rmdir()
-    except OSError:
-        pass
     print("Alcatrazer directory cleaned.")
 
 
@@ -267,9 +285,13 @@ def main() -> None:
         description="Post-Python initialization for Alcatrazer.",
     )
     parser.add_argument("project_dir", type=Path, help="Repository root directory")
-    parser.add_argument("alcatrazer_dir", type=Path, help="Alcatrazer state directory (.alcatrazer/)")
+    parser.add_argument(
+        "alcatrazer_dir", type=Path, help="Alcatrazer state directory (.alcatrazer/)"
+    )
     parser.add_argument("--reset", action="store_true", help="Reset workspace and reinitialize")
-    parser.add_argument("--force", action="store_true", help="Skip unpromoted work warning during reset")
+    parser.add_argument(
+        "--force", action="store_true", help="Skip unpromoted work warning during reset"
+    )
 
     args = parser.parse_args()
     project_dir = args.project_dir.resolve()

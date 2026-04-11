@@ -22,7 +22,8 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
     """Run a git command in the given repo."""
     return subprocess.run(
         ["git", "-C", repo, *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -93,12 +94,13 @@ def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
     # git archive exports tracked files, piped to tar for extraction
     archive = subprocess.run(
         ["git", "-C", repo, "archive", branch],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
-        ["tar", "-xf", "-", "-C", workspace,
-         "--exclude=.alcatrazer", "--exclude=.env"],
-        input=archive.stdout, check=True,
+        ["tar", "-xf", "-", "-C", workspace, "--exclude=.alcatrazer", "--exclude=.env"],
+        input=archive.stdout,
+        check=True,
     )
 
 
@@ -114,10 +116,7 @@ def filter_gitignore(workspace: str) -> None:
         return
 
     lines = gitignore.read_text().splitlines(keepends=True)
-    filtered = [
-        line for line in lines
-        if not re.match(r"^\.alcatrazer/?\s*$", line)
-    ]
+    filtered = [line for line in lines if not re.match(r"^\.alcatrazer/?\s*$", line)]
 
     if not filtered or all(line.strip() == "" for line in filtered):
         gitignore.unlink()
@@ -171,7 +170,11 @@ def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
 
     # With marks, fast-export only outputs commits not yet exported
     cmd = [
-        "git", "-C", workspace, "fast-export", "--all",
+        "git",
+        "-C",
+        workspace,
+        "fast-export",
+        "--all",
         f"--import-marks={export_marks}",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -181,6 +184,7 @@ def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <outer-repo> <workspace>", file=sys.stderr)
         sys.exit(1)

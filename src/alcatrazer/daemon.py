@@ -35,7 +35,6 @@ from pathlib import Path
 # Import promote module (same package)
 from alcatrazer import promote as promote_mod
 
-
 # --- Default config ---
 
 DEFAULTS = {
@@ -150,14 +149,18 @@ def main():
         maxBytes=max_log_bytes,
         backupCount=1,
     )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s",
-                                           datefmt="%Y-%m-%d %H:%M:%S"))
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
     branches = config["branches"]
     mode = config["mode"]
     paused_branches = promote_mod.load_paused_branches(marks_dir)
-    log.info("Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
-             os.getpid(), interval, branches, mode)
+    log.info(
+        "Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
+        os.getpid(),
+        interval,
+        branches,
+        mode,
+    )
 
     # --- Main polling loop ---
     try:
@@ -169,7 +172,9 @@ def main():
                     # Check if any paused branches have been resolved
                     if paused_branches:
                         resolved = promote_mod.check_resolved_conflicts(
-                            target_repo, marks_dir, paused_branches,
+                            target_repo,
+                            marks_dir,
+                            paused_branches,
                         )
                         for branch in resolved:
                             paused_branches.discard(branch)
@@ -178,22 +183,35 @@ def main():
                             promote_mod.save_paused_branches(marks_dir, paused_branches)
 
                     results = promote_mod.promote_with_conflict_handling(
-                        source_repo, target_repo, marks_dir,
-                        name, email, branches=branches,
+                        source_repo,
+                        target_repo,
+                        marks_dir,
+                        name,
+                        email,
+                        branches=branches,
                         paused_branches=paused_branches,
                     )
                     for branch, status in results.items():
                         if status == "conflict":
-                            log.warning("CONFLICT on branch %s — promoted state "
-                                        "saved to conflict/resolve-* branch. "
-                                        "Resolve manually.", branch)
+                            log.warning(
+                                "CONFLICT on branch %s — promoted state "
+                                "saved to conflict/resolve-* branch. "
+                                "Resolve manually.",
+                                branch,
+                            )
                     promoted = [b for b, s in results.items() if s == "promoted"]
                     if promoted:
                         log.info("Promotion cycle complete: %s", ", ".join(promoted))
                 elif mode == "alcatraz-tree":
-                    promote_mod.promote(source_repo, target_repo, marks_dir,
-                                        name, email, branches=branches,
-                                        namespace="alcatraz")
+                    promote_mod.promote(
+                        source_repo,
+                        target_repo,
+                        marks_dir,
+                        name,
+                        email,
+                        branches=branches,
+                        namespace="alcatraz",
+                    )
                     log.info("Promotion cycle complete (alcatraz-tree)")
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)

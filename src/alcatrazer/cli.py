@@ -16,19 +16,14 @@ from alcatrazer import __version__
 def run_tests(smoke: bool = False) -> int:
     """Run the bundled test suite. Returns 0 on success, 1 on failure."""
     from pathlib import Path
-    tests_dir = str(Path(__file__).resolve().parent / "tests")
+
+    package_dir = Path(__file__).resolve().parent
     loader = unittest.TestLoader()
-    suite = loader.discover(tests_dir)
-    if not smoke:
-        # Exclude Docker smoke tests by default (require Docker to be set up)
-        filtered = unittest.TestSuite()
-        for group in suite:
-            for test_group in group:
-                for test in test_group:
-                    test_name = str(test)
-                    if "smoke" not in test_name.lower():
-                        filtered.addTest(test)
-        suite = filtered
+    suite = loader.discover(str(package_dir / "tests"))
+    if smoke:
+        # Include Docker integration tests (require Docker to be set up)
+        integration_suite = loader.discover(str(package_dir / "integration_tests"))
+        suite.addTests(integration_suite)
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     return 0 if result.wasSuccessful() else 1

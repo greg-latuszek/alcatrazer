@@ -40,13 +40,6 @@ include = ["src/alcatrazer/"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/alcatrazer"]
 
-# Include non-Python files in the package
-[tool.hatch.build.targets.wheel.force-include]
-"src/alcatrazer/container" = "alcatrazer/container"
-"src/alcatrazer/scripts" = "alcatrazer/scripts"
-"src/alcatrazer/tests/seed_alcatraz.sh" = "alcatrazer/tests/seed_alcatraz.sh"
-"src/alcatrazer/tests/smoke_test.sh" = "alcatrazer/tests/smoke_test.sh"
-"src/alcatrazer/templates" = "alcatrazer/templates"
 
 # --- Development dependencies ---
 
@@ -72,6 +65,9 @@ select = [
     "I",    # isort
     "RUF",  # ruff
 ]
+ignore = [
+    "UP036",  # version guard blocks — we keep these for friendly errors when run directly with old Python
+]
 
 [tool.pytest.ini_options]
-testpaths = ["src/alcatrazer/tests"]
+testpaths = ["src/alcatrazer/tests", "src/alcatrazer/integration_tests"]

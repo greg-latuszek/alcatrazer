@@ -14,7 +14,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 # tests/ is at src/alcatrazer/tests/ — project root is 3 levels up
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 RESOLVE_SCRIPT = str(PROJECT_DIR / "src" / "alcatrazer" / "scripts" / "resolve_python.sh")
@@ -29,11 +28,15 @@ def write_script(path: Path, content: str):
 
 def fake_python(version: str, tomllib_ok: bool = True) -> str:
     """Return bash script content for a fake python3 binary."""
-    tomllib_line = "exit 0" if tomllib_ok else (
-        'if echo "$2" | grep -q "tomllib"; then\n'
-        '    echo "ModuleNotFoundError" >&2; exit 1\n'
-        "fi\n"
+    tomllib_line = (
         "exit 0"
+        if tomllib_ok
+        else (
+            'if echo "$2" | grep -q "tomllib"; then\n'
+            '    echo "ModuleNotFoundError" >&2; exit 1\n'
+            "fi\n"
+            "exit 0"
+        )
     )
     return (
         "#!/usr/bin/env bash\n"
@@ -53,30 +56,30 @@ def broken_python() -> str:
 def fake_mise() -> str:
     """Bash script for a fake mise that 'installs' python3 next to itself."""
     return (
-        '#!/usr/bin/env bash\n'
+        "#!/usr/bin/env bash\n"
         'case "$1" in\n'
-        '    use)\n'
+        "    use)\n"
         '        FAKEBIN="$(dirname "$0")"\n'
-        '        cat > "${FAKEBIN}/python3" << \'PYEOF\'\n'
-        '#!/usr/bin/env bash\n'
+        "        cat > \"${FAKEBIN}/python3\" << 'PYEOF'\n"
+        "#!/usr/bin/env bash\n"
         'if [ "${1:-}" = "--version" ]; then\n'
         '    echo "Python 3.11.9"\n'
         'elif [ "${1:-}" = "-c" ]; then\n'
-        '    exit 0\n'
-        'fi\n'
-        'PYEOF\n'
+        "    exit 0\n"
+        "fi\n"
+        "PYEOF\n"
         '        chmod +x "${FAKEBIN}/python3"\n'
         '        echo "mise: installing python@3.11..."\n'
-        '        ;;\n'
-        '    which)\n'
+        "        ;;\n"
+        "    which)\n"
         '        FAKEBIN="$(dirname "$0")"\n'
         '        if [ -x "${FAKEBIN}/python3" ]; then\n'
         '            echo "${FAKEBIN}/python3"\n'
-        '        else\n'
-        '            exit 1\n'
-        '        fi\n'
-        '        ;;\n'
-        'esac\n'
+        "        else\n"
+        "            exit 1\n"
+        "        fi\n"
+        "        ;;\n"
+        "esac\n"
     )
 
 
@@ -97,7 +100,7 @@ class ResolutionTestBase(unittest.TestCase):
     def python_file(self) -> Path:
         return Path(self.alcatraz_dir) / "python"
 
-    def run_resolve(self, stdin_text: str = "", extra_env: dict = None):
+    def run_resolve(self, stdin_text: str = "", extra_env: dict | None = None):
         """Run resolve_python.sh with fakebin-first PATH."""
         env = {
             "PATH": f"{self.fakebin}:{SYSTEM_PATH}",
@@ -108,7 +111,8 @@ class ResolutionTestBase(unittest.TestCase):
         return subprocess.run(
             [RESOLVE_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
             input=stdin_text,
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             env=env,
         )
 
@@ -164,12 +168,12 @@ class TestTier3MiseBootstrap(ResolutionTestBase):
         mise_target = os.path.join(self.local_bin, "mise")
         curl_script = (
             "#!/usr/bin/env bash\n"
-            f'cat << INSTALLER\n'
-            f'#!/bin/sh\n'
+            f"cat << INSTALLER\n"
+            f"#!/bin/sh\n"
             f'mkdir -p "{self.local_bin}"\n'
             f'cp "{self.mise_helper}" "{mise_target}"\n'
             f'chmod +x "{mise_target}"\n'
-            f'INSTALLER\n'
+            f"INSTALLER\n"
         )
         write_script(Path(self.fakebin) / "curl", curl_script)
         write_script(Path(self.fakebin) / "python3", broken_python())

@@ -31,7 +31,9 @@ def git(repo: str, *args: str) -> str:
     """Run a git command in the given repo, return stdout."""
     result = subprocess.run(
         ["git", "-C", repo, *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -70,11 +72,7 @@ class TestRewriteIdentity(unittest.TestCase):
         self.assertEqual(result.count("committer Z <z@z>"), 2)
 
     def test_does_not_touch_data_sections(self):
-        stream = (
-            "author A <a@a> 111 +0000\n"
-            "data 20\n"
-            "author line in body\n"
-        )
+        stream = "author A <a@a> 111 +0000\ndata 20\nauthor line in body\n"
         result = promote_mod.rewrite_identity(stream, "Z", "z@z")
         # The "author line in body" doesn't match the pattern (no timestamp)
         self.assertIn("author line in body", result)
@@ -98,7 +96,10 @@ class TestResolveIdentity(unittest.TestCase):
         git(self.target, "config", "user.name", "Git User")
         git(self.target, "config", "user.email", "git@user.com")
         name, email = promote_mod.resolve_identity(
-            Path(self.target), self.toml_file, "", "",
+            Path(self.target),
+            self.toml_file,
+            "",
+            "",
         )
         self.assertEqual(name, "Git User")
         self.assertEqual(email, "git@user.com")
@@ -106,11 +107,12 @@ class TestResolveIdentity(unittest.TestCase):
     def test_layer2_toml_overrides_git(self):
         git(self.target, "config", "user.name", "Git User")
         git(self.target, "config", "user.email", "git@user.com")
-        self.toml_file.write_text(
-            '[promotion]\nname = "TOML User"\nemail = "toml@user.com"\n'
-        )
+        self.toml_file.write_text('[promotion]\nname = "TOML User"\nemail = "toml@user.com"\n')
         name, email = promote_mod.resolve_identity(
-            Path(self.target), self.toml_file, "", "",
+            Path(self.target),
+            self.toml_file,
+            "",
+            "",
         )
         self.assertEqual(name, "TOML User")
         self.assertEqual(email, "toml@user.com")
@@ -118,11 +120,12 @@ class TestResolveIdentity(unittest.TestCase):
     def test_layer3_cli_overrides_all(self):
         git(self.target, "config", "user.name", "Git User")
         git(self.target, "config", "user.email", "git@user.com")
-        self.toml_file.write_text(
-            '[promotion]\nname = "TOML User"\nemail = "toml@user.com"\n'
-        )
+        self.toml_file.write_text('[promotion]\nname = "TOML User"\nemail = "toml@user.com"\n')
         name, email = promote_mod.resolve_identity(
-            Path(self.target), self.toml_file, "CLI User", "cli@user.com",
+            Path(self.target),
+            self.toml_file,
+            "CLI User",
+            "cli@user.com",
         )
         self.assertEqual(name, "CLI User")
         self.assertEqual(email, "cli@user.com")
@@ -130,14 +133,17 @@ class TestResolveIdentity(unittest.TestCase):
     def test_missing_identity_exits(self):
         # Override HOME to isolate from global git config
         import os
+
         fake_home = os.path.join(self.tmpdir, "fakehome")
         os.makedirs(fake_home)
         env_patch = {"HOME": fake_home, "GIT_CONFIG_GLOBAL": "/dev/null"}
-        with patch.dict(os.environ, env_patch):
-            with self.assertRaises(SystemExit):
-                promote_mod.resolve_identity(
-                    Path(self.target), self.toml_file, "", "",
-                )
+        with patch.dict(os.environ, env_patch), self.assertRaises(SystemExit):
+            promote_mod.resolve_identity(
+                Path(self.target),
+                self.toml_file,
+                "",
+                "",
+            )
 
 
 # ── Integration tests (real git repos) ──────────────────────────────
@@ -172,15 +178,13 @@ class PromotionTestBase(unittest.TestCase):
 
     def do_promote(self):
         """Call promote() directly."""
-        promote_mod.promote(self.source, self.target, self.marks,
-                            PROMOTED_NAME, PROMOTED_EMAIL)
+        promote_mod.promote(self.source, self.target, self.marks, PROMOTED_NAME, PROMOTED_EMAIL)
 
     def do_dry_run(self) -> str:
         """Call dry_run() and capture stdout."""
         buf = StringIO()
         with patch("sys.stdout", buf):
-            promote_mod.dry_run(self.source, self.marks,
-                                PROMOTED_NAME, PROMOTED_EMAIL)
+            promote_mod.dry_run(self.source, self.marks, PROMOTED_NAME, PROMOTED_EMAIL)
         return buf.getvalue()
 
 
@@ -202,8 +206,12 @@ class TestInitialPromotion(PromotionTestBase):
         self.assertEqual(src, tgt)
 
     def test_same_commit_messages(self):
-        src = sorted(git(str(self.source), "log", "--all", "--topo-order", "--format=%s").splitlines())
-        tgt = sorted(git(str(self.target), "log", "--all", "--topo-order", "--format=%s").splitlines())
+        src = sorted(
+            git(str(self.source), "log", "--all", "--topo-order", "--format=%s").splitlines()
+        )
+        tgt = sorted(
+            git(str(self.target), "log", "--all", "--topo-order", "--format=%s").splitlines()
+        )
         self.assertEqual(src, tgt)
 
     def test_merge_topology_preserved(self):
@@ -321,8 +329,14 @@ class TestNamespacePromotion(PromotionTestBase):
 
     def test_namespace_rewrites_branch_names(self):
         """Promote with namespace should map main -> alcatraz/main."""
-        promote_mod.promote(self.source, self.target, self.marks,
-                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
+        promote_mod.promote(
+            self.source,
+            self.target,
+            self.marks,
+            PROMOTED_NAME,
+            PROMOTED_EMAIL,
+            namespace="alcatraz",
+        )
         target_branches = sorted(
             git(str(self.target), "branch", "--format=%(refname:short)").splitlines()
         )
@@ -332,16 +346,32 @@ class TestNamespacePromotion(PromotionTestBase):
 
     def test_namespace_preserves_content(self):
         """Namespaced promotion should have the same file content."""
-        promote_mod.promote(self.source, self.target, self.marks,
-                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
-        src_files = sorted(git(str(self.source), "ls-tree", "-r", "--name-only", "main").splitlines())
-        tgt_files = sorted(git(str(self.target), "ls-tree", "-r", "--name-only", "alcatraz/main").splitlines())
+        promote_mod.promote(
+            self.source,
+            self.target,
+            self.marks,
+            PROMOTED_NAME,
+            PROMOTED_EMAIL,
+            namespace="alcatraz",
+        )
+        src_files = sorted(
+            git(str(self.source), "ls-tree", "-r", "--name-only", "main").splitlines()
+        )
+        tgt_files = sorted(
+            git(str(self.target), "ls-tree", "-r", "--name-only", "alcatraz/main").splitlines()
+        )
         self.assertEqual(src_files, tgt_files)
 
     def test_namespace_rewrites_identity(self):
         """Namespaced promotion should still rewrite identity."""
-        promote_mod.promote(self.source, self.target, self.marks,
-                            PROMOTED_NAME, PROMOTED_EMAIL, namespace="alcatraz")
+        promote_mod.promote(
+            self.source,
+            self.target,
+            self.marks,
+            PROMOTED_NAME,
+            PROMOTED_EMAIL,
+            namespace="alcatraz",
+        )
         authors = set(git(str(self.target), "log", "--all", "--format=%an <%ae>").splitlines())
         self.assertEqual(authors, {f"{PROMOTED_NAME} <{PROMOTED_EMAIL}>"})
 
