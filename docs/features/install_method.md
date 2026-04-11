@@ -248,8 +248,12 @@ run `alcatrazer init`, delete temp venv. ~50 lines.
 - Test `install.sh` with faked PATH (same approach as resolve_python tests)
 
 ### Step 6: Post-installation verification tests ✅
-Tests are now bundled inside the package (`src/alcatrazer/tests/`). 
-End users run `alcatrazer test` to verify installation. See "Trust and Verification" section below.
+Tests are bundled inside the package in two directories:
+- `src/alcatrazer/tests/` — unit and integration tests (no Docker required)
+- `src/alcatrazer/integration_tests/` — Docker smoke tests (verify container isolation)
+
+End users run `alcatrazer test` (unit tests) or `alcatrazer test --smoke` (includes Docker tests).
+See "Trust and Verification" section below.
 
 ### Step 7: Publish to PyPI
 `uvx twine upload dist/*` — first real release (0.1.0).
@@ -298,12 +302,18 @@ cat .alcatrazer/src/alcatrazer/container/docker-compose.yml
 ```
 
 **Layer 3: Post-installation verification tests.** 
-The test suite is bundled alongside the tool files in `.alcatrazer/src/alcatrazer/tests/`.
+The test suite is bundled alongside the tool files:
+- `.alcatrazer/src/alcatrazer/tests/` — unit and integration tests
+- `.alcatrazer/src/alcatrazer/integration_tests/` — Docker smoke tests (container isolation)
+
 The user can run the same tests that developers run to verify the security model:
 
 ```bash
 # "Prove to me this tool does what it claims"
+# Unit tests (no Docker required):
 .alcatrazer/python -m unittest discover -s .alcatrazer/src/alcatrazer/tests -v
+# Docker isolation tests (requires running Docker):
+.alcatrazer/python -m unittest discover -s .alcatrazer/src/alcatrazer/integration_tests -v
 ```
 
 These tests verify:

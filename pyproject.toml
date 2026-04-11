@@ -70,4 +70,4 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["src/alcatrazer/tests"]
+testpaths = ["src/alcatrazer/tests", "src/alcatrazer/integration_tests"]
