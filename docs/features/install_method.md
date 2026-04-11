@@ -1,6 +1,6 @@
 # Alcatrazer Installation Method
 
-## Status: Planning
+## Status: On Hold — waiting for CI ([prepare_ci.md](prepare_ci.md))
 
 ## Goal
 
