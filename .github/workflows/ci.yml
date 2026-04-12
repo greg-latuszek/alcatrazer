@@ -48,26 +48,3 @@ jobs:
         env:
           PYTHONPATH: src
         run: python -m unittest discover -s src/alcatrazer/tests -v
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: Build package
-        run: uv build
-
-      - name: Upload wheel and sdist
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
-          retention-days: 90
