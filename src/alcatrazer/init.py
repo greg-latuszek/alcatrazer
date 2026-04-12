@@ -189,9 +189,11 @@ def print_summary(alcatrazer_dir: Path, workspace_dir: Path) -> None:
     print()
     print("Next steps:")
     print("  1. Fill in API keys in .env")
-    print("  2. Run: docker compose -f src/alcatrazer/container/docker-compose.yml build")
     print(
-        "  3. Run: docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace"
+        "  2. Run: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build"
+    )
+    print(
+        "  3. Run: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace"
     )
 
 
