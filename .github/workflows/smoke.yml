@@ -44,6 +44,24 @@ jobs:
               -e 's|\.\./\.\./\.\./||g' \
               src/alcatrazer/container/docker-compose.yml > docker-compose.yml
 
+      - name: Debug - inspect init output
+        run: |
+          echo "=== .alcatrazer/ contents ==="
+          find .alcatrazer -type f -o -type l | sort
+          echo ""
+          echo "=== workspace directory name ==="
+          cat .alcatrazer/workspace-dir
+          WORKSPACE_DIR=$(cat .alcatrazer/workspace-dir)
+          echo ""
+          echo "=== workspace contents ==="
+          ls -la "$WORKSPACE_DIR"
+          echo ""
+          echo "=== workspace has .git? ==="
+          ls -la "$WORKSPACE_DIR/.git" 2>&1 || echo "NO .git"
+          echo ""
+          echo "=== workspace git log ==="
+          git -C "$WORKSPACE_DIR" log --oneline 2>&1 || echo "no commits"
+
       - name: Debug - dump generated docker-compose.yml
         run: cat docker-compose.yml
 
@@ -73,6 +91,83 @@ jobs:
               python --version 2>&1
               echo "=== git --version ==="
               git --version 2>&1
+            '
+
+      - name: Debug - test test output with docker run
+        run: |
+          WORKSPACE_DIR=$(cat .alcatrazer/workspace-dir)
+          docker run --rm \
+            -v "$(pwd)/$WORKSPACE_DIR:/workspace" \
+            workspace bash -c '
+              echo "===SECTION:ID==="
+              id
+              echo "===SECTION:WHOAMI==="
+              whoami
+              echo "===SECTION:SSH==="
+              ls -d ~/.ssh 2>/dev/null && echo "EXISTS" || echo "MISSING"
+              echo "===SECTION:GNUPG==="
+              ls -d ~/.gnupg 2>/dev/null && echo "EXISTS" || echo "MISSING"
+              echo "===SECTION:GITCONFIG==="
+              cat ~/.gitconfig
+              echo "===SECTION:SIGNINGKEY==="
+              git config user.signingkey || echo ""
+              echo "===SECTION:GPGSIGN==="
+              git config commit.gpgsign
+              echo "===SECTION:ENV_SECRETS==="
+              env | grep -iE "key|token|secret|pass" | sort
+              echo "===SECTION:PYTHON==="
+              python --version 2>&1
+              echo "===SECTION:NODE==="
+              node --version 2>&1
+              echo "===SECTION:BUN==="
+              bun --version 2>&1
+              echo "===SECTION:GIT==="
+              git --version 2>&1
+              echo "===SECTION:MISE==="
+              mise --version 2>&1
+              echo "===SECTION:TMUX==="
+              tmux -V 2>&1
+              echo "===SECTION:RIPGREP==="
+              rg --version 2>&1 | head -1
+              echo "===SECTION:CLAUDE==="
+              claude --version 2>&1
+              echo "===SECTION:MISE_LS==="
+              mise ls 2>&1
+              echo "===SECTION:WORKSPACE_GIT_CONFIG==="
+              git -C /workspace config --local --list 2>&1
+              echo "===SECTION:COMMIT_TEST==="
+              cd /workspace
+              echo "print(\"hello from smoke test\")" > _smoke_test.py
+              git add _smoke_test.py
+              git commit -m "smoke test: verify agent can commit" 2>&1
+              git log -1 --format="%an|%ae|%cn|%ce" 2>&1
+              echo "===SECTION:BRANCH_TEST==="
+              git checkout -b smoke-test/feature 2>&1
+              echo "feature work" > _smoke_feature.txt
+              git add _smoke_feature.txt
+              git commit -m "smoke test: feature branch commit" 2>&1
+              git checkout main 2>&1
+              git merge smoke-test/feature --no-edit 2>&1
+              git log --oneline --graph --all 2>&1
+              echo "===SECTION:PYTHON_EXEC==="
+              python _smoke_test.py 2>&1
+              echo "===SECTION:NODE_EXEC==="
+              node -e "console.log(\"hello from node\")" 2>&1
+              echo "===SECTION:FILE_OWNERSHIP==="
+              ls -ln /workspace/_smoke_test.py 2>&1
+              echo "===SECTION:DOCKER_SOCKET==="
+              ls -la /var/run/docker.sock 2>/dev/null && echo "EXISTS" || echo "MISSING"
+              echo "===SECTION:GIT_REMOTES==="
+              git remote -v 2>&1 || echo "NONE"
+              echo "===SECTION:CLEANUP==="
+              cd /workspace
+              git checkout main 2>/dev/null
+              git branch -d smoke-test/feature 2>/dev/null || true
+              git rm -f _smoke_test.py _smoke_feature.txt 2>/dev/null
+              git commit -m "smoke test: cleanup" 2>/dev/null
+              git reset --hard HEAD~3 2>/dev/null
+              echo "CLEANED"
+              echo "===SECTION:END==="
             '
 
       - name: Debug - test docker compose run
