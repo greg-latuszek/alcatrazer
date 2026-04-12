@@ -12,6 +12,7 @@ Called by initialize_alcatraz.sh after Step 3 (Python resolution).
 
 Usage:
     .alcatrazer/python -m alcatrazer.init <project-dir> <alcatrazer-dir>
+    .alcatrazer/python -m alcatrazer.init <project-dir> <alcatrazer-dir> --non-interactive
     .alcatrazer/python -m alcatrazer.init <project-dir> <alcatrazer-dir> --reset [--force]
 """
 
@@ -65,24 +66,29 @@ def _add_to_gitignore(project_dir: Path, entry: str) -> None:
         gitignore.write_text(f"{entry}/\n")
 
 
-def resolve_workspace_dir(project_dir: Path, alcatrazer_dir: Path) -> Path:
+def resolve_workspace_dir(
+    project_dir: Path, alcatrazer_dir: Path, *, non_interactive: bool = False
+) -> Path:
     """Resolve workspace directory — read stored selection or prompt user."""
     stored = load_workspace_dir(str(alcatrazer_dir))
     if stored:
         workspace_name = stored
     else:
         choices = generate_workspace_choices(str(project_dir))
-        print()
-        print("Choose a workspace directory name (this will be mounted into Docker):")
-        for i, choice in enumerate(choices, 1):
-            print(f"  {i}. {choice}")
-        print()
-        try:
-            pick = input("Choose [1/2/3]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            pick = "1"
-        idx = int(pick) - 1 if pick in ("1", "2", "3") else 0
-        workspace_name = choices[idx]
+        if non_interactive:
+            workspace_name = choices[0]
+        else:
+            print()
+            print("Choose a workspace directory name (this will be mounted into Docker):")
+            for i, choice in enumerate(choices, 1):
+                print(f"  {i}. {choice}")
+            print()
+            try:
+                pick = input("Choose [1/2/3]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                pick = "1"
+            idx = int(pick) - 1 if pick in ("1", "2", "3") else 0
+            workspace_name = choices[idx]
         store_workspace_dir(str(alcatrazer_dir), workspace_name)
         print(f"Workspace directory: {workspace_name}")
 
@@ -292,6 +298,11 @@ def main() -> None:
     parser.add_argument(
         "--force", action="store_true", help="Skip unpromoted work warning during reset"
     )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Auto-pick defaults without prompting (for CI)",
+    )
 
     args = parser.parse_args()
     project_dir = args.project_dir.resolve()
@@ -302,7 +313,9 @@ def main() -> None:
         print("Re-running initialization...")
         print()
 
-    workspace_dir = resolve_workspace_dir(project_dir, alcatrazer_dir)
+    workspace_dir = resolve_workspace_dir(
+        project_dir, alcatrazer_dir, non_interactive=args.non_interactive
+    )
     init_workspace(project_dir, alcatrazer_dir, workspace_dir)
     add_safe_directory(workspace_dir)
     print_summary(alcatrazer_dir, workspace_dir)
