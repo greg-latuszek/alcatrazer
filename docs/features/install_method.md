@@ -160,6 +160,34 @@ curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/insta
 - Need PyPI account and a hosted URL for the bash script
 - Three entry points in the docs (but they're one-liners, not separate codebases)
 
+## Docker Template Machinery
+
+The files in `src/alcatrazer/container/` (docker-compose.yml, Dockerfile, entrypoint.sh) are **templates**, 
+not ready-to-use files. Currently `docker-compose.yml` has hardcoded `../../../` relative paths that assume 
+it stays nested 3 levels deep inside the package. This causes problems:
+
+- Docker Compose resolves `${VAR}` substitution from `.env` in the **project directory** 
+  (directory containing the compose file), not the CWD. Since `.env` lives at the project root 
+  but the compose file is in `src/alcatrazer/container/`, variables like `USER_UID` aren't found.
+- The `--env-file .env` workaround is fragile and easy to forget.
+- Volume paths like `../../../${WORKSPACE_DIR}` are brittle.
+
+**Solution:** During `alcatrazer init` (Step 2), generate `docker-compose.yml` at the project root 
+from the template, rewriting paths:
+- `context: ../../..` → `context: .`
+- `../../../.env` → `./.env`  
+- `../../../${WORKSPACE_DIR}` → `./${WORKSPACE_DIR}`
+
+The Dockerfile stays in `src/alcatrazer/container/` — its `COPY` paths are relative to the build context 
+(project root), not to the Dockerfile location, so they work without changes.
+
+This is the same approach as `alcatrazer.toml` — template lives in the package, 
+generated file lives at the project root. The installer for end user repos will do the same: 
+take templates from the installed package, place them at the correct location.
+
+**Current CI workaround:** `smoke.yml` uses a `sed` hack to copy and fix paths at build time. 
+This will be replaced by the proper init-time generation.
+
 ## Open Questions
 
 1. **Tool files as package data:** The PyPI package bundles Dockerfile, scripts, etc. as package data. The `alcatrazer init` command extracts them into `.alcatrazer/`. This means the PyPI package IS the release — no separate tarball or GitHub Releases needed. Is this sufficient or do we also want standalone tarballs?
