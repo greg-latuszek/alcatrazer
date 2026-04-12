@@ -26,8 +26,18 @@ jobs:
       - name: Initialize alcatrazer environment
         run: ./src/alcatrazer/scripts/initialize_alcatraz.sh --non-interactive
 
+      - name: Generate docker-compose.yml at project root
+        run: |
+          # HACK: docker-compose.yml lives in src/alcatrazer/container/ with
+          # hardcoded ../../../ paths. Copy to project root and fix paths so
+          # docker compose finds .env naturally. Proper templating comes with
+          # the install_method feature (see docs/features/install_method.md).
+          sed -e 's|context: \.\./\.\./\.\.|context: .|' \
+              -e 's|\.\./\.\./\.\./||g' \
+              src/alcatrazer/container/docker-compose.yml > docker-compose.yml
+
       - name: Build Docker image
-        run: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build
+        run: docker compose build
 
       - name: Run smoke tests
         run: python -m unittest discover -s src/alcatrazer/integration_tests -v
