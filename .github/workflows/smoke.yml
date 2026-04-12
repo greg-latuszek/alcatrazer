@@ -2,6 +2,9 @@ name: Smoke Tests
 
 # Docker integration tests — run on merge to main only.
 # Verifies container isolation properties on a clean machine.
+#
+# Checkout to a neutral path so the repo name "alcatrazer" doesn't leak
+# into Docker bind mount paths visible via /proc/self/mountinfo.
 
 on:
   push:
@@ -10,8 +13,13 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: /home/runner/work/project
     steps:
       - uses: actions/checkout@v6
+        with:
+          path: /home/runner/work/project
 
       - uses: actions/setup-python@v6
         with:
