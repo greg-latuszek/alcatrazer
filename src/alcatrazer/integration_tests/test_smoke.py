@@ -20,6 +20,7 @@ These tests require Docker and a built container image.
 Skipped by default in 'alcatrazer test' — run with 'alcatrazer test --smoke'.
 """
 
+import os
 import re
 import subprocess
 import unittest
@@ -358,7 +359,7 @@ class TestDockerfileBuildGuard(unittest.TestCase):
 class TestZeroAlcatrazFootprint(unittest.TestCase):
     """Catch-all: grep for 'alcatraz' across env, git config, hostname, mountinfo."""
 
-    def test_no_alcatraz_in_container(self):
+    def _run_footprint_check(self, command: str) -> str:
         result = subprocess.run(
             [
                 "docker",
@@ -370,17 +371,32 @@ class TestZeroAlcatrazFootprint(unittest.TestCase):
                 "workspace",
                 "bash",
                 "-c",
-                "{ env; git config --global --list; "
-                "git -C /workspace config --local --list; "
-                "hostname; cat /proc/self/mountinfo; } "
-                "| grep -i alcatraz || echo CLEAN",
+                command,
             ],
             capture_output=True,
             text=True,
             timeout=60,
         )
-        output = result.stdout + result.stderr
+        return result.stdout + result.stderr
+
+    def test_no_alcatraz_in_container(self):
+        output = self._run_footprint_check(
+            "{ env; git config --global --list; "
+            "git -C /workspace config --local --list; "
+            "hostname; } "
+            "| grep -i alcatraz || echo CLEAN"
+        )
         self.assertIn("CLEAN", output, f"Alcatraz footprint detected inside container: {output}")
+
+    @unittest.skipIf(
+        os.environ.get("CI") == "true",
+        "Skipped in CI — host path contains repo name 'alcatrazer'",
+    )
+    def test_no_alcatraz_in_container_mount_points(self):
+        output = self._run_footprint_check(
+            "cat /proc/self/mountinfo | grep -i alcatraz || echo CLEAN"
+        )
+        self.assertIn("CLEAN", output, f"Alcatraz footprint in mount points: {output}")
 
 
 if __name__ == "__main__":
