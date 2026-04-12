@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-## Status: Steps 1-5 done, Step 6 requires manual GitHub config
+## Status: Complete (all 6 steps done)
 
 ## Goal
 
@@ -49,22 +49,11 @@ catches issues early while developing on feature branches.
 - No Docker required — smoke tests are excluded
 - Depends on: `lint` (don't waste CI minutes testing code that doesn't lint)
 
-**`build`**
-- Single Python version (3.12)
-- `uv build` — verify wheel and sdist build cleanly
-- Upload `dist/` as GitHub Actions artifact (wheel + sdist)
-- Downloadable from the workflow run page for manual life-testing: 
-  `pip install alcatrazer-0.0.1-py3-none-any.whl`
-- Artifact retention: 90 days (GitHub default)
-- Depends on: `test`
-
 ### What this proves
 
 - Code lints on a clean machine
 - Tests pass on Python 3.11, 3.12, 3.13
-- Package builds correctly
 - No dependency on local mise/uv/venv setup — CI installs everything from scratch
-- Built wheel is available for manual testing before PyPI access is recovered
 
 ## Workflow 2: `smoke.yml` — Merge to Main
 
@@ -74,12 +63,13 @@ Runs Docker smoke tests to verify container isolation — heavier, so only on ma
 ### Jobs
 
 **`smoke`**
-- Runs after ci.yml passes (ci.yml triggers on the same push to main)
+- Runs in parallel with ci.yml (both trigger on the same push to main)
 - Docker smoke tests: verify phantom UID, no credential leaks, no Docker socket, 
   no git remotes, zero alcatraz footprint
-- Requires: Docker (available on GitHub Actions Linux runners)
-- Requires: `initialize_alcatraz.sh` to set up the environment, Docker image build
-- May need: `alcatrazer.toml`, `.env`
+- Uses `initialize_alcatraz.sh --non-interactive` for environment setup
+- Builds image with `docker build --build-arg` (bypasses compose for build)
+- Generates project-root `docker-compose.yml` from template for `docker compose run`
+- Mount point footprint test skipped in CI (host path contains repo name)
 
 ### What this proves
 
@@ -175,14 +165,15 @@ version guard blocks give friendly errors when scripts are run directly with old
 
 - Lint job (ruff check + ruff format --check)
 - Test matrix (Python 3.11, 3.12, 3.13)
-- Build job (uv build + upload artifact, 90-day retention)
 - Triggers on push to any branch + PRs to main
 
 ### Step 4: Create `.github/workflows/smoke.yml` ✅
 
 - Docker smoke tests — triggers on push to `main` only (after merge)
-- Non-interactive bootstrap: UID, identity, workspace, snapshot, Docker image build
-- Draft — may need iteration for CI-specific edge cases
+- `initialize_alcatraz.sh --non-interactive` for environment setup
+- `docker build --build-arg` for image build (bypasses compose)
+- `sed` generates project-root `docker-compose.yml` for `docker compose run`
+- Mount point footprint test skipped in CI (`CI=true`)
 
 ### Step 5: Create `.github/workflows/release.yml` ✅
 
@@ -192,20 +183,15 @@ version guard blocks give friendly errors when scripts are run directly with old
 - Creates GitHub Release with wheel, sdist, and SHA256SUMS attached
 - PyPI publish step present but **commented out** (no PyPI access yet)
 
-### Step 6: Enable branch protection on `main`
+### Step 6: Enable branch protection on `main` ✅
 
 - Development happens on feature branches, only merges to main allowed
-- Require ci.yml to pass before merge
-- Configure via GitHub repo settings → Branches → Branch protection rules
+- Require ci.yml status checks (lint, test matrix) to pass before merge
+- Configured via GitHub repo settings → Branches → Branch protection rules
 
-## Open Questions (deferred — not blocking Steps 1-3)
+## Open Questions
 
-1. **Smoke tests in CI (Step 4):** The smoke tests require a fully initialized environment: 
-`.alcatrazer/` state (uid, agent-identity), built Docker image, `docker compose`, 
-`alcatrazer.toml` + `.env` at project root. That's essentially the full `initialize_alcatraz.sh` 
-flow plus `docker compose build` inside the CI runner. Solve when we get to Step 4.
-
-2. **PyPI trusted publishers (after PyPI recovery):** GitHub Actions supports PyPI trusted publishers 
+1. **PyPI trusted publishers (after PyPI recovery):** GitHub Actions supports PyPI trusted publishers 
 (OIDC-based, no API token needed). More secure than a stored secret. 
 Evaluate when PyPI access is recovered.
 
@@ -303,15 +289,25 @@ Effective debug dumps include:
 Without this visibility, CI debugging becomes guess-push-wait cycles. 
 Each cycle costs 2-5 minutes. A few well-placed dumps save hours.
 
+### Docker Compose project name leaks "alcatrazer" into volume paths
+
+Docker Compose prefixes named volumes with the **project name** (defaults to directory name). 
+When the repo is named `alcatrazer`, volumes become `alcatrazer_npm-cache` etc., visible 
+inside the container via `/proc/self/mountinfo`. Fix: set `name: devenv` in 
+`docker-compose.yml` to override the default project name.
+
+### CI host path contains repo name — unavoidable in self-testing
+
+GitHub Actions checks out to `/home/runner/work/{repo}/{repo}`. When the repo is `alcatrazer`, 
+bind mount host paths in `/proc/self/mountinfo` contain `alcatrazer`. This is unavoidable 
+when testing alcatrazer inside its own repo — it won't happen in end-user repos. 
+Fix: split the mountinfo footprint check into a separate test 
+(`test_no_alcatraz_in_container_mount_points`) and skip it in CI via `CI=true` env var.
+
 ## Current State
 
-**What exists:**
-- `mise.toml` — local dev tasks (test, test-fast, lint, format, build)
-- `pyproject.toml` — package config, ruff config, test paths
-- Test suite — comprehensive, already split into fast (no Docker) and smoke (Docker)
-
-**What's missing:**
-- `.github/workflows/` — no CI configuration yet
-- No GitHub Releases automation
-- No SHA256SUMS generation
-- `pyproject.toml` has a stale `smoke_test.sh` reference
+**All workflows operational:**
+- `.github/workflows/ci.yml` — lint + test matrix on every push/PR
+- `.github/workflows/smoke.yml` — Docker smoke tests on merge to main
+- `.github/workflows/release.yml` — version check, build, SHA256SUMS, GitHub Release on tag
+- Branch protection on `main` — requires PR with passing status checks
