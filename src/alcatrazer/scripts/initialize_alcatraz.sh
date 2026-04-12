@@ -81,6 +81,8 @@ fi
 if grep -q "^USER_UID=" "${ENV_FILE}" 2>/dev/null; then
     sed -i "s|^USER_UID=.*|USER_UID=${USER_UID}|" "${ENV_FILE}"
 else
+    # Ensure file ends with a newline before appending
+    [ -s "${ENV_FILE}" ] && [ "$(tail -c 1 "${ENV_FILE}")" != "" ] && echo "" >> "${ENV_FILE}"
     echo "USER_UID=${USER_UID}" >> "${ENV_FILE}"
 fi
 

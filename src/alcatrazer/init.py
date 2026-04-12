@@ -48,8 +48,13 @@ def _set_env_var(env_file: Path, key: str, value: str) -> None:
                 lines[i] = f"{key}={value}"
                 env_file.write_text("\n".join(lines) + "\n")
                 return
-    # Append
+    # Append — ensure file ends with newline first
     with open(env_file, "a") as f:
+        if env_file.stat().st_size > 0:
+            with open(env_file, "rb") as rb:
+                rb.seek(-1, 2)
+                if rb.read(1) != b"\n":
+                    f.write("\n")
         f.write(f"{key}={value}\n")
 
 
