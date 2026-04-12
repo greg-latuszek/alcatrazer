@@ -43,7 +43,11 @@ def _load_expected_values():
     return {"uid": uid, "name": lines[0], "email": lines[1]}
 
 
-COMPOSE_FILE = str(project_dir() / "src" / "alcatrazer" / "container" / "docker-compose.yml")
+# Prefer project-root docker-compose.yml (generated with correct paths),
+# fall back to the template in src/alcatrazer/container/.
+_root_compose = project_dir() / "docker-compose.yml"
+_template_compose = project_dir() / "src" / "alcatrazer" / "container" / "docker-compose.yml"
+COMPOSE_FILE = str(_root_compose if _root_compose.exists() else _template_compose)
 
 # Bash script that runs inside the container to collect all test data
 # in delimiter-separated sections for reliable parsing.
