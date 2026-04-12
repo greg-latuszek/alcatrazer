@@ -3,6 +3,10 @@
 #
 # Run from project root: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml ...
 
+# Neutral project name — prevents "alcatrazer" from leaking into Docker volume
+# paths visible inside the container via /proc/self/mountinfo.
+name: devenv
+
 services:
   workspace:
     build:
