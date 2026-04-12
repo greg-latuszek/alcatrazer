@@ -38,7 +38,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name "CI Test"
+          git config --global user.email "ci@test.local"
+
       - name: Run tests
+        env:
+          PYTHONPATH: src
         run: python -m unittest discover -s src/alcatrazer/tests -v
 
   build:
