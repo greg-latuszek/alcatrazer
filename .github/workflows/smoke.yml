@@ -27,7 +27,7 @@ jobs:
         run: ./src/alcatrazer/scripts/initialize_alcatraz.sh --non-interactive
 
       - name: Build Docker image
-        run: docker compose -f src/alcatrazer/container/docker-compose.yml build
+        run: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build
 
       - name: Run smoke tests
         run: python -m unittest discover -s src/alcatrazer/integration_tests -v

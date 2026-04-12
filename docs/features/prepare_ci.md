@@ -209,6 +209,56 @@ flow plus `docker compose build` inside the CI runner. Solve when we get to Step
 (OIDC-based, no API token needed). More secure than a stored secret. 
 Evaluate when PyPI access is recovered.
 
+## Lessons Learned (CI Debugging)
+
+### Git default branch on CI runners
+
+GitHub Actions `ubuntu-latest` (Ubuntu 24.04) ships with git that defaults to `master` 
+as the initial branch name. The test suite's `seed_alcatraz.sh` assumes `main`. 
+Fix: add `git config --global init.defaultBranch main` to the CI git configuration step. 
+This is needed in **every workflow that runs `git init`** (ci.yml for tests, smoke.yml for 
+workspace init). Not needed in release.yml (no `git init`).
+
+### Node.js 20 deprecation in GitHub Actions
+
+`actions/checkout@v4`, `actions/setup-python@v5`, and `actions/upload-artifact@v4` run 
+on Node.js 20, which GitHub is deprecating (forced to Node.js 24 on 2026-06-02, 
+removed on 2026-09-16). Each job emits a warning annotation. Fix: bump to 
+`checkout@v6`, `setup-python@v6`, `upload-artifact@v7`.
+
+### Docker Compose `.env` resolution with `-f`
+
+When running `docker compose -f src/alcatrazer/container/docker-compose.yml build`, 
+Compose resolves `${VAR}` substitution in the compose file from `.env` in the 
+**project directory** (the directory containing the compose file — `src/alcatrazer/container/`), 
+NOT the current working directory. Since our `.env` lives at the project root, 
+Compose can't find `USER_UID` and `WORKSPACE_DIR`. Fix: always pass 
+`--env-file .env` explicitly. Note: the `env_file:` directive inside `docker-compose.yml` 
+only injects variables into the **container runtime**, not into compose file interpolation.
+
+### Build job removed from ci.yml
+
+Originally ci.yml had a `build` job (uv build + upload-artifact). Removed because 
+build verification and artifact upload only matter at release time — ci.yml should stay 
+lightweight (lint + test). The build job lives in release.yml where it creates a GitHub 
+Release with wheel, sdist, and SHA256SUMS attached.
+
+### Branch protection blocks direct push to main
+
+Step 6 (branch protection) was already configured. Direct pushes to `main` are rejected — 
+changes must go through a PR with passing status checks. If a required status check is 
+removed from the workflow (e.g. the `build` job), it must also be removed from the 
+branch protection required checks list, otherwise PRs will hang on 
+"Waiting for status to be reported" forever.
+
+### Non-interactive init for CI
+
+`init.py` has an interactive `input()` prompt for workspace directory selection that blocks 
+in CI (no TTY). Fix: added `--non-interactive` flag that auto-picks the first choice. 
+`initialize_alcatraz.sh` already passes through all CLI args, so 
+`./src/alcatrazer/scripts/initialize_alcatraz.sh --non-interactive` works. This replaced 
+a 30+ line hand-crafted bootstrap in smoke.yml with a single line.
+
 ## Current State
 
 **What exists:**

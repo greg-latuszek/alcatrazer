@@ -1,7 +1,7 @@
 # Configuration:
 #   .env — API keys, USER_UID, WORKSPACE_DIR (managed by init script and user)
 #
-# Run from project root: docker compose -f src/alcatrazer/container/docker-compose.yml ...
+# Run from project root: docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml ...
 
 services:
   workspace:

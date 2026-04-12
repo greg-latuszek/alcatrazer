@@ -57,11 +57,11 @@ run = ["uv build"]
 
 [tasks.docker-build]
 description = "Build the Alcatraz container"
-run = ["docker compose -f src/alcatrazer/container/docker-compose.yml build"]
+run = ["docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build"]
 
 [tasks.docker-run]
 description = "Run the workspace container"
-run = ["docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace"]
+run = ["docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace"]
 
 [tasks.init]
 description = "Initialize Alcatraz (workspace, UID, Python)"

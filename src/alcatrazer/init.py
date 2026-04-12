@@ -187,12 +187,11 @@ def print_summary(alcatrazer_dir: Path, workspace_dir: Path) -> None:
     result = _git(str(workspace_dir), "config", "--local", "--list")
     print(result.stdout.rstrip())
     print()
+    compose = "docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml"
     print("Next steps:")
     print("  1. Fill in API keys in .env")
-    print("  2. Run: docker compose -f src/alcatrazer/container/docker-compose.yml build")
-    print(
-        "  3. Run: docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace"
-    )
+    print(f"  2. Run: {compose} build")
+    print(f"  3. Run: {compose} run --rm workspace")
 
 
 def handle_reset(project_dir: Path, alcatrazer_dir: Path, force: bool = False) -> None:

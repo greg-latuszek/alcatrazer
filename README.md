@@ -169,8 +169,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 ### 3. Build and run
 
 ```bash
-docker compose -f src/alcatrazer/container/docker-compose.yml build
-docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace
+docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build
+docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace
 ```
 
 You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
@@ -354,7 +354,7 @@ These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` co
 ## Workflow
 
 1. `./src/alcatrazer/scripts/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
-2. `docker compose -f src/alcatrazer/container/docker-compose.yml build && docker compose -f src/alcatrazer/container/docker-compose.yml run --rm workspace` — build and enter the container.
+2. `docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build && docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace` — build and enter the container.
 3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
 4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
 5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
