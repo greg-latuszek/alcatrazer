@@ -1,6 +1,18 @@
 # CI/CD Pipeline
 
-## Status: Complete (all 6 steps done)
+## Status: Complete (all 6 steps done, two TODOs remain)
+
+### TODO
+
+1. **Simplify `smoke.yml` after docker templating machinery.** Currently smoke.yml has a 
+   `sed` hack to generate a project-root `docker-compose.yml` from the template. Once 
+   `install_method` Step 2 implements proper docker template generation during init 
+   (see `docs/features/install_method.md`), smoke.yml can drop the sed step — 
+   `initialize_alcatraz.sh --non-interactive` will produce the working compose file directly.
+
+2. **Test `release.yml` with a real version tag.** The release workflow (version check, 
+   build, SHA256SUMS, GitHub Release) has never been triggered. It needs a `v*` tag push 
+   to test. Defer until first release or a dry-run tag (e.g., `v0.0.1-rc1`).
 
 ## Goal
 
