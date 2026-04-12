@@ -17,11 +17,17 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Configure git for CI
+        run: |
+          git config --global user.name "CI Test"
+          git config --global user.email "ci@test.local"
+          git config --global init.defaultBranch main
 
       - name: Bootstrap alcatrazer environment
         run: |
