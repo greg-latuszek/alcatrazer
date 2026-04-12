@@ -259,6 +259,50 @@ in CI (no TTY). Fix: added `--non-interactive` flag that auto-picks the first ch
 `./src/alcatrazer/scripts/initialize_alcatraz.sh --non-interactive` works. This replaced 
 a 30+ line hand-crafted bootstrap in smoke.yml with a single line.
 
+### Docker Compose template paths break in CI
+
+`docker-compose.yml` lives in `src/alcatrazer/container/` with hardcoded `../../../` paths. 
+This breaks both `.env` resolution and the `docker compose run` used by smoke tests. 
+Even `--env-file .env` doesn't fully solve it — the test code (`test_smoke.py`) calls 
+`docker compose -f <path> run` directly. CI workaround: `sed` the template into a 
+working `docker-compose.yml` at the project root, fixing context and volume paths. 
+The smoke test code looks for a project-root `docker-compose.yml` first, falls back to 
+the template. Proper fix: docker template machinery in the init script 
+(see `docs/features/install_method.md`).
+
+### Docker build vs Docker Compose build in CI
+
+`docker compose build` requires all compose-file variables (`USER_UID`, `WORKSPACE_DIR`) 
+to be resolvable, which depends on `.env` parsing working correctly. For CI, 
+`docker build --build-arg USER_UID=$(cat .alcatrazer/uid)` is simpler and more reliable — 
+it bypasses compose entirely and reads the value directly from the init output. 
+Use compose only where volume mounts and env_file injection are needed (i.e., `run`).
+
+### Missing trailing newline in `.env.example`
+
+`.env.example` did not end with a newline. When `initialize_alcatraz.sh` copied it to `.env` 
+and appended `USER_UID=1002`, the result was `# MINIMAX_API_KEY=USER_UID=1002` — 
+a mangled comment line, invisible to docker compose variable resolution. 
+Fix: ensure `.env.example` ends with a newline, and defensively check for trailing newline 
+in both `initialize_alcatraz.sh` and `init.py` `_set_env_var()` before appending.
+
+### CI debugging principle: visibility first
+
+CI runs on remote machines with no interactive access. When troubleshooting failures, 
+**always add debug steps that dump state to logs before the failing step**, not after. 
+Effective debug dumps include:
+
+- **Generated files:** `cat docker-compose.yml`, `cat .env` — verify content, not just existence
+- **Directory layout:** `find .alcatrazer -type f -o -type l | sort`, `ls -la $WORKSPACE_DIR`
+- **Container internals:** `docker run --rm <image> bash -c 'id; pwd; ls -la /workspace; ls -la ~'`
+- **Command output isolation:** run the failing command separately with `|| true` to capture 
+  its error without blocking subsequent debug steps
+- **Full script output:** run the same script the tests would run (e.g., `CONTAINER_SCRIPT`) 
+  via a standalone `docker run` to see raw output before the test framework parses it
+
+Without this visibility, CI debugging becomes guess-push-wait cycles. 
+Each cycle costs 2-5 minutes. A few well-placed dumps save hours.
+
 ## Current State
 
 **What exists:**
