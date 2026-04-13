@@ -256,9 +256,12 @@ Optionally ask about tool versions and daemon settings (or accept defaults).
 5. **Extract tool files** 
 — copy the full `src/alcatrazer/` tree from the PyPI package into `.alcatrazer/src/alcatrazer/` 
 (Python modules, container/, scripts/, templates/, tests/ — same layout as the dev repo)
-6. **Update `.gitignore`** — add `.alcatrazer/` and `.env` entries
-7. **Create `.alcatrazer/python` symlink** — from `sys.executable` (the Python that's running `alcatrazer init`)
-8. **Run initialization** 
+6. **Generate `docker-compose.yml` at project root** — see "Docker Template Machinery" section above. 
+No dependency on step 5 in the dev repo (template already in place); for end-user installs, 
+runs after extraction. Also add `docker-compose.yml` to `.gitignore`.
+7. **Update `.gitignore`** — add `.alcatrazer/` and `.env` entries
+8. **Create `.alcatrazer/python` symlink** — from `sys.executable` (the Python that's running `alcatrazer init`)
+9. **Run initialization** 
 — optionally run the full init flow: UID detection, workspace directory selection (3 random choices), 
 random agent identity, git init + snapshot, safe.directory
 
