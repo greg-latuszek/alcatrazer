@@ -1,10 +1,11 @@
-"""Tests for the `alcatrazer start` CLI skeleton (Step 3a).
+"""Tests for the `alcatrazer start` CLI skeleton.
 
-Only the routing: `.alcatrazer/` presence decides whether we enter the
-first-time setup flow or the subsequent-run flow. Both branches are
-placeholders at this step — we only assert which one is called.
+Step 3a — routing: `.alcatrazer/` presence decides first-time vs subsequent.
+Step 3b — first-time flow aborts unless run at a git repo root.
 """
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from alcatrazer import cli, start
+
+GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
 
 class StartRoutingTests(unittest.TestCase):
@@ -66,6 +69,39 @@ class CliIntegrationTests(unittest.TestCase):
         ):
             cli.main()
         self.assertEqual(cm.exception.code, 2)
+
+
+class FirstTimeGitRepoCheckTests(unittest.TestCase):
+    """Step 3b: first-time setup must refuse to run outside a git repo root."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run_first_time(self) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start._first_time_setup(self.project_dir)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_aborts_when_not_a_git_repo(self):
+        rc, _, err = self._run_first_time()
+        self.assertNotEqual(rc, 0)
+        self.assertIn(GIT_REPO_ROOT_ERROR, err)
+
+    def test_proceeds_when_git_is_directory(self):
+        (self.project_dir / ".git").mkdir()
+        rc, _, err = self._run_first_time()
+        self.assertEqual(rc, 0)
+        self.assertNotIn(GIT_REPO_ROOT_ERROR, err)
+
+    def test_proceeds_when_git_is_file_worktree(self):
+        # In git worktrees and submodules, `.git` is a file pointing elsewhere.
+        (self.project_dir / ".git").write_text("gitdir: /some/path/.git\n")
+        rc, _, err = self._run_first_time()
+        self.assertEqual(rc, 0)
+        self.assertNotIn(GIT_REPO_ROOT_ERROR, err)
 
 
 if __name__ == "__main__":
