@@ -1,403 +1,738 @@
-# Alcatrazer Installation Method
+# Alcatrazer Installation & Operation
 
-## Status: On Hold — waiting for CI ([prepare_ci.md](prepare_ci.md))
+## Status: Ready for implementation
 
 ## Goal
 
-A simple one-liner that installs Alcatrazer into any existing git repository. 
-The user runs one command, answers a few questions, and gets a working Alcatraz environment — no manual file copying, 
-no cloning, no reading setup docs.
+A simple one-liner that installs Alcatrazer into any existing git repository.
+The user runs one command, answers a few questions, and gets a working Alcatraz
+environment — no manual file copying, no cloning, no reading setup docs.
 
-## Key Principle: Zero Pollution
+After installation, daily operation is two commands: `start` and `stop`.
 
-Alcatrazer must not pollute the target repository. The only things that touch the repo proper are:
+---
 
-- `alcatrazer.toml` — version controlled, captures project decisions
-- `.gitignore` entries for `.alcatrazer/`, `.<workspace>/`, and `.env`
-- `.env.example` — template for API keys
-
-Everything else — scripts, Docker files, daemon, promotion logic, tool state — lives inside `.alcatrazer/`. 
-The agent workspace lives in a separate randomly named directory (e.g., `.devspace-7f3a/`) to prevent leaking "alcatrazer" 
-via Docker's `/proc/self/mountinfo`.
+## Target Repo Layout After Installation
 
 ```
 target-repo/
 ├── .git/
-├── .gitignore                <-- updated: adds .alcatrazer/, .<workspace>/, .env
-├── .env                      <-- API keys + USER_UID + WORKSPACE_DIR
-├── .env.example              <-- template for API keys
-├── alcatrazer.toml           <-- created from template, user's promotion identity
-├── .alcatrazer/              <-- gitignored, tool state (never mounted into Docker)
-│   ├── python -> ...         <-- symlink to resolved Python 3.11+
-│   ├── uid                   <-- phantom UID
-│   ├── agent-identity        <-- randomly generated name + email
-│   ├── workspace-dir         <-- name of the workspace directory
+│   └── info/
+│       └── exclude              <-- alcatrazer patterns (NOT in working tree)
+├── coding-environment.toml      <-- version controlled, zero alcatrazer branding
+├── .env.example                 <-- template for API keys (standard pattern)
+├── .alcatrazer/                 <-- gitignored via .git/info/exclude
+│   ├── config.toml              <-- alcatrazer config (promotion, daemon, pointer)
+│   ├── Dockerfile               <-- generated from coding-environment.toml
+│   ├── docker-compose.yml       <-- generated
+│   ├── entrypoint.sh            <-- generated
+│   ├── coding-environment.toml.last  <-- copy from last successful build
+│   ├── uid                      <-- phantom UID
+│   ├── agent-identity           <-- randomly generated name + email
+│   ├── workspace-dir            <-- name of the workspace directory
+│   ├── python -> ...            <-- symlink to resolved Python 3.11+
 │   ├── promote-export-marks
 │   ├── promote-import-marks
-│   ├── src/alcatrazer/       <-- full package tree copied from PyPI wheel (Python modules, container/, scripts/, templates/, tests/)
+│   ├── src/alcatrazer/          <-- full package tree from PyPI wheel
+│   │   ├── __init__.py
+│   │   ├── cli.py
+│   │   ├── promote.py
+│   │   ├── container/           <-- Docker templates (Dockerfile, entrypoint.sh)
+│   │   ├── scripts/             <-- bash bootstrap (resolve_python.sh)
+│   │   ├── templates/           <-- config templates
+│   │   └── tests/               <-- bundled test suite
 │   └── ... (logs, PID, etc.)
-└── .<workspace>/             <-- gitignored, randomly named (e.g., .devspace-7f3a/)
-    ├── .git/                 <-- inner git (random agent identity, no remote)
+└── .<workspace>/                <-- gitignored via .git/info/exclude, randomly named
+    ├── .git/                    <-- inner git (random agent identity, no remote)
     └── ... agent work ...
 ```
 
-For installation via PyPI, all tool code is inside the `alcatrazer` package — Python modules, 
-Docker templates (`container/`), bash scripts (`scripts/`), and config template (`templates/alcatrazer.toml`). 
-The `alcatrazer init` command copies what's needed into the target repo.
+**Principle 2 compliance:** Nothing in the working tree reveals Alcatrazer.
+`coding-environment.toml` has zero branding. `.env.example` is a standard pattern.
+All alcatrazer-specific artifacts are in `.alcatrazer/` (gitignored via
+`.git/info/exclude`, not `.gitignore` — so agents never see the ignore patterns either).
 
-## Installation Options
+See [alcatraz_how_and_what_for.md](alcatraz_how_and_what_for.md) "Resolved: Config Split"
+for the full reasoning behind this architecture.
 
-### Option A: `pipx run alcatrazer init`
+---
 
-**How it works:**
-- Alcatrazer is published to PyPI as a package with a CLI entry point
-- `pipx run` downloads the package into a temporary venv, runs it, discards it
-- The CLI copies tool files into `.alcatrazer/`, writes config, runs interactive setup
+## CLI: Three Commands
 
-**Requires:** `pipx` installed on the target machine.
+**Design goal:** Minimalism. Developers are tired of learning new tools. Alcatrazer
+should be operable and invisible — as few commands as possible, no Docker vocabulary
+leaking through (no `up`/`down`/`build`/`compose`), no separate init to learn.
 
-**Pros:**
-- Clean, Pythonic, idiomatic for Python CLI tools in 2026
-- Version pinning: `pipx run alcatrazer==1.2.0 init`
-- No residue after installation — pipx discards the temp venv
-- Familiar pattern for Python developers
-
-**Cons:**
-- Requires pipx. Not everyone has it. It's increasingly common but not universal.
-- pipx itself needs Python — but we already require Python 3.11+ anyway.
-
-**Who has pipx:** Developers who actively manage Python CLI tools. Common in Python-heavy teams, 
-less common for Node/Go/Rust developers who happen to use AI agents.
-
-### Option A2: `uvx alcatrazer init`
-
-Same as Option A but via `uv` instead of `pipx`.
-
-**Requires:** `uv` installed on the target machine.
-
-**Pros:**
-- `uv` is fast (Rust-based), gaining adoption rapidly
-- `uvx` is uv's equivalent of `pipx run` — ephemeral execution
-- Same PyPI package, same CLI — just a different runner
-
-**Cons:**
-- Requires uv. Newer tool, less widespread than pipx (as of 2026).
-- Same chicken-and-egg: need a Python tool runner to install a Python tool.
-
-**Who has uv:** Early adopters, teams using modern Python tooling. Growing fast but not yet ubiquitous.
-
-**Note:** Options A and A2 use the same PyPI package. If we publish to PyPI, 
-both `pipx run` and `uvx` work automatically — no extra effort.
-
-### Option C: `curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh | bash`
-
-**How it works:**
-- A bash installer script hosted at a stable URL
-- Three-stage bootstrap that converges to the same PyPI package as Options A/A2:
-  1. **Stage 1 (bash):** Resolves Python 3.11+ using the same four-tier fallback as `resolve_python.sh` (detect system python3 → offer mise install → offer mise bootstrap → ask for manual path). Creates `.alcatrazer/python` symlink.
-  2. **Stage 2 (bash → Python stdlib):** Creates a temporary venv: `.alcatrazer/python -m venv .alcatrazer/.venv`. The `venv` module is Python stdlib, and `ensurepip` (also stdlib) provides pip inside the venv.
-  3. **Stage 3 (same as pipx/uvx):** `.alcatrazer/.venv/bin/pip install alcatrazer && .alcatrazer/.venv/bin/alcatrazer init`. This is the exact same PyPI package that pipx/uvx would run. After installation completes, `rm -rf .alcatrazer/.venv`.
-
-**Key insight:** All three installation paths run the same `alcatrazer init` from the same PyPI package. 
-The only difference is who provides the temporary Python environment:
+### The commands
 
 ```
-pipx run alcatrazer init     →  pipx manages temp venv   →  alcatrazer init
-uvx alcatrazer init          →  uv manages temp venv     →  alcatrazer init
-curl | bash                  →  we manage temp venv      →  alcatrazer init
-                                (resolve python,
-                                 venv + pip install,
-                                 run, delete venv)
+alcatrazer start                     the only command for daily work
+alcatrazer stop                      stop the container
+alcatrazer upgrade                   check for and install new alcatrazer version
+```
+
+Everything else is a flag on `start` or `upgrade`:
+
+```
+alcatrazer start --run-selftest      also run security self-tests after starting
+alcatrazer start --verify-checksum   also verify installed source against GitHub
+alcatrazer start --rebuild           force full rebuild even if nothing changed
+alcatrazer upgrade --dry-run         check for new version without installing
+```
+
+### `alcatrazer start` — does the right thing
+
+`start` is always safe to run. It detects the current state and does what's needed.
+
+**Detection uses two comparisons:**
+1. Generate would-be Dockerfile in memory, compare against existing `.alcatrazer/Dockerfile`
+   → detects `[os]` or `[languages]` changes (rebuild needed)
+2. Compare `coding-environment.toml` against `.alcatrazer/coding-environment.toml.last`
+   → detects `[startup]` changes (restart needed, no rebuild)
+
+```
+alcatrazer start
+       │
+       ├── no .alcatrazer/ ?
+       │       → first time: interactive questions → generate everything
+       │         → build image → create workspace snapshot → start
+       │
+       ├── container NOT running
+       │       │
+       │       ├── would-be Dockerfile differs from existing?
+       │       │       → rebuild image, start, run startup commands
+       │       │
+       │       └── Dockerfile identical?
+       │               → start container, run startup commands
+       │
+       └── container IS running
+               │
+               ├── would-be Dockerfile differs?
+               │       → rebuild image, restart, run startup commands
+               │
+               ├── coding-environment.toml differs from .last?
+               │   (Dockerfile same — only [startup] changed)
+               │       → restart container, re-run startup commands
+               │
+               └── both identical?
+                       → "Already running, environment up to date."
+```
+
+**Why two comparisons:** Since `[startup]` commands don't go into the Dockerfile (they
+run at container start via a post-start script), changing only `[startup]` won't change
+the generated Dockerfile. The `.last` comparison catches what the Dockerfile comparison
+misses. Together they cover all toml changes exactly — no heuristics, no guessing.
+
+**What is NOT auto-detected:** Changes to external scripts referenced by `[startup]`
+commands (e.g., `"bash scripts/setup-bmad.sh"` where the script was edited but the toml
+line didn't change). Detecting this would require parsing bash commands to find file
+references — fragile and unreliable. Instead: `stop` + `start` re-runs all startup
+commands, which picks up external script changes. Simple, predictable, no magic.
+
+After each successful build, the current `coding-environment.toml` is copied to
+`.alcatrazer/coding-environment.toml.last` as a record of what the last build used.
+
+### `alcatrazer stop` — stop the container
+
+No flags, no options. Just stop.
+
+### `alcatrazer upgrade` — self-update
+
+Checks PyPI for a newer version of alcatrazer and installs it into `.alcatrazer/`.
+
+```
+$ alcatrazer upgrade
+Current: 0.2.0
+Latest:  0.3.1
+Upgrading... done.
+Run 'alcatrazer start --rebuild' to apply changes to the container.
+
+$ alcatrazer upgrade --dry-run
+Current: 0.2.0
+Latest:  0.3.1
+Run 'alcatrazer upgrade' to install.
+```
+
+Per-repo upgrade — consistent with per-repo install. Each repo controls its own version.
+
+### `--run-selftest` — verify security properties
+
+Runs the bundled test suite that verifies: phantom UID isolation, no credential leaks,
+no Docker socket, no git remotes, identity rewriting, file ownership.
+
+Named `--run-selftest` (not `--test`) to make clear this tests alcatrazer itself,
+not the target repository's test suite.
+
+### `--verify-checksum` — verify source integrity
+
+Verifies installed source code against `SHA256SUMS` from GitHub Releases.
+A convenience — the user can always do this manually with `sha256sum -c`.
+
+### What the user experiences
+
+**First time:**
+```
+$ alcatrazer start
+No alcatrazer setup found. Starting interactive setup...
+
+What languages does this project use?
+> Python 3.12
+
+Package manager? [pip] / uv / poetry
+> uv
+
+... (questions about promotion identity, etc.) ...
+
+Generated: coding-environment.toml
+Generated: .alcatrazer/config.toml
+Written:   .git/info/exclude
+Building container image... ████████████████ done (47s)
+Creating workspace snapshot... done
+Starting container...
+Running startup commands...
+  ✓ uv sync
+Ready.
+```
+
+**Daily work:**
+```
+$ alcatrazer start
+Container started. Environment up to date.
+
+$ alcatrazer stop
+Container stopped.
+```
+
+**After editing coding-environment.toml ([os] or [languages]):**
+```
+$ alcatrazer start
+coding-environment.toml changed — rebuilding image.
+Building... ████████████████ done (12s)
+Restarting container...
+Running startup commands...
+  ✓ uv sync
+  ✓ npm install
+Ready.
+```
+
+**After editing coding-environment.toml ([startup] only):**
+```
+$ alcatrazer start
+Restarting container...
+Running startup commands...
+  ✓ uv sync
+  ✓ pnpm install
+Ready.
+```
+
+**Startup failure:**
+```
+$ alcatrazer start
+Running startup commands...
+  ✓ uv sync
+  ✗ npm install
+    npm ERR! gyp ERR! build error — missing python
+
+ERROR: Startup command #2 failed.
+  → Check [startup] commands in coding-environment.toml
+```
+
+User fixes toml, runs `alcatrazer start` again.
+
+---
+
+## Configuration Files
+
+### `coding-environment.toml` (version controlled)
+
+Defines the agent's coding environment. Zero alcatrazer branding anywhere in the file.
+If the repo already has a file by this name, use a random hex suffix:
+`coding-environment-a3f7.toml`.
+
+**Guiding principles:**
+
+- **Usable startup, not lockdown** — pre-installs tools for convenience and speed, but
+  agents have sudo and can install anything at runtime. The container boundary is the
+  security perimeter, not the toml.
+- **Don't repeat what the repo already defines** — language libraries belong in
+  `requirements.txt`, `package.json`, etc. The toml defines what must exist BEFORE
+  those files can be consumed (runtimes, managers, OS deps).
+- **Agents can improve it** — agents see this file in the workspace and can add missing
+  dependencies. Changes get promoted, reviewed by the developer, and used to rebuild.
+
+#### Sections and installation order
+
+The sections follow a strict dependency order. OS packages may be dependencies for
+language runtimes or their libraries. Language runtimes must exist before package
+managers can run. Startup commands depend on everything above. The reverse is
+essentially never true.
+
+The Dockerfile generator enforces this order regardless of how the file is written,
+but the file should reflect the order for readability.
+
+**1. `[os]` — system packages (installed first)**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev", "ffmpeg"]
+```
+
+Installed via the OS package manager (`apt-get`) at Docker build time. Needed for:
+compilation dependencies, system tools that language packages can't provide,
+libraries with C bindings.
+
+Optional section. Omit if the project has no system-level dependencies.
+
+**2. `[languages.<name>]` — runtimes and package managers (installed second)**
+
+```toml
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+```
+
+One subtable per language runtime. `version` is required — no `"latest"`,
+reproducibility matters. Usually 1–2 languages, but no artificial limit.
+
+`manager` is optional — defaults to the language's standard package manager:
+
+| Language | Default manager | Non-default examples |
+|----------|----------------|---------------------|
+| python   | pip            | uv, poetry, pipenv  |
+| node     | npm            | pnpm, yarn          |
+| rust     | cargo          | (rarely overridden)  |
+| go       | go modules     | (rarely overridden)  |
+
+Specify `manager` only when using a non-default. Non-default managers are installed
+as a separate step after the runtime.
+
+Language runtimes are installed via **mise** — a multi-language version manager already
+present in the alcatrazer base layer. See
+[alcatraz_how_and_what_for.md](alcatraz_how_and_what_for.md) "Language runtime
+installation: mise" for the comparison against alternatives.
+
+**3. `[startup]` — boot-up commands (run last, at container start)**
+
+```toml
+[startup]
+commands = [
+    "uv sync",
+    "npm install",
+    "bash scripts/setup-bmad-framework.sh",
+]
+```
+
+Ordered list of commands run after container start. This is where:
+- Repo dependencies get installed from the project's own files (`uv sync`, `npm install`)
+- Agentic frameworks with non-standard setup procedures get configured
+- Any arbitrary bash command can go — the open-ended escape hatch
+
+Commands run as the container user (not root), in order. Fail-fast: a failing command
+stops execution (see "Build & Startup Error Handling" below).
+
+Optional section. Omit if agents can figure out setup themselves (they have sudo).
+
+#### Dockerfile generation mapping
+
+| TOML section | Dockerfile action | When |
+|---|---|---|
+| `[os]` packages | `RUN apt-get install -y ...` | build time (layer 1) |
+| `[languages.*]` version | `RUN mise use --global <lang>@<version>` | build time (layer 2) |
+| `[languages.*]` manager | `RUN mise use --global <manager>` or `pip install <manager>` | build time (layer 2) |
+| `[startup]` commands | post-start script | container start |
+
+The alcatrazer security base (phantom UID, gosu, git, mise, entrypoint) is always the
+foundation — generated unconditionally, not configurable via this file.
+
+#### Examples
+
+**Minimal (Python-only project):**
+
+```toml
+[languages.python]
+version = "3.12"
+```
+
+**Typical (Python backend + TypeScript frontend):**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev"]
+
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+
+[startup]
+commands = [
+    "uv sync",
+    "npm install",
+]
+```
+
+**Complex (multi-language with agentic framework):**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev", "ffmpeg", "graphviz"]
+
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+manager = "pnpm"
+
+[startup]
+commands = [
+    "uv sync",
+    "pnpm install",
+    "bash scripts/setup-bmad-framework.sh",
+]
+```
+
+#### What's NOT in this file
+
+- **Language libraries** — live in `requirements.txt`, `package.json`, `Cargo.toml`, etc.
+  Installed by startup commands or by agents at runtime.
+- **Alcatrazer configuration** — lives in `.alcatrazer/config.toml` (gitignored).
+- **Promotion identity** — lives in `.alcatrazer/config.toml` (sensitive, per-developer).
+- **Daemon settings** — lives in `.alcatrazer/config.toml`.
+- **Anything that reveals Alcatrazer** — no branding, no security config, no tool-specific
+  comments.
+
+### `.alcatrazer/config.toml` (gitignored, per-developer)
+
+Contains everything alcatrazer-specific. Invisible to agents (never in the snapshot).
+
+```toml
+# Path to the coding environment definition (relative to repo root)
+coding_environment_file = "coding-environment.toml"
+
+[promotion]
+# Identity used when promoting commits from the workspace to the outer repo.
+# Priority chain (lowest to highest):
+#   git config (local > global) < this file < CLI --author-name/--author-email
+name = "Grzegorz Latuszek"
+email = "latuszek.grzegorz@gmail.com"
+
+[promotion-daemon]
+# Polling interval in seconds
+interval = 5
+
+# Which branches to promote from the inner repo:
+#   "all" — every branch
+#   A branch name — e.g. "main"
+#   A list of patterns: ["main", "feature/*"]
+branches = "all"
+
+# Conflict handling mode:
+#   "mirror" — promote to same branch names (default)
+#   "alcatraz-tree" — promote to alcatraz/* namespace
+mode = "mirror"
+
+# Logging verbosity: "normal" or "detailed"
+verbosity = "normal"
+
+# Maximum log file size before rotation (in KB)
+max_log_size = 512
+```
+
+Generated during first `alcatrazer start`. The interactive flow asks about promotion
+identity; daemon settings default to the values above and can be edited later.
+
+### `.git/info/exclude`
+
+Git's built-in per-repo ignore mechanism. NOT version controlled, NOT in the working
+tree — so it never enters the workspace snapshot.
+
+Written by `alcatrazer start` during first-time setup:
+
+```
+# alcatrazer patterns (written by alcatrazer start)
+.alcatrazer/
+.<workspace-dir>/
+```
+
+The workspace directory name is randomly generated (e.g., `.devspace-7f3a/`).
+
+---
+
+## Build & Startup Error Handling
+
+Installation from `coding-environment.toml` is a pipeline that can fail at each stage.
+Alcatrazer detects these failures, reports them clearly, and guides the developer
+through the fix cycle.
+
+### Two failure times
+
+**Build time** (`docker build` — image creation):
+- `[os]` packages — typo in package name, package doesn't exist, dependency conflict,
+  network unreachable
+- `[languages.*]` runtimes — version doesn't exist, build from source fails
+- `[languages.*]` managers — installation script fails, network unreachable
+
+**Container start time** (after image is built):
+- `[startup]` commands — `uv sync` fails (broken `pyproject.toml`), `npm install` fails
+  (native module needs a missing OS dep), custom script errors out
+
+Build-time failure: no image created, cannot start. Very visible.
+Start-time failure: image exists, container starts, but environment is broken. More subtle.
+
+### Fail fast
+
+Each phase runs in dependency order. If a step fails, execution stops immediately.
+
+```
+[os] packages  →  fails?  →  STOP, report
+       ↓ ok
+[languages] runtimes + managers  →  fails?  →  STOP, report
+       ↓ ok
+--- image built, layers cached ---
+[startup] command 1  →  fails?  →  STOP, report
+       ↓ ok
+[startup] command 2  →  fails?  →  STOP, report
+       ↓ ok
+...
+READY
+```
+
+### Error reporting contract
+
+Every error message must provide:
+
+1. **Which phase failed** — "OS packages", "Python 3.12 installation",
+   "startup command #2 (`npm install`)"
+2. **The actual error output** — raw output from apt-get/pip/npm/bash
+3. **Which TOML entry caused it** — pointer to the file and section
+
+### The fix-rebuild loop
+
+```
+see error → edit coding-environment.toml → alcatrazer start → see if it passes
+```
+
+Docker layer caching makes this fast:
+
+| What you fix | What re-runs | Cost |
+|---|---|---|
+| `[startup]` command | nothing rebuilt, just restart | cheapest — seconds |
+| `[languages]` version/manager | language layer + after | medium — minutes |
+| `[os]` package | OS layer + after | most expensive — minutes |
+
+### Suggested fixes for common errors
+
+Smart suggestions are a convenience, not a requirement for MVP. The essential contract is:
+**never fail silently, always show what failed and where to edit.**
+
+| Error pattern | Suggestion |
+|---|---|
+| `Unable to locate package X` | Fuzzy match against known packages |
+| `Python/Node version X not found` | List available versions |
+| `command not found: uv` | "Add `manager = \"uv\"` to the language's section" |
+| `fatal error: X.h: No such file` | "Missing system header — add `-dev` package to `[os]`" |
+| Startup command exits non-zero | Show the command, output, index in `[startup]` |
+
+---
+
+## Installation Entry Points
+
+All entry points converge to the same PyPI package. The only difference is who provides
+the temporary Python environment.
+
+```
+pipx run alcatrazer start    →  pipx manages temp venv   →  alcatrazer start
+uvx alcatrazer start         →  uv manages temp venv     →  alcatrazer start
+curl | bash                  →  we manage temp venv      →  alcatrazer start
 ```
 
 One installer codebase. One test surface. Three entry points.
 
-**Requires:** 
-`bash` and `curl`. Both are truly universal on Linux/macOS. 
-Python is NOT assumed — the script finds or installs it.
+### Option A: `pipx run alcatrazer start`
 
-**Pros:**
-- Maximum reach — the only hard assumptions are bash and curl
-- Reuses our proven Python resolution logic (four-tier fallback)
-- **Same PyPI package as pipx/uvx** — one codebase, not a separate installer
-- No permanent Python tool residue — temp venv is deleted after install
-- Single command, familiar pattern (mise, rustup, poetry all install this way)
+- Alcatrazer published to PyPI with CLI entry point
+- `pipx run` downloads into temp venv, runs, discards
+- Version pinning: `pipx run alcatrazer==1.2.0 start`
+- **Requires:** pipx (which requires Python 3.11+)
 
-**Cons:**
-- Need to host the bash bootstrap script (GitHub Pages, a domain, or raw GitHub URL)
-- No built-in version pinning (though the script can accept `--version` to pin the pip install)
-- `curl | bash` pattern makes some security-conscious users nervous (mitigated by HTTPS)
-- Slightly slower than pipx/uvx (creates+destroys a venv)
+### Option A2: `uvx alcatrazer start`
 
-**Who can use it:** Everyone with bash and internet access. The true universal fallback.
+Same as A but via `uv`. Faster (Rust-based), gaining adoption rapidly.
+- **Requires:** uv
 
-### Option D: Hybrid (recommended)
+### Option C: `curl -fsSL .../install.sh | bash`
 
-All three entry points run the exact same `alcatrazer` PyPI package. 
-The only difference is who provides the temporary Python environment:
+Three-stage bootstrap that converges to the same PyPI package:
+
+1. **Stage 1 (bash):** Resolve Python 3.11+ using four-tier fallback (detect system
+   python3 → offer mise install → offer mise bootstrap → ask for manual path).
+   Creates `.alcatrazer/python` symlink.
+2. **Stage 2 (bash → Python stdlib):** Create temp venv via `python -m venv`.
+   `ensurepip` (stdlib) provides pip.
+3. **Stage 3 (same as pipx/uvx):** `pip install alcatrazer && alcatrazer start`.
+   After installation, delete temp venv.
+
+**Requires:** bash + curl (universal on Linux/macOS). Python is NOT assumed.
+
+### Recommended: Hybrid
+
+Document all three in the README. Meet users where they are:
 
 ```bash
 # For pipx users:
-pipx run alcatrazer init
+pipx run alcatrazer start
 
 # For uv users:
-uvx alcatrazer init
+uvx alcatrazer start
 
 # For everyone else (only assumes bash + curl):
 curl -fsSL https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh | bash
 ```
 
-**What we build and maintain:**
-1. **One PyPI package** (`alcatrazer`) — contains the installer CLI and all tool files as package data. This is the single source of truth.
-2. **One bash bootstrap script** — the `curl | bash` entry point. Thin: resolves Python, creates temp venv, `pip install alcatrazer`, runs it, deletes venv. ~50 lines of bash reusing `resolve_python.sh` logic.
+---
 
-**Pros:**
-- Maximum reach — meet users where they are
-- One installer codebase (the PyPI package), one test surface
-- The bash script is small and stable — the real logic is in Python
+## Trust & Verification
 
-**Cons:**
-- Need PyPI account and a hosted URL for the bash script
-- Three entry points in the docs (but they're one-liners, not separate codebases)
+### The trust problem
 
-## Docker Template Machinery
+Alcatrazer is a security tool. It asks users to run AI agents inside Docker containers
+with the promise that their host is protected. This creates a fundamental trust question:
 
-The files in `src/alcatrazer/container/` (docker-compose.yml, Dockerfile, entrypoint.sh) are **templates**, 
-not ready-to-use files. Currently `docker-compose.yml` has hardcoded `../../../` relative paths that assume 
-it stays nested 3 levels deep inside the package. This causes problems:
+> "Isn't Alcatrazer a wise social engineer that claims to protect my laptop but
+> instead is a thief itself?"
 
-- Docker Compose resolves `${VAR}` substitution from `.env` in the **project directory** 
-  (directory containing the compose file), not the CWD. Since `.env` lives at the project root 
-  but the compose file is in `src/alcatrazer/container/`, variables like `USER_UID` aren't found.
-- The `--env-file .env` workaround is fragile and easy to forget.
-- Volume paths like `../../../${WORKSPACE_DIR}` are brittle.
+### Trust layers
 
-**Solution:** During `alcatrazer init` (Step 2), generate `docker-compose.yml` at the project root 
-from the template, rewriting paths:
-- `context: ../../..` → `context: .`
-- `../../../.env` → `./.env`  
-- `../../../${WORKSPACE_DIR}` → `./${WORKSPACE_DIR}`
+**Layer 1: Open source on GitHub.**
+The entire codebase is public. Anyone can read the Dockerfile, the entrypoint,
+the volumes, the promotion scripts.
 
-The Dockerfile stays in `src/alcatrazer/container/` — its `COPY` paths are relative to the build context 
-(project root), not to the Dockerfile location, so they work without changes.
+**Layer 2: Installed source is readable.**
+Installation extracts into `.alcatrazer/src/alcatrazer/` — not compiled bytecode,
+not obfuscated. The user can read every script:
 
-This is the same approach as `alcatrazer.toml` — template lives in the package, 
-generated file lives at the project root. The installer for end user repos will do the same: 
-take templates from the installed package, place them at the correct location.
+```bash
+cat .alcatrazer/src/alcatrazer/container/Dockerfile
+cat .alcatrazer/src/alcatrazer/container/entrypoint.sh
+cat .alcatrazer/src/alcatrazer/promote.py
+```
 
-**Current CI workaround:** `smoke.yml` uses a `sed` hack to copy and fix paths at build time. 
-This will be replaced by the proper init-time generation.
+**Layer 3: Post-installation verification tests.**
+The test suite is bundled in `.alcatrazer/src/alcatrazer/tests/`. The user runs:
 
-## Open Questions
+```bash
+alcatrazer start --run-selftest
+```
 
-1. **Tool files as package data:** The PyPI package bundles Dockerfile, scripts, etc. as package data. The `alcatrazer init` command extracts them into `.alcatrazer/`. This means the PyPI package IS the release — no separate tarball or GitHub Releases needed. Is this sufficient or do we also want standalone tarballs?
+Tests verify: phantom UID isolation, no credential leaks, no Docker socket,
+no git remotes, identity rewriting, file ownership.
 
-2. **Versioning and updates:** How does a user update Alcatrazer in an existing project? Options:
-   a. `pipx run alcatrazer update` (or `curl | bash` again) — re-extracts tool files, preserves config
-   b. Re-run `init` with `--upgrade` flag — same effect, explicit intent
-   c. Manual: user downloads new version and replaces `.alcatrazer/src/`
+**Layer 4: Checksum verification via independent channel.**
+Each release publishes `SHA256SUMS` as a GitHub Releases asset.
+The real proof is manual:
 
-3. **Domain / URL for curl installer:**
-   **Decision:** Start with raw GitHub URL (free, zero setup):
-   `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh`
+```bash
+# Download checksums from GitHub (independent of PyPI)
+curl -sL https://github.com/greg-latuszek/alcatrazer/releases/download/v0.3.0/SHA256SUMS -o /tmp/SHA256SUMS
+# Verify with standard Unix tools
+cd .alcatrazer/src/alcatrazer/ && sha256sum -c /tmp/SHA256SUMS
+```
 
-   Future options for a nicer URL:
-   - GitHub Pages on the repo → `https://greg-latuszek.github.io/alcatrazer/install.sh`
-   - Custom domain on GitHub Pages → `https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/install.sh` (**costs money**)
-   
-   Note: `https://github.com/<user>/<repo>/install` is NOT a valid GitHub URL pattern. 
-   GitHub only serves raw files via `raw.githubusercontent.com`, release assets, or GitHub Pages.
+`alcatrazer start --verify-checksum` automates this as a convenience.
 
-4. **Should the installer also run initialization?** 
-The init command could offer to run the full initialization (UID, workspace, safe.directory) as the final step, 
-or leave it as a separate command. Running it immediately gives a better "one command to set up" experience.
+### Target audience
 
-5. **The `.alcatrazer/python` symlink:** 
-The curl|bash path creates it during Python resolution. 
-But pipx/uvx users also need it for the daemon. 
-Should `alcatrazer init` create the symlink too (detecting the Python that's running it via `sys.executable`)?
+The target user is a developer. They can read Python and bash. They understand Docker
+volumes and git. They may not read the source before first use — but knowing they *can*
+is a trust signal. And when a security-conscious team lead asks "how do we know this is
+safe?", the answer is: "read the source, run the tests, diff against GitHub."
+
+---
+
+## Implementation Plan
+
+Build order for the installer (before first PyPI publish):
+
+### Step 1: Bundle tool files as package data ✅
+
+All tool files inside `src/alcatrazer/`. Hatch auto-includes everything in the wheel.
+
+### Step 2: Replace old templates
+
+Delete `src/alcatrazer/templates/alcatrazer.toml` (old design, pre-config-split).
+Create templates for:
+- `coding-environment.toml` (with placeholder sections)
+- `.alcatrazer/config.toml` (with placeholder identity and daemon defaults)
+
+### Step 3: Implement `alcatrazer start` (first-time flow)
+
+When no `.alcatrazer/` exists:
+1. Verify git repo at repo root
+2. Interactive questions: languages, versions, managers, OS packages, promotion identity
+3. Generate `coding-environment.toml` from answers
+4. Generate `.alcatrazer/config.toml` (promotion identity, daemon defaults)
+5. Write `.git/info/exclude` patterns
+6. Extract `src/alcatrazer/` tree into `.alcatrazer/src/alcatrazer/`
+7. Generate Dockerfile from `coding-environment.toml` into `.alcatrazer/`
+8. Run `docker build`
+9. Detect phantom UID, generate agent identity
+10. Create workspace with snapshot (flat, no history, one initial commit)
+11. Start container, run startup commands
+12. Copy `coding-environment.toml` to `.alcatrazer/coding-environment.toml.last`
+
+### Step 4: Implement `alcatrazer start` (subsequent runs)
+
+Change detection logic:
+1. Generate would-be Dockerfile in memory
+2. Compare against `.alcatrazer/Dockerfile` (rebuild if different)
+3. Compare `coding-environment.toml` against `.alcatrazer/coding-environment.toml.last`
+   (restart if different, no rebuild)
+4. Start/restart container, run startup commands
+5. Update `.alcatrazer/coding-environment.toml.last`
+
+### Step 5: Implement `alcatrazer stop`
+
+Stop the container. Straightforward.
+
+### Step 6: Implement `alcatrazer upgrade`
+
+Check PyPI for newer version, re-extract `src/alcatrazer/` into `.alcatrazer/`,
+preserve all state (config, workspace, marks, UID, identity).
+
+### Step 7: Implement `--run-selftest` and `--verify-checksum`
+
+Bundle existing test suite. `--run-selftest` runs it after start.
+`--verify-checksum` downloads `SHA256SUMS` from GitHub, compares.
+
+### Step 8: Write `install.sh` (curl|bash bootstrap)
+
+Thin bash script: resolve Python 3.11+ (four-tier), create temp venv,
+`pip install alcatrazer`, run `alcatrazer start`, delete temp venv. ~50 lines.
+
+### Step 9: Publish to PyPI
+
+`uvx twine upload dist/*` — first real release.
+
+### Step 10: Publish `SHA256SUMS` on GitHub Releases
+
+Generate checksums at tagged commit, upload as release asset.
+
+---
 
 ## Current State
 
 **Dev tooling set up:**
-- `mise.toml` — manages python 3.12 + uv, defines tasks (test, build, format, lint, docker-build, etc.)
-- `pyproject.toml` — package config with hatchling build, ruff linting, dev dependencies
-- `src/alcatrazer/` — PyPI package skeleton with placeholder CLI (`init`, `update`, `version` commands)
-- `LICENSE` — MIT
-- Package builds successfully (`mise run build` → `dist/alcatrazer-0.0.1-py3-none-any.whl`)
-- Version single-sourced from `src/alcatrazer/__init__.py` (hatch reads it dynamically)
+- `mise.toml` — manages python 3.12 + uv, defines tasks
+- `pyproject.toml` — package config with hatchling build, ruff linting
+- `src/alcatrazer/` — PyPI package skeleton with placeholder CLI
+- Package builds successfully (`mise run build`)
+- Version single-sourced from `src/alcatrazer/__init__.py`
 
-**PyPI account:** Recovery in progress (may take a few days). Name `alcatrazer` is available.
-
-## Implementation Plan
-
-Build order for the real installer (before first PyPI publish):
-
-### Step 1: Bundle tool files as package data ✅
-All tool files are now inside `src/alcatrazer/` — Python modules, Docker templates (`container/`), 
-bash scripts (`scripts/`), tests (`tests/`), and config template (`templates/alcatrazer.toml`). 
-Hatch auto-includes everything under `src/alcatrazer/` in the wheel.
-
-### Step 2: Implement `alcatrazer init`
-Interactive CLI that:
-
-1. **Verify git repo** — confirm we're inside a git repo, at the repo root
-2. **Detect user identity from git config**
-— read `user.name` and `user.email` from local git config (repo-specific) first, fall back to global. Present to user:
-   ```
-   Detected git identity: Grzegorz Latuszek <latuszek.grzegorz@gmail.com>
-   Use this for promoted commits? [Y/n]
-   ```
-   If user declines, prompt for name and email.
-3. **Write `alcatrazer.toml`** 
-— copy from `src/alcatrazer/templates/alcatrazer.toml`, fill in the confirmed name/email in the `[promotion]` section. 
-Optionally ask about tool versions and daemon settings (or accept defaults).
-4. **Write `.env.example`** — template for API keys
-5. **Extract tool files** 
-— copy the full `src/alcatrazer/` tree from the PyPI package into `.alcatrazer/src/alcatrazer/` 
-(Python modules, container/, scripts/, templates/, tests/ — same layout as the dev repo)
-6. **Generate `docker-compose.yml` at project root** — see "Docker Template Machinery" section above. 
-No dependency on step 5 in the dev repo (template already in place); for end-user installs, 
-runs after extraction. Also add `docker-compose.yml` to `.gitignore`.
-7. **Update `.gitignore`** — add `.alcatrazer/` and `.env` entries
-8. **Create `.alcatrazer/python` symlink** — from `sys.executable` (the Python that's running `alcatrazer init`)
-9. **Run initialization** 
-— optionally run the full init flow: UID detection, workspace directory selection (3 random choices), 
-random agent identity, git init + snapshot, safe.directory
-
-### Step 3: Implement `alcatrazer update`
-Re-extracts `src/alcatrazer/` from package data into `.alcatrazer/src/alcatrazer/`, preserving `alcatrazer.toml` 
-and all state (workspace, marks, UID, logs, agent identity, workspace-dir selection).
-
-### Step 4: Write `install.sh` (curl|bash bootstrap)
-Thin bash script: resolve Python 3.11+ (four-tier), create temp venv, `pip install alcatrazer`, 
-run `alcatrazer init`, delete temp venv. ~50 lines.
-
-### Step 5: Tests (development)
-- Unit tests for init (mock filesystem, verify files created)
-- Integration test: run `alcatrazer init` in a temp git repo, verify layout
-- Test `install.sh` with faked PATH (same approach as resolve_python tests)
-
-### Step 6: Post-installation verification tests ✅
-Tests are bundled inside the package in two directories:
-- `src/alcatrazer/tests/` — unit and integration tests (no Docker required)
-- `src/alcatrazer/integration_tests/` — Docker smoke tests (verify container isolation)
-
-End users run `alcatrazer test` (unit tests) or `alcatrazer test --smoke` (includes Docker tests).
-See "Trust and Verification" section below.
-
-### Step 7: Publish to PyPI
-`uvx twine upload dist/*` — first real release (0.1.0).
-
-### Step 8: Publish `SHA256SUMS` on GitHub Releases
-Generate checksums of all source files in `src/alcatrazer/` at the tagged commit, 
-upload as a GitHub Releases asset alongside the release notes. 
-This is the independent trust anchor — see "Trust and Verification" section below.
-
-```bash
-# At release time, from the tagged commit:
-cd src/alcatrazer && find . -type f | sort | xargs sha256sum > SHA256SUMS
-# Then attach SHA256SUMS to the GitHub Release via gh CLI or web UI
-```
-
----
-
-## Trust and Verification
-
-### The trust problem
-
-Alcatrazer is a security tool. It asks users to run AI agents inside Docker containers with the promise 
-that their host is protected. This creates a fundamental trust question:
-
-> "Isn't Alcatrazer a wise social engineer that claims to protect my laptop but instead is a thief itself?"
-
-If the tool claims to isolate agents from host secrets, the user must be able to verify that claim — not just by reading marketing copy, 
-but by reading code and running tests.
-
-### Trust layers
-
-**Layer 1: Open source on GitHub.** 
-The entire codebase is public. Anyone can read the Dockerfile, the entrypoint, the docker-compose volumes, the promotion scripts. 
-This is the foundation — but it's not sufficient, because the user has no guarantee that what's installed on their machine 
-matches what's on GitHub.
-
-**Layer 2: Installed source is readable.** 
-The installation extracts tool files into `.alcatrazer/` — not compiled bytecode, not obfuscated, 
-not downloaded from a different source. The user can read every script that runs on their machine:
-
-```bash
-# "What exactly is this tool doing on my host?"
-cat .alcatrazer/src/alcatrazer/...<source-file>.py
-cat .alcatrazer/src/alcatrazer/container/Dockerfile
-cat .alcatrazer/src/alcatrazer/container/docker-compose.yml
-```
-
-**Layer 3: Post-installation verification tests.** 
-The test suite is bundled alongside the tool files:
-- `.alcatrazer/src/alcatrazer/tests/` — unit and integration tests
-- `.alcatrazer/src/alcatrazer/integration_tests/` — Docker smoke tests (container isolation)
-
-The user can run the same tests that developers run to verify the security model:
-
-```bash
-# "Prove to me this tool does what it claims"
-# Unit tests (no Docker required):
-.alcatrazer/python -m unittest discover -s .alcatrazer/src/alcatrazer/tests -v
-# Docker isolation tests (requires running Docker):
-.alcatrazer/python -m unittest discover -s .alcatrazer/src/alcatrazer/integration_tests -v
-```
-
-These tests verify:
-- Container runs as phantom UID (no matching host user)
-- No host credentials leak into the container (SSH keys, GPG keys, git config)
-- Only explicitly passed environment variables are visible
-- Docker socket is not mounted
-- No git remotes configured inside the container
-- Promotion rewrites identity correctly (no alcatraz identity leaks to outer repo)
-- Files inside workspace are owned by phantom UID
-
-**Layer 4: Checksum verification via independent channel.** 
-Each release publishes a `SHA256SUMS` file as a GitHub Releases asset — one hash per source file. 
-This is an independent channel from PyPI: a compromised PyPI account can push a modified package, 
-but the attacker would also need to compromise GitHub to fake the checksums.
-
-The real proof is manual — no alcatrazer code involved:
-
-```bash
-# "Is what I installed the same as what's on GitHub?"
-# 1. Download checksums from GitHub (independent of PyPI)
-curl -sL https://github.com/greg-latuszek/alcatrazer/releases/download/v0.3.0/SHA256SUMS -o /tmp/SHA256SUMS
-
-# 2. Verify with standard Unix tools
-cd .alcatrazer/src/alcatrazer/
-sha256sum -c /tmp/SHA256SUMS
-```
-
-`alcatrazer verify` automates this as a convenience — but since the command is part of the package 
-it claims to verify, a compromised version could fake the result. The command is transparent about this: 
-it shows its own source code, explains every step, and prints the equivalent manual commands 
-so the user can copy-paste and replicate independently.
-
-### What the user gets
-
-The `alcatrazer` PyPI package is self-contained. After `pip install alcatrazer`, the user has:
-- Python modules (promote, snapshot, daemon, inspect, identity) — readable source
-- Docker templates (Dockerfile, docker-compose.yml, entrypoint.sh) — readable
-- Bash bootstrap scripts (initialize_alcatraz.sh, resolve_python.sh) — readable
-- Config template (alcatrazer.toml with defaults) — readable
-- Bundled test suite — runnable via `alcatrazer test`
-
-The user can inspect any of these before or after installation. `alcatrazer test` runs the same tests developers run.
-
-### Target audience
-
-The target user is a developer. They can read Python and bash. They understand Docker volumes and git. 
-They may not read the source before first use — but knowing they *can* is itself a trust signal. 
-And when a security-conscious team lead asks "how do we know this is safe?", 
-the answer is: "read the source, run the tests, diff against GitHub."
-
-### Design principle
-
-This is an extension of Iceberg Principle 1 (fight for security): 
-**the tool's security claims must be verifiable by the user, not just asserted by the author.** 
-Open source is necessary but not sufficient. The installed tool must carry its own proof.
+**PyPI account:** Recovery in progress. Name `alcatrazer` is available.
