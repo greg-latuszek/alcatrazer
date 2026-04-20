@@ -745,8 +745,8 @@ Ordered list of commands run after container start. This is where:
 - Agentic frameworks with non-standard setup procedures get configured
 - Any arbitrary bash command can go — the open-ended escape hatch
 
-Commands run as the container user (not root), in order. A failing command should not
-silently break the environment — error handling TBD during implementation.
+Commands run as the container user (not root), in order. Fail-fast: a failing command
+stops execution (see "Build & Startup Error Handling" section below).
 
 Optional section. Omit if agents can figure out setup themselves (they have sudo).
 
@@ -825,6 +825,124 @@ commands = [
 - **Daemon settings** — lives in `.alcatrazer/config.toml`.
 - **Anything that reveals Alcatrazer** — no branding, no security config, no tool-specific
   comments.
+
+## Build & Startup Error Handling
+
+Installation from `coding-environment.toml` is a pipeline that can fail at each stage.
+Part of Alcatrazer's job is detecting these failures, reporting them clearly, and guiding
+the developer through the fix cycle.
+
+### Two failure times
+
+The pipeline executes across two distinct phases:
+
+**Build time** (`docker build` — image creation):
+- `[os]` packages — typo in package name, package doesn't exist, dependency conflict,
+  network unreachable
+- `[languages.*]` runtimes — version doesn't exist, build from source fails
+  (missing OS dependency), network unreachable
+- `[languages.*]` managers — installation script fails, network unreachable
+
+**Container start time** (after image is built):
+- `[startup]` commands — `uv sync` fails (broken `pyproject.toml`), `npm install` fails
+  (native module needs a missing OS dep), custom script errors out
+
+This distinction matters:
+- **Build-time failure** — no image created, cannot start. Very visible, hard to miss.
+- **Start-time failure** — image exists, container starts, but environment is broken.
+  More subtle, can silently leave agents in a broken state if not handled.
+
+### Fail fast
+
+Each phase runs in dependency order. If a step fails, execution stops immediately.
+No point running language installation if OS packages failed — the missing system
+dependency will just cause a different error downstream.
+
+The pipeline:
+```
+[os] packages  →  fails?  →  STOP, report
+       ↓ ok
+[languages] runtimes + managers  →  fails?  →  STOP, report
+       ↓ ok
+--- image built, layers cached ---
+[startup] command 1  →  fails?  →  STOP, report
+       ↓ ok
+[startup] command 2  →  fails?  →  STOP, report
+       ↓ ok
+...
+READY
+```
+
+### Error reporting: three things the developer needs
+
+Every error message must provide:
+
+1. **Which phase failed** — "OS packages", "Python 3.12 installation",
+   "startup command #2 (`npm install`)"
+2. **The actual error output** — the raw output from apt-get/pip/npm/bash,
+   not just "failed". Developers read error messages — show them.
+3. **Which TOML entry caused it** — point back to the file and the specific section
+   so the developer knows where to edit.
+
+Example:
+```
+ERROR: Build failed during [os] packages installation.
+
+  apt-get install -y libpqdev
+  E: Unable to locate package libpqdev
+
+  → Check [os] packages in coding-environment.toml
+  → Did you mean "libpq-dev"?
+```
+
+Example:
+```
+ERROR: Startup command #2 failed.
+
+  npm install
+  npm ERR! gyp ERR! build error
+  npm ERR! gyp ERR! not ok
+  ...node-gyp rebuild failed: missing python...
+
+  → Check [startup] commands in coding-environment.toml
+  → The build tool needs Python. Add it to [languages] or [os] packages.
+```
+
+### The fix-rebuild loop
+
+The developer's cycle after a failure:
+
+```
+see error → edit coding-environment.toml → rebuild → see if it passes
+```
+
+**Docker layer caching makes this fast.** Because each TOML section maps to a Dockerfile
+layer, Docker caches successful layers and only re-runs from the changed layer onward:
+
+| What you fix | What re-runs | Cost |
+|---|---|---|
+| `[startup]` command | nothing rebuilt, just restart container | cheapest — seconds |
+| `[languages]` version/manager | language layer + everything after | medium — minutes |
+| `[os]` package | OS layer + everything after | most expensive — minutes |
+
+This means the most common fix (wrong startup command) is also the cheapest.
+And a fix to an earlier layer doesn't waste the work done by later layers on previous
+successful builds — Docker re-runs from the changed point.
+
+### Suggested fixes for common errors
+
+For known error patterns, alcatrazer can suggest fixes rather than just showing raw output:
+
+| Error pattern | Suggestion |
+|---|---|
+| `Unable to locate package X` | Fuzzy match against known packages, suggest correct name |
+| `Python/Node version X not found` | List available versions |
+| `command not found: uv` | "Add `manager = \"uv\"` to the language's section" |
+| `fatal error: X.h: No such file` | "Missing system header — add the `-dev` package to `[os]`" |
+| Startup command exits non-zero | Show the command, its output, its index in `[startup]` |
+
+Smart suggestions are a convenience, not a requirement for MVP. The essential contract is:
+**never fail silently, always show what failed and where to edit.**
 
 ## Parked Questions (Future Extensions)
 
