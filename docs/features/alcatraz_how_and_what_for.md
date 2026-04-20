@@ -1018,7 +1018,13 @@ alcatrazer upgrade --dry-run         check for new version without installing
 
 ### `alcatrazer start` — does the right thing
 
-`start` is always safe to run. It detects the current state and does what's needed:
+`start` is always safe to run. It detects the current state and does what's needed.
+
+**Detection uses two comparisons:**
+1. Generate would-be Dockerfile in memory, compare against existing `.alcatrazer/Dockerfile`
+   → detects `[os]` or `[languages]` changes (rebuild needed)
+2. Compare `coding-environment.toml` against `.alcatrazer/coding-environment.toml.last`
+   → detects `[startup]` changes (restart needed, no rebuild)
 
 ```
 alcatrazer start
@@ -1027,31 +1033,40 @@ alcatrazer start
        │       → first time: interactive questions → generate everything
        │         → build image → create workspace snapshot → start
        │
-       ├── .alcatrazer/ exists, generate would-be Dockerfile in memory
-       │   and compare against existing .alcatrazer/Dockerfile
+       ├── container NOT running
        │       │
-       │       ├── Dockerfile would differ?
-       │       │       → [os] or [languages] changed
-       │       │       → rebuild image, restart, run startup commands
+       │       ├── would-be Dockerfile differs from existing?
+       │       │       → rebuild image, start, run startup commands
        │       │
        │       └── Dockerfile identical?
-       │               → just (re)start container, run startup commands
-       │               → covers [startup]-only changes: no rebuild needed
+       │               → start container, run startup commands
        │
-       └── container already running, Dockerfile identical?
-               → no-op: "already running, environment up to date"
+       └── container IS running
+               │
+               ├── would-be Dockerfile differs?
+               │       → rebuild image, restart, run startup commands
+               │
+               ├── coding-environment.toml differs from .last?
+               │   (Dockerfile same — only [startup] changed)
+               │       → restart container, re-run startup commands
+               │
+               └── both identical?
+                       → "Already running, environment up to date."
 ```
 
-**Smart detection without heuristics:** The key insight is comparing the would-be
-generated Dockerfile against the existing one. Since `[startup]` commands don't go
-into the Dockerfile (they run at container start via a post-start script), changing
-only `[startup]` won't change the generated Dockerfile — no rebuild, just restart.
-Changes to `[os]` or `[languages]` change the Dockerfile — rebuild triggered.
-The detection is exact, not a guess.
+**Why two comparisons:** Since `[startup]` commands don't go into the Dockerfile (they
+run at container start via a post-start script), changing only `[startup]` won't change
+the generated Dockerfile. The `.last` comparison catches what the Dockerfile comparison
+misses. Together they cover all toml changes exactly — no heuristics, no guessing.
 
-After each successful build, the current `coding-environment.toml` is also copied
-to `.alcatrazer/coding-environment.toml.last` as a human-readable record of what
-the last build used.
+**What is NOT auto-detected:** Changes to external scripts referenced by `[startup]`
+commands (e.g., `"bash scripts/setup-bmad.sh"` where the script was edited but the toml
+line didn't change). Detecting this would require parsing bash commands to find file
+references — fragile and unreliable. Instead: `stop` + `start` re-runs all startup
+commands, which picks up external script changes. Simple, predictable, no magic.
+
+After each successful build, the current `coding-environment.toml` is copied to
+`.alcatrazer/coding-environment.toml.last` as a record of what the last build used.
 
 ### `alcatrazer stop` — stop the container
 
