@@ -1,22 +1,24 @@
 """Alcatrazer CLI entry point.
 
 Usage:
-    alcatrazer init     — install Alcatrazer into the current git repository
+    alcatrazer start    — set up (first run) or start the container (subsequent)
     alcatrazer test     — run bundled test suite to verify installation
-    alcatrazer update   — update tool files in an existing installation
     alcatrazer version  — show version
+
+Legacy (pre-config-split) placeholders that will be retired:
+    alcatrazer init, alcatrazer update
 """
 
 import sys
 import unittest
+from pathlib import Path
 
 from alcatrazer import __version__
+from alcatrazer import start as start_module
 
 
 def run_tests(smoke: bool = False) -> int:
     """Run the bundled test suite. Returns 0 on success, 1 on failure."""
-    from pathlib import Path
-
     package_dir = Path(__file__).resolve().parent
     loader = unittest.TestLoader()
     suite = loader.discover(str(package_dir / "tests"))
@@ -34,9 +36,8 @@ def main():
         print("Alcatrazer — secure AI agent workspace")
         print()
         print("Usage:")
-        print("  alcatrazer init      Install into the current git repository")
+        print("  alcatrazer start     Set up (first run) or start the container")
         print("  alcatrazer test      Run bundled tests to verify installation")
-        print("  alcatrazer update    Update tool files in existing installation")
         print("  alcatrazer version   Show version")
         print()
         print(f"Version: {__version__}")
@@ -47,6 +48,8 @@ def main():
 
     if command == "version":
         print(f"alcatrazer {__version__}")
+    elif command == "start":
+        sys.exit(start_module.cmd_start(Path.cwd()))
     elif command == "test":
         smoke = "--smoke" in sys.argv
         sys.exit(run_tests(smoke=smoke))
