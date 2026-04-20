@@ -108,9 +108,12 @@ Alcatrazer must not pollute the target repository. The only things that touch th
 - `.gitignore` entries for `.alcatrazer/`, `.<workspace>/`, and `.env`
 - `.env.example` — template for API keys
 
-Everything else lives inside `.alcatrazer/` (gitignored).
+Everything else lives inside `.alcatrazer/` (gitignored) — including the Dockerfile, 
+compose files, entrypoint scripts, and any future isolation machinery. This is load-bearing: 
+the workspace snapshot copies everything from the target repo's main branch, so anything 
+version-controlled in the repo would be visible to agents inside the container (Principle 2).
 
-*Source: [install_method.md](features/install_method.md)*
+*Source: [install_method.md](features/install_method.md), [alcatraz_how_and_what_for.md](features/alcatraz_how_and_what_for.md)*
 
 ### Per-Repo Install, Not Global
 

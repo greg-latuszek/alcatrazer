@@ -550,35 +550,82 @@ a message like "ah, this is for my convenience of working with agentic coding."
 
 ---
 
-## Open Questions for MVP
+## Resolved: Isolation Machinery Lives Inside `.alcatrazer/`
 
-1. **Detection heuristics for build vs coding Docker** — is asking the user during
-   `alcatrazer init` sufficient, or should we autodetect? Signals for build Docker:
-   multi-stage with small final stage, `EXPOSE`, `CMD` runs the app. Signals for
-   coding Docker: `.devcontainer/`, dev tools installed, interactive, `CMD ["/bin/bash"]`.
+**Decision (2025-04-20):** The Dockerfile and any future isolation machinery (compose files,
+entrypoint scripts, etc.) reside inside `.alcatrazer/`, which is gitignored.
 
-2. **What is Alcatrazer's integration model?** Now that we've ruled out "be a devcontainer,"
-   the question returns: wrap the user's image, be a base image, or something else entirely?
-   The wrap/base analysis above still applies.
+**Why:** The workspace snapshot copies everything from the target repo's main branch.
+If the Dockerfile lived in the repo (version controlled), agents would see it in the
+workspace — the prison blueprints problem (Principle 2). The alternative — selective
+snapshot logic to exclude specific files — adds real complexity with no upside.
+
+By placing isolation machinery in `.alcatrazer/`, the existing gitignore model handles
+exclusion for free: what's gitignored isn't in the repo, isn't in the snapshot, isn't
+visible to agents. No filtering, no configuration, no edge cases.
+
+This also aligns with:
+- **Zero Pollution** — repo gets only `alcatrazer.toml`, `.gitignore` entries, `.env.example`
+- **Single Self-Contained Package** — Docker templates live in the package, get generated
+  into `.alcatrazer/` during init
+- **Per-Repo Install** — each repo's `.alcatrazer/` is its own self-contained installation
+
+## Resolved: `alcatrazer.toml` Is the Agent Environment Interface
+
+**Decision (2025-04-20):** The user defines what coding agents need (languages, tools,
+packages) in `alcatrazer.toml`. Alcatrazer generates the Dockerfile from that declaration.
+The user never writes or edits Docker files.
+
+```
+alcatrazer.toml          (version controlled — user's declaration)
+       ↓ generate
+.alcatrazer/Dockerfile   (gitignored — generated build artifact)
+       ↓ docker build
+container: alcatrazer security base + user's tool layer
+```
+
+**This resolves both remaining open questions:**
+
+1. **"Wrap vs Base" disappears.** It's always base — alcatrazer controls the security
+   foundation (phantom UID, gosu, entrypoint, git). The user's tools are a generated
+   layer on top. But the user never writes `FROM alcatrazer/base` — they declare needs
+   in toml, the generator handles Docker. The real question was never "wrap or base" —
+   it was "who writes the Dockerfile?" Answer: nobody, it's generated.
+
+2. **"Detection heuristics for build vs coding Docker" becomes irrelevant.** Alcatrazer
+   always generates its own Dockerfile from toml. Existing Docker in the repo is build
+   Docker — the project's concern, not ours. We ignore it.
+
+**Why this is the right abstraction:**
+
+- **Docker becomes an implementation detail.** The user thinks "what tools do my agents
+  need" (toml), not Docker syntax. If isolation machinery changes in the future (Sysbox,
+  Podman, etc.), the toml stays the same — only the generator changes.
+- **Team sharing works.** `alcatrazer.toml` is version controlled. The whole team shares
+  the same agent environment definition. The generated Dockerfile is disposable.
+- **Rebuild is simple.** Edit toml, run a command, get a new container. No Dockerfile
+  knowledge required.
+- **Security layer stays under alcatrazer's control.** The user cannot accidentally
+  weaken the base — they can only add tools on top.
 
 ## Parked Questions (Future Extensions)
 
 The following were explicitly parked (2025-04-20) to avoid opening an endless decision
 space and to focus on a buildable MVP targeting Docker.
 
-3. **Sysbox as optional backend** — could Alcatrazer use Sysbox on Linux where available
+1. **Sysbox as optional backend** — could Alcatrazer use Sysbox on Linux where available
    (better isolation, no UID gymnastics) and fall back to regular Docker on macOS?
    Or is maintaining two backends too complex?
 
-4. **Can the isolation mechanism be pluggable?** Define the security fundamentals
+2. **Can the isolation mechanism be pluggable?** Define the security fundamentals
    (filesystem, secret, identity, process, git isolation) as an interface,
    then implement backends: Docker, Sysbox, Podman, etc.
 
-5. **How to handle existing `.devcontainer/` repos (scenarios C/D)?** If we don't become
+3. **How to handle existing `.devcontainer/` repos?** If we don't become
    a devcontainer ourselves, how do we coexist with existing devcontainer setups?
    Do we read the devcontainer config as a "recipe" and build our own parallel
    secure container from it?
 
-6. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
-   from scratch (scenarios A/B), the "wrap existing" problem can be deferred.
+4. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
+   from scratch, the "wrap existing" problem can be deferred.
    If many have devcontainers, it's a priority.
