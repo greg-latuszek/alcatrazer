@@ -32,6 +32,18 @@
 
 ---
 
+## Why Alcatrazer Exists
+
+Watch out developers community. Your paradigm has changed. You trust yourself - that is understood. And that was you who have coded inside container up till now. But the world has changed. It is no more you who is coding inside container. These are AI agents that might do harmful things due to hallucination or prompt injecting via accidental download of malicious software. Harmful both - to your localhost and to your public git repository. So, don't trust them - put them in Alcatraz.
+
+### What Alcatrazer protects
+
+**Your development environment.** Your SSH keys, GPG keys, git credentials, browser sessions, `.env` files, personal documents — everything on your localhost that agents have no business touching.
+
+**Your professional reputation.** Your public repositories carry your name. Other developers pull from them, depend on them, trust them. Unsupervised AI coding can inject trojans, backdoors, or other malware into YOUR repositories — code that others may pull and be harmed by. It is our responsibility as software engineers to review, test, and security-scan AI-created code before we publish it under our name. No AI writing to your repo without your knowledge. Alcatrazer enforces this: agents commit to an isolated inner repo, and nothing reaches your real repository until you — the warden — inspect and approve the transfer.
+
+---
+
 ## CAUTION
 
 | | |
