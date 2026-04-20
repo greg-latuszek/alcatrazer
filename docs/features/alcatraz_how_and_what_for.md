@@ -757,12 +757,59 @@ Optional section. Omit if agents can figure out setup themselves (they have sudo
 | TOML section | Dockerfile action | When |
 |---|---|---|
 | `[os]` packages | `RUN apt-get install -y ...` | build time (layer 1) |
-| `[languages.*]` version | runtime installation | build time (layer 2) |
-| `[languages.*]` manager | manager installation (if non-default) | build time (layer 2) |
+| `[languages.*]` version | `RUN mise use --global <lang>@<version>` | build time (layer 2) |
+| `[languages.*]` manager | `RUN mise use --global <manager>` or `pip install <manager>` | build time (layer 2) |
 | `[startup]` commands | post-start script | container start |
 
-The alcatrazer security base (phantom UID, gosu, git, entrypoint) is always the
+The alcatrazer security base (phantom UID, gosu, git, mise, entrypoint) is always the
 foundation — generated unconditionally, not configurable via this file.
+
+### Language runtime installation: mise
+
+**Decision:** Language runtimes are installed via `mise` — a multi-language version manager
+already present in the alcatrazer base layer.
+
+The existing Dockerfile (`src/alcatrazer/container/Dockerfile`) already uses this pattern:
+```dockerfile
+# Base layer: mise installed as agent user
+RUN curl https://mise.run | sh
+ENV PATH="/home/agent/.local/share/mise/shims:${PATH}"
+
+# Language layer: mise installs runtimes
+RUN mise use --global python@3.12 && \
+    mise use --global node@22
+```
+
+**Why mise over alternatives:**
+
+| | apt-get | mise | pyenv + nvm + ... |
+|---|---|---|---|
+| Version pinning | limited to distro | any version | any version |
+| Language coverage | poor | all major languages | same, but one tool per language |
+| Already in base | apt is always there | **yes** | no — each needs separate install |
+| Syntax | inconsistent names | `mise use --global <lang>@<ver>` | different per tool |
+| Dockerfile complexity | PPA management for non-default versions | one RUN per language | multiple install steps, PATH per tool |
+| Maintenance | low per tool, PPA repos go stale | one tool | N tools, N update cycles |
+
+**apt-get** was rejected because version availability is limited to what the distro ships.
+Ubuntu 24.04 has Python 3.12 but not 3.11 or 3.13 without PPAs. Node is usually outdated.
+Users need to pin exact versions for reproducibility.
+
+**Language-specific managers** (pyenv, nvm, rustup, rbenv, etc.) were rejected because
+they add complexity with no benefit over mise — multiple install steps in the base layer,
+inconsistent interfaces, separate PATH management per tool.
+
+**mise covers:** Python, Node.js, Ruby, Go, Rust, Java, Bun, Deno, PHP, Erlang/Elixir,
+.NET, Zig, Lua, R, and non-language tools (terraform, kubectl, etc.).
+
+**Build speed note:** Some languages (notably Python) may compile from source via mise,
+which is slow. mise has been adding prebuilt binary support (via python-build-standalone).
+This only affects Docker build time — once the image is built, the layer is cached.
+
+**Package managers:** Default managers that ship with the language (pip, npm, cargo) are
+available immediately after mise installs the runtime. Non-default managers (uv, pnpm,
+yarn, poetry) are installed as a separate step — either via mise (`mise use --global uv`)
+if supported, or via the language's own installer (`pip install uv`, `npm install -g pnpm`).
 
 ### Examples
 
