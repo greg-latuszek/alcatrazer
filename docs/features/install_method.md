@@ -687,6 +687,95 @@ When no `.alcatrazer/` exists:
 11. Start container, run startup commands
 12. Copy `coding-environment.toml` to `.alcatrazer/coding-environment.toml.last`
 
+This is the largest step. Substeps for implementation:
+
+#### Step 3a: CLI skeleton — `start` command with first-time detection
+
+Wire up `alcatrazer start` as the CLI entry point. Detect "first time" by checking
+for `.alcatrazer/` existence. If missing, enter the first-time flow. If present,
+delegate to subsequent-run logic (Step 4). No actual logic yet — just the routing.
+
+#### Step 3b: Verify git repo
+
+Confirm we're inside a git repository and at the repo root (`os.path.exists('.git')`).
+Abort with a clear message if not: "alcatrazer must be run from a git repository root."
+
+#### Step 3c: Interactive questions — promotion identity
+
+Read `user.name` and `user.email` from git config (local first, global fallback).
+Present to user: "Detected git identity: X. Use for promoted commits? [Y/n]"
+If declined, prompt for name and email. Store answers for Step 3e.
+
+#### Step 3d: Interactive questions — coding environment
+
+Ask about:
+- Languages: "What languages does this project use?" (present common choices,
+  allow multiple). For each: ask version, ask package manager (show default, allow override).
+- OS packages: "Any system packages needed? (e.g., libpq-dev, ffmpeg)" — optional,
+  allow empty.
+- Startup commands: "Commands to run after container start? (e.g., uv sync, npm install)"
+  — optional, allow empty.
+
+Validation: language name must be supported by mise, version must be a concrete number
+(no "latest"). Package manager must be a known name for the language.
+
+#### Step 3e: Generate configuration files
+
+From the answers collected in 3c and 3d:
+- Write `coding-environment.toml` at repo root (from template, fill in sections).
+  Zero alcatrazer branding in content or comments.
+- Write `.alcatrazer/config.toml` (promotion identity from 3c, daemon defaults,
+  pointer to coding-environment file).
+- Write `.env.example` (template for API keys).
+
+#### Step 3f: Write `.git/info/exclude`
+
+Append patterns to `.git/info/exclude`:
+- `.alcatrazer/`
+- `.<workspace-dir>/` (workspace name generated here — random, e.g., `.devspace-7f3a/`)
+
+Store workspace dir name in `.alcatrazer/workspace-dir`.
+
+#### Step 3g: Extract package source
+
+Copy the full `src/alcatrazer/` tree from the installed package into
+`.alcatrazer/src/alcatrazer/`. This gives the user readable source and bundled tests.
+
+#### Step 3h: Generate Dockerfile
+
+Read `coding-environment.toml`. Generate Dockerfile into `.alcatrazer/Dockerfile`:
+- Base layer: alcatrazer security (phantom UID, gosu, git, mise, entrypoint)
+- Layer 1: `[os]` packages → `RUN apt-get install -y ...`
+- Layer 2: `[languages.*]` → `RUN mise use --global <lang>@<version>` per language,
+  plus non-default manager installation
+- Entrypoint: copy entrypoint.sh, set WORKDIR, ENTRYPOINT, CMD
+
+Also generate `docker-compose.yml` and `entrypoint.sh` into `.alcatrazer/`.
+
+#### Step 3i: Docker build
+
+Run `docker build` with the generated Dockerfile. Pass `USER_UID` as build arg
+(phantom UID detected via `getent passwd`). Capture output for error reporting
+(see "Build & Startup Error Handling" above). Fail fast if build fails.
+
+Also: create `.alcatrazer/python` symlink from `sys.executable`.
+
+#### Step 3j: Agent identity and workspace
+
+Generate random human-looking name and email, store in `.alcatrazer/agent-identity`.
+Create workspace directory (`.<workspace-dir>/`). Initialize inner git repo.
+Create flat snapshot from outer repo's main branch — files only, no history,
+one initial commit with generic message. Configure workspace-local git with
+agent identity, no remote, `commit.gpgsign false`.
+
+#### Step 3k: Start container and run startup commands
+
+Start the container via docker-compose. Run `[startup]` commands in order inside
+the container. Fail-fast on first error. Report success or failure per the error
+handling contract.
+
+Copy `coding-environment.toml` to `.alcatrazer/coding-environment.toml.last`.
+
 ### Step 4: Implement `alcatrazer start` (subsequent runs)
 
 Change detection logic:
