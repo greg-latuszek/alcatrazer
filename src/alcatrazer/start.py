@@ -1,12 +1,11 @@
 """The `alcatrazer start` command — primary entry point for daily work.
 
-Step 3a skeleton: decides whether this is a first-time setup or a
-subsequent run by checking for `.alcatrazer/` in the project directory,
-then delegates to the appropriate handler. Both handlers are placeholders
-at this step; Steps 3b-3k fill in first-time setup, Step 4 fills in the
-subsequent-run logic.
+Steps 3a-3b so far: route on `.alcatrazer/` presence, and in the first-time
+branch verify we are at a git repo root. Remaining first-time logic lands
+in Steps 3c-3k; subsequent-run lands in Step 4.
 """
 
+import sys
 from pathlib import Path
 
 
@@ -18,6 +17,9 @@ def cmd_start(project_dir: Path) -> int:
 
 
 def _first_time_setup(project_dir: Path) -> int:
+    if not (project_dir / ".git").exists():
+        print("alcatrazer must be run from a git repository root.", file=sys.stderr)
+        return 1
     print("No alcatrazer setup found in this repository.")
     print("First-time setup flow is not yet implemented.")
     return 0
