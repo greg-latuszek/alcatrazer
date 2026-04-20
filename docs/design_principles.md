@@ -103,15 +103,23 @@ no git remotes, identity rewriting, file ownership.
 
 ### Target Repo Gets Almost Nothing
 
-Alcatrazer must not pollute the target repository. The only things that touch the repo proper:
-- `alcatrazer.toml` — version controlled, captures project decisions
-- `.gitignore` entries for `.alcatrazer/`, `.<workspace>/`, and `.env`
-- `.env.example` — template for API keys
+Alcatrazer must not pollute the target repository. The only version-controlled artifacts are:
+- `coding-environment.toml` — defines the agent's coding environment (languages, tools, 
+  boot-up commands). Contains zero alcatrazer branding. Agents see it as a natural project 
+  file and can even improve it.
+- `.env.example` — template for API keys (standard pattern, no branding)
 
-Everything else lives inside `.alcatrazer/` (gitignored) — including the Dockerfile, 
-compose files, entrypoint scripts, and any future isolation machinery. This is load-bearing: 
-the workspace snapshot copies everything from the target repo's main branch, so anything 
-version-controlled in the repo would be visible to agents inside the container (Principle 2).
+Everything alcatrazer-specific lives in locations invisible to agents:
+- `.alcatrazer/` (gitignored) — config, Dockerfile, compose files, entrypoint scripts, 
+  all isolation machinery. This is load-bearing: the workspace snapshot copies everything 
+  from the target repo's main branch, so anything version-controlled would be visible 
+  to agents inside the container (Principle 2).
+- `.git/info/exclude` — ignore patterns for `.alcatrazer/`, workspace dir. 
+  Git's built-in per-repo ignore that is NOT version controlled and NOT in the working tree.
+
+Note: `alcatrazer.toml` was replaced by the three-file architecture after discovering that 
+a version-controlled file named "alcatrazer" violates Principle 2 and leaks developer 
+identity via `[promotion]`.
 
 *Source: [install_method.md](features/install_method.md), [alcatraz_how_and_what_for.md](features/alcatraz_how_and_what_for.md)*
 

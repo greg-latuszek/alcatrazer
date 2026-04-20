@@ -570,43 +570,100 @@ This also aligns with:
   into `.alcatrazer/` during init
 - **Per-Repo Install** — each repo's `.alcatrazer/` is its own self-contained installation
 
-## Resolved: `alcatrazer.toml` Is the Agent Environment Interface
+## Resolved: Config Split — Visible Environment vs Hidden Machinery
 
-**Decision (2025-04-20):** The user defines what coding agents need (languages, tools,
-packages) in `alcatrazer.toml`. Alcatrazer generates the Dockerfile from that declaration.
-The user never writes or edits Docker files.
+**Decision (2025-04-20):** Analyzing what agents can see in the workspace snapshot revealed
+that `alcatrazer.toml` (version controlled) would violate Principle 2 in multiple ways:
+the filename reveals the tool, comments describe it, and `[promotion]` leaks the real
+developer identity. The `.gitignore` with `.alcatrazer/` entries has the same problem.
+
+**The trap:** version control is needed for team sharing, but version-controlled files
+enter the workspace snapshot and become visible to agents.
+
+**The escape:** split configuration by visibility and sensitivity.
+
+### Three-file architecture
+
+**`coding-environment.toml`** — repo root, version controlled, visible to agents.
+
+Contains ONLY the coding environment definition: language runtimes, package managers,
+OS packages, boot-up commands. Zero alcatrazer branding — not in the filename, not in
+comments, not in section names. Looks natural in any repository ("here's what tools
+this project uses"). If the repo already has a file by this name, use a random hex
+suffix: `coding-environment-a3f7.toml`.
+
+Agents see this file and treat it as a dev environment definition — nothing suspicious.
+They can even improve it (add a missing OS package, a new framework), which gets promoted
+to the outer repo, reviewed by the developer, and used to rebuild the container.
+
+**`.alcatrazer/config.toml`** — gitignored, per-developer, invisible to agents.
+
+Contains everything alcatrazer-specific:
+- Pointer to the coding environment file
+- `[promotion]` — real developer identity (name, email)
+- `[promotion-daemon]` — interval, branches, mode, verbosity
+
+This is where sensitive and alcatrazer-branded configuration lives.
+
+**`.git/info/exclude`** — git's built-in per-repo ignore, NOT version controlled.
+
+Contains ignore patterns for `.alcatrazer/`, workspace directory.
+Works exactly like `.gitignore` but lives inside `.git/` — never in the working tree,
+never in the snapshot. `alcatrazer init` writes these patterns automatically.
+
+### The flow
 
 ```
-alcatrazer.toml          (version controlled — user's declaration)
-       ↓ generate
-.alcatrazer/Dockerfile   (gitignored — generated build artifact)
-       ↓ docker build
-container: alcatrazer security base + user's tool layer
+coding-environment.toml    (version controlled — team-shared, agent-visible)
+            ↓ read by
+.alcatrazer/config.toml    (gitignored — points to it, adds alcatrazer-specific config)
+            ↓ generate
+.alcatrazer/Dockerfile     (gitignored — generated build artifact)
+            ↓ docker build
+container: alcatrazer security base + coding environment layer
 ```
 
-**This resolves both remaining open questions:**
+### Principle 2 scorecard
+
+| Artifact | Version controlled | In snapshot | Reveals Alcatraz |
+|---|---|---|---|
+| `coding-environment.toml` | yes | yes | **no** |
+| `.alcatrazer/config.toml` | no | no | n/a (invisible) |
+| `.git/info/exclude` | no | no | n/a (invisible) |
+| `.env.example` | yes | yes | **no** |
+
+### What this resolves
 
 1. **"Wrap vs Base" disappears.** It's always base — alcatrazer controls the security
    foundation (phantom UID, gosu, entrypoint, git). The user's tools are a generated
-   layer on top. But the user never writes `FROM alcatrazer/base` — they declare needs
-   in toml, the generator handles Docker. The real question was never "wrap or base" —
-   it was "who writes the Dockerfile?" Answer: nobody, it's generated.
+   layer on top. The real question was never "wrap or base" — it was "who writes the
+   Dockerfile?" Answer: nobody, it's generated from `coding-environment.toml`.
 
 2. **"Detection heuristics for build vs coding Docker" becomes irrelevant.** Alcatrazer
-   always generates its own Dockerfile from toml. Existing Docker in the repo is build
-   Docker — the project's concern, not ours. We ignore it.
+   always generates its own Dockerfile. Existing Docker in the repo is build Docker —
+   the project's concern, not ours.
 
-**Why this is the right abstraction:**
+3. **Principle 2 is fully satisfied.** No alcatrazer-branded artifacts enter the snapshot.
 
-- **Docker becomes an implementation detail.** The user thinks "what tools do my agents
-  need" (toml), not Docker syntax. If isolation machinery changes in the future (Sysbox,
-  Podman, etc.), the toml stays the same — only the generator changes.
-- **Team sharing works.** `alcatrazer.toml` is version controlled. The whole team shares
-  the same agent environment definition. The generated Dockerfile is disposable.
-- **Rebuild is simple.** Edit toml, run a command, get a new container. No Dockerfile
-  knowledge required.
+4. **Team sharing works where it matters.** The evolving part (coding environment) is
+   version controlled. The stable, sensitive parts (promotion identity, daemon config)
+   are per-developer in `.alcatrazer/`.
+
+5. **Agents can improve their own environment.** They see `coding-environment.toml`,
+   add a missing dependency, it gets promoted, reviewed, and used to rebuild.
+   A virtuous cycle — without ever knowing they're in Alcatraz.
+
+### Design properties
+
+- **Docker is an implementation detail.** The user thinks "what tools do my agents need,"
+  not Docker syntax. If isolation machinery changes in the future, the toml stays the
+  same — only the generator changes.
+- **Rebuild is simple.** Edit toml, run a command, get a new container.
 - **Security layer stays under alcatrazer's control.** The user cannot accidentally
   weaken the base — they can only add tools on top.
+- **`[coding-environment]` is a "usable startup," not a lockdown.** Agents have sudo
+  inside the container (the container boundary is the security perimeter). The toml
+  pre-installs tools for convenience/speed, but agents can install anything at runtime.
 
 ## Parked Questions (Future Extensions)
 
