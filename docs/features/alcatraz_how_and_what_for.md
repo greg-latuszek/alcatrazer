@@ -665,6 +665,167 @@ container: alcatrazer security base + coding environment layer
   inside the container (the container boundary is the security perimeter). The toml
   pre-installs tools for convenience/speed, but agents can install anything at runtime.
 
+## `coding-environment.toml` Format
+
+### Guiding principles
+
+- **Zero alcatrazer branding** — no filename, comment, or section name reveals the tool.
+- **Usable startup, not lockdown** — pre-installs tools for convenience and speed, but
+  agents have sudo and can install anything at runtime. The container boundary is the
+  security perimeter, not the toml.
+- **Don't repeat what the repo already defines** — language libraries belong in
+  `requirements.txt`, `package.json`, `Cargo.toml`, etc. Those files are already in
+  the repo and get snapshotted into the workspace. The toml defines what must exist
+  BEFORE those files can be consumed (runtimes, managers, OS deps).
+- **Agents can improve it** — agents see this file in the workspace and can add missing
+  dependencies. Changes get promoted, reviewed by the developer, and used to rebuild.
+
+### Sections and installation order
+
+The sections follow a strict dependency order. OS packages may be dependencies for
+language runtimes or their libraries. Language runtimes must exist before package
+managers can run. Startup commands depend on everything above. The reverse is
+essentially never true.
+
+The Dockerfile generator enforces this order regardless of how the file is written,
+but the file should reflect the order for readability.
+
+**1. `[os]` — system packages (installed first)**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev", "ffmpeg"]
+```
+
+Installed via the OS package manager (`apt-get`) at Docker build time. Needed for:
+compilation dependencies (`build-essential`, `libpq-dev`), system tools that language
+packages can't provide (`ffmpeg`, `graphviz`), libraries with C bindings.
+
+Optional section. Omit if the project has no system-level dependencies.
+
+**2. `[languages.<name>]` — runtimes and package managers (installed second)**
+
+```toml
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+```
+
+One subtable per language runtime. `version` is required — no `"latest"`, reproducibility
+matters. Usually 1–2 languages, but no artificial limit.
+
+`manager` is optional — defaults to the language's standard package manager:
+
+| Language | Default manager | Non-default examples |
+|----------|----------------|---------------------|
+| python   | pip            | uv, poetry, pipenv  |
+| node     | npm            | pnpm, yarn          |
+| rust     | cargo          | (rarely overridden)  |
+| go       | go modules     | (rarely overridden)  |
+
+Specify `manager` only when using a non-default. Non-default managers are installed
+as a separate step after the runtime.
+
+**3. `[startup]` — boot-up commands (run last, at container start)**
+
+```toml
+[startup]
+commands = [
+    "uv sync",
+    "npm install",
+    "bash scripts/setup-bmad-framework.sh",
+]
+```
+
+Ordered list of commands run after container start. This is where:
+- Repo dependencies get installed from the project's own files (`uv sync`, `npm install`)
+- Agentic frameworks with non-standard setup procedures get configured
+- Any arbitrary bash command can go — the open-ended escape hatch
+
+Commands run as the container user (not root), in order. A failing command should not
+silently break the environment — error handling TBD during implementation.
+
+Optional section. Omit if agents can figure out setup themselves (they have sudo).
+
+### Dockerfile generation mapping
+
+| TOML section | Dockerfile action | When |
+|---|---|---|
+| `[os]` packages | `RUN apt-get install -y ...` | build time (layer 1) |
+| `[languages.*]` version | runtime installation | build time (layer 2) |
+| `[languages.*]` manager | manager installation (if non-default) | build time (layer 2) |
+| `[startup]` commands | post-start script | container start |
+
+The alcatrazer security base (phantom UID, gosu, git, entrypoint) is always the
+foundation — generated unconditionally, not configurable via this file.
+
+### Examples
+
+**Minimal (Python-only project):**
+
+```toml
+[languages.python]
+version = "3.12"
+```
+
+One language, default manager (pip), no OS packages, no startup commands.
+Agent has sudo — it can install what it needs.
+
+**Typical (Python backend + TypeScript frontend):**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev"]
+
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+
+[startup]
+commands = [
+    "uv sync",
+    "npm install",
+]
+```
+
+**Complex (multi-language with agentic framework):**
+
+```toml
+[os]
+packages = ["build-essential", "libpq-dev", "ffmpeg", "graphviz"]
+
+[languages.python]
+version = "3.12"
+manager = "uv"
+
+[languages.node]
+version = "22"
+manager = "pnpm"
+
+[startup]
+commands = [
+    "uv sync",
+    "pnpm install",
+    "bash scripts/setup-bmad-framework.sh",
+]
+```
+
+### What's NOT in this file
+
+- **Language libraries** — live in `requirements.txt`, `package.json`, `Cargo.toml`, etc.
+  Installed by startup commands or by agents at runtime.
+- **Alcatrazer configuration** — lives in `.alcatrazer/config.toml` (gitignored).
+- **Promotion identity** — lives in `.alcatrazer/config.toml` (sensitive, per-developer).
+- **Daemon settings** — lives in `.alcatrazer/config.toml`.
+- **Anything that reveals Alcatrazer** — no branding, no security config, no tool-specific
+  comments.
+
 ## Parked Questions (Future Extensions)
 
 The following were explicitly parked (2025-04-20) to avoid opening an endless decision
