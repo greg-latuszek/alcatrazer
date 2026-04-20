@@ -993,6 +993,173 @@ For known error patterns, alcatrazer can suggest fixes rather than just showing 
 Smart suggestions are a convenience, not a requirement for MVP. The essential contract is:
 **never fail silently, always show what failed and where to edit.**
 
+## CLI: Three Commands
+
+**Design goal:** Minimalism. Developers are tired of learning new tools. Alcatrazer
+should be operable and invisible — as few commands as possible, no Docker vocabulary
+leaking through (no `up`/`down`/`build`/`compose`), no separate init to learn.
+
+### The commands
+
+```
+alcatrazer start                     the only command for daily work
+alcatrazer stop                      stop the container
+alcatrazer upgrade                   check for and install new alcatrazer version
+```
+
+Everything else is a flag on `start` or `upgrade`:
+
+```
+alcatrazer start --run-selftest      also run security self-tests after starting
+alcatrazer start --verify-checksum   also verify installed source against GitHub
+alcatrazer start --rebuild           force full rebuild even if nothing changed
+alcatrazer upgrade --dry-run         check for new version without installing
+```
+
+### `alcatrazer start` — does the right thing
+
+`start` is always safe to run. It detects the current state and does what's needed:
+
+```
+alcatrazer start
+       │
+       ├── no .alcatrazer/ ?
+       │       → first time: interactive questions → generate everything
+       │         → build image → create workspace snapshot → start
+       │
+       ├── .alcatrazer/ exists, generate would-be Dockerfile in memory
+       │   and compare against existing .alcatrazer/Dockerfile
+       │       │
+       │       ├── Dockerfile would differ?
+       │       │       → [os] or [languages] changed
+       │       │       → rebuild image, restart, run startup commands
+       │       │
+       │       └── Dockerfile identical?
+       │               → just (re)start container, run startup commands
+       │               → covers [startup]-only changes: no rebuild needed
+       │
+       └── container already running, Dockerfile identical?
+               → no-op: "already running, environment up to date"
+```
+
+**Smart detection without heuristics:** The key insight is comparing the would-be
+generated Dockerfile against the existing one. Since `[startup]` commands don't go
+into the Dockerfile (they run at container start via a post-start script), changing
+only `[startup]` won't change the generated Dockerfile — no rebuild, just restart.
+Changes to `[os]` or `[languages]` change the Dockerfile — rebuild triggered.
+The detection is exact, not a guess.
+
+After each successful build, the current `coding-environment.toml` is also copied
+to `.alcatrazer/coding-environment.toml.last` as a human-readable record of what
+the last build used.
+
+### `alcatrazer stop` — stop the container
+
+No flags, no options. Just stop.
+
+### `alcatrazer upgrade` — self-update
+
+Checks PyPI for a newer version of alcatrazer and installs it into `.alcatrazer/`.
+
+```
+$ alcatrazer upgrade
+Current: 0.2.0
+Latest:  0.3.1
+Upgrading... done.
+Run 'alcatrazer start --rebuild' to apply changes to the container.
+
+$ alcatrazer upgrade --dry-run
+Current: 0.2.0
+Latest:  0.3.1
+Run 'alcatrazer upgrade' to install.
+```
+
+Per-repo upgrade — consistent with per-repo install. Each repo controls its own version.
+
+### `--run-selftest` — verify security properties
+
+Runs the bundled test suite that verifies: phantom UID isolation, no credential leaks,
+no Docker socket, no git remotes, identity rewriting, file ownership.
+
+Named `--run-selftest` (not `--test`) to make clear this tests alcatrazer itself,
+not the target repository's test suite.
+
+### `--verify-checksum` — verify source integrity
+
+Verifies installed source code against `SHA256SUMS` from GitHub Releases.
+A convenience — the user can always do this manually with `sha256sum -c`.
+
+### What the user experiences
+
+**First time:**
+```
+$ alcatrazer start
+No alcatrazer setup found. Starting interactive setup...
+
+What languages does this project use?
+> Python 3.12
+
+Package manager? [pip] / uv / poetry
+> uv
+
+... (questions about promotion identity, etc.) ...
+
+Generated: coding-environment.toml
+Generated: .alcatrazer/config.toml
+Written:   .git/info/exclude
+Building container image... ████████████████ done (47s)
+Creating workspace snapshot... done
+Starting container...
+Running startup commands...
+  ✓ uv sync
+Ready.
+```
+
+**Daily work:**
+```
+$ alcatrazer start
+Container started. Environment up to date.
+
+$ alcatrazer stop
+Container stopped.
+```
+
+**After editing coding-environment.toml ([os] or [languages]):**
+```
+$ alcatrazer start
+coding-environment.toml changed — rebuilding image.
+Building... ████████████████ done (12s)
+Restarting container...
+Running startup commands...
+  ✓ uv sync
+  ✓ npm install
+Ready.
+```
+
+**After editing coding-environment.toml ([startup] only):**
+```
+$ alcatrazer start
+Restarting container...
+Running startup commands...
+  ✓ uv sync
+  ✓ pnpm install
+Ready.
+```
+
+**Startup failure:**
+```
+$ alcatrazer start
+Running startup commands...
+  ✓ uv sync
+  ✗ npm install
+    npm ERR! gyp ERR! build error — missing python
+
+ERROR: Startup command #2 failed.
+  → Check [startup] commands in coding-environment.toml
+```
+
+User fixes toml, runs `alcatrazer start` again.
+
 ## Parked Questions (Future Extensions)
 
 The following were explicitly parked (2025-04-20) to avoid opening an endless decision
