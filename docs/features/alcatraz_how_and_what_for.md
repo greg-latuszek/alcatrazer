@@ -550,30 +550,35 @@ a message like "ah, this is for my convenience of working with agentic coding."
 
 ---
 
-## Open Questions (Remaining)
+## Open Questions for MVP
 
 1. **Detection heuristics for build vs coding Docker** — is asking the user during
    `alcatrazer init` sufficient, or should we autodetect? Signals for build Docker:
    multi-stage with small final stage, `EXPOSE`, `CMD` runs the app. Signals for
    coding Docker: `.devcontainer/`, dev tools installed, interactive, `CMD ["/bin/bash"]`.
 
-2. **Sysbox as optional backend** — could Alcatrazer use Sysbox on Linux where available
+2. **What is Alcatrazer's integration model?** Now that we've ruled out "be a devcontainer,"
+   the question returns: wrap the user's image, be a base image, or something else entirely?
+   The wrap/base analysis above still applies.
+
+## Parked Questions (Future Extensions)
+
+The following were explicitly parked (2025-04-20) to avoid opening an endless decision
+space and to focus on a buildable MVP targeting Docker.
+
+3. **Sysbox as optional backend** — could Alcatrazer use Sysbox on Linux where available
    (better isolation, no UID gymnastics) and fall back to regular Docker on macOS?
    Or is maintaining two backends too complex?
-
-3. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
-   from scratch (scenarios A/B), the "wrap existing" problem can be deferred.
-   If many have devcontainers, it's a priority.
 
 4. **Can the isolation mechanism be pluggable?** Define the security fundamentals
    (filesystem, secret, identity, process, git isolation) as an interface,
    then implement backends: Docker, Sysbox, Podman, etc.
 
-5. **What is Alcatrazer's integration model?** Now that we've ruled out "be a devcontainer,"
-   the question returns: wrap the user's image, be a base image, or something else entirely?
-   The wrap/base analysis above still applies.
-
-6. **How to handle existing `.devcontainer/` repos (scenarios C/D)?** If we don't become
+5. **How to handle existing `.devcontainer/` repos (scenarios C/D)?** If we don't become
    a devcontainer ourselves, how do we coexist with existing devcontainer setups?
    Do we read the devcontainer config as a "recipe" and build our own parallel
    secure container from it?
+
+6. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
+   from scratch (scenarios A/B), the "wrap existing" problem can be deferred.
+   If many have devcontainers, it's a priority.
