@@ -3,6 +3,7 @@
 Step 3a — routing: `.alcatrazer/` presence decides first-time vs subsequent.
 Step 3b — first-time flow aborts unless run at a git repo root.
 Step 3c — promotion-identity read + interactive prompt helpers.
+Step 3d — coding-environment wizard (languages, OS packages, startup).
 """
 
 import contextlib
@@ -228,6 +229,171 @@ class AskPromotionIdentityTests(unittest.TestCase):
         self.assertIn("a@example.com", combined)
         self.assertIn("[Y/n]", combined)
         self.assertIn("Detected git identity", combined)
+
+
+class SupportedLanguagesTests(unittest.TestCase):
+    """Step 3d: the wizard must know a fixed set of mise-supported languages."""
+
+    def test_has_the_four_supported_languages(self):
+        self.assertEqual(
+            set(start.SUPPORTED_LANGUAGES),
+            {"python", "node", "rust", "go"},
+        )
+
+    def test_python_default_manager_is_pip_with_alternatives(self):
+        py = start.SUPPORTED_LANGUAGES["python"]
+        self.assertEqual(py["default_manager"], "pip")
+        self.assertIn("uv", py["managers"])
+        self.assertIn("poetry", py["managers"])
+
+    def test_node_default_manager_is_npm_with_alternatives(self):
+        node = start.SUPPORTED_LANGUAGES["node"]
+        self.assertEqual(node["default_manager"], "npm")
+        self.assertIn("pnpm", node["managers"])
+        self.assertIn("yarn", node["managers"])
+
+
+def _run_wizard(func, inputs):
+    """Call a wizard function with patched input() and captured stdout."""
+    with (
+        patch("builtins.input", side_effect=iter(inputs)),
+        contextlib.redirect_stdout(io.StringIO()),
+    ):
+        return func()
+
+
+class AskLanguagesTests(unittest.TestCase):
+    """Step 3d: languages prompt — selection, version + manager per language."""
+
+    def test_single_language_default_manager_omits_field(self):
+        # Empty input for manager == accept default == omit the field.
+        result = _run_wizard(start.ask_languages, ["python", "3.12", ""])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_single_language_non_default_manager_stored(self):
+        result = _run_wizard(start.ask_languages, ["python", "3.12", "uv"])
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
+
+    def test_explicit_default_manager_name_still_omits_field(self):
+        # User types "pip" — it is the default; field is not stored.
+        result = _run_wizard(start.ask_languages, ["python", "3.12", "pip"])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_multiple_languages_comma_separated(self):
+        result = _run_wizard(
+            start.ask_languages,
+            ["python, node", "3.12", "uv", "22", ""],
+        )
+        self.assertEqual(
+            result,
+            {
+                "python": {"version": "3.12", "manager": "uv"},
+                "node": {"version": "22"},
+            },
+        )
+
+    def test_unknown_language_reprompts(self):
+        result = _run_wizard(start.ask_languages, ["cobol", "python", "3.12", ""])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_empty_selection_reprompts(self):
+        result = _run_wizard(start.ask_languages, ["", "python", "3.12", ""])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_version_latest_is_rejected(self):
+        result = _run_wizard(start.ask_languages, ["python", "latest", "3.12", ""])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_empty_version_is_rejected(self):
+        result = _run_wizard(start.ask_languages, ["python", "", "3.12", ""])
+        self.assertEqual(result, {"python": {"version": "3.12"}})
+
+    def test_unknown_manager_reprompts(self):
+        result = _run_wizard(start.ask_languages, ["python", "3.12", "pixi", "uv"])
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
+
+    def test_rust_single_manager_skips_manager_prompt(self):
+        # Rust's only manager is cargo — no prompt, exactly two inputs total.
+        result = _run_wizard(start.ask_languages, ["rust", "1.75"])
+        self.assertEqual(result, {"rust": {"version": "1.75"}})
+
+
+class AskOsPackagesTests(unittest.TestCase):
+    """Step 3d: OS packages are optional; accept comma or whitespace separated."""
+
+    def test_empty_returns_empty_list(self):
+        result = _run_wizard(start.ask_os_packages, [""])
+        self.assertEqual(result, [])
+
+    def test_comma_separated(self):
+        result = _run_wizard(start.ask_os_packages, ["build-essential, libpq-dev"])
+        self.assertEqual(result, ["build-essential", "libpq-dev"])
+
+    def test_space_separated(self):
+        result = _run_wizard(start.ask_os_packages, ["build-essential libpq-dev ffmpeg"])
+        self.assertEqual(result, ["build-essential", "libpq-dev", "ffmpeg"])
+
+
+class AskStartupCommandsTests(unittest.TestCase):
+    """Step 3d: startup commands — one per line, empty line finishes."""
+
+    def test_empty_returns_empty_list(self):
+        result = _run_wizard(start.ask_startup_commands, [""])
+        self.assertEqual(result, [])
+
+    def test_multiple_commands_end_on_empty_line(self):
+        result = _run_wizard(
+            start.ask_startup_commands,
+            ["uv sync", "npm install", ""],
+        )
+        self.assertEqual(result, ["uv sync", "npm install"])
+
+
+class AskCodingEnvironmentTests(unittest.TestCase):
+    """Step 3d: orchestrator produces a dict shaped for coding-environment.toml."""
+
+    def test_happy_path_multi_language_with_os_and_startup(self):
+        inputs = [
+            "python,node",  # languages
+            "3.12",
+            "uv",  # python: version + manager
+            "22",
+            "",  # node: version + default manager
+            "build-essential libpq-dev",  # os packages
+            "uv sync",
+            "npm install",
+            "",  # startup commands
+        ]
+        result = _run_wizard(start.ask_coding_environment, inputs)
+        self.assertEqual(
+            result,
+            {
+                "os": {"packages": ["build-essential", "libpq-dev"]},
+                "languages": {
+                    "python": {"version": "3.12", "manager": "uv"},
+                    "node": {"version": "22"},
+                },
+                "startup": {"commands": ["uv sync", "npm install"]},
+            },
+        )
+
+    def test_minimal_python_only_omits_empty_sections(self):
+        inputs = ["python", "3.12", "", "", ""]
+        result = _run_wizard(start.ask_coding_environment, inputs)
+        self.assertEqual(result, {"languages": {"python": {"version": "3.12"}}})
+
+    def test_sections_ordered_os_languages_startup(self):
+        # All three sections non-empty; insertion order must be canonical.
+        inputs = [
+            "python",
+            "3.12",
+            "",  # python, default manager
+            "libpq-dev",  # os
+            "uv sync",
+            "",  # startup
+        ]
+        result = _run_wizard(start.ask_coding_environment, inputs)
+        self.assertEqual(list(result), ["os", "languages", "startup"])
 
 
 if __name__ == "__main__":
