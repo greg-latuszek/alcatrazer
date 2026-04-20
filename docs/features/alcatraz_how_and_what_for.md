@@ -271,7 +271,7 @@ governed by an open community. It's a real standard, not just a term.
 
 - VS Code (native)
 - GitHub Codespaces
-- JetBrains (Gateway, IntelliJ)
+- JetBrains (Gateway, IntelliJ) — uses their own CLI (`ijdevc`), not Microsoft's
 - DevPod (open-source)
 - Coder (cloud dev environments)
 - Google Cloud Workstations
@@ -289,7 +289,7 @@ Devcontainers **build on top of Docker** (or any OCI runtime). They don't replac
 
 `devcontainer.json` is a configuration layer ABOVE Docker:
 
-```json
+```jsonc
 {
   "name": "My Project",
   "image": "mcr.microsoft.com/devcontainers/python:3.12",
@@ -319,63 +319,238 @@ Devcontainers **build on top of Docker** (or any OCI runtime). They don't replac
    during image build. E.g., "install Node 22", "install Go", "install Docker-in-Docker".
    Published as OCI artifacts. Anyone can create them. This is the extension mechanism.
 
-3. **Lifecycle hooks** — `postCreateCommand`, `postStartCommand`, `postAttachCommand` — 
+3. **Lifecycle hooks** — `postCreateCommand`, `postStartCommand`, `postAttachCommand` —
    run scripts at various container lifecycle points.
 
 4. **User** — `remoteUser` controls who runs inside the container
    (typically `vscode` or `node`, not root).
 
-### What Devcontainers Get Right (Relevant to Us)
+### Potential Benefits of Fitting into Devcontainer Spec
 
-- **Declarative** — environment defined in a config file, not manual setup
-- **Composable** — features can be layered without editing Dockerfiles
-- **Standard** — multiple tools understand the same config format
+1. **Clear signal** — `.devcontainer/` is an unambiguous indicator "this is for coding"
+   (not building). No detection heuristics needed.
 
-### Alcatrazer as a Devcontainer Feature?
+2. **Established pattern** — developers who use devcontainers already understand the model.
+   Alcatrazer injects into a well-known ecosystem rather than inventing its own.
 
-The features mechanism is interesting. A devcontainer feature is a small package
-(shell script + metadata) published as an OCI artifact. It can install packages,
-create users, add entrypoint scripts, set environment variables.
+3. **IDE tooling for free** — VS Code, JetBrains, and others natively support
+   `.devcontainer/`. Developers could connect their IDE to the running Alcatrazer
+   container and visually observe agents coding in real-time — file explorer shows
+   changes as they happen, terminal gives interactive access, git panel shows commits.
+   This enables a "pair programming with AI" experience through the IDE.
 
-Alcatrazer's security layer could theoretically be a devcontainer feature:
+### The Two-Mode Workflow
 
-```json
-{
-  "features": {
-    "ghcr.io/greg-latuszek/alcatrazer/feature:1": {}
-  }
-}
-```
+When a developer connects their IDE to the Alcatrazer container, they operate
+as the container user (phantom UID, random agent identity). This means:
+- No SSH keys, no GitHub tokens — by design
+- No `git push` from inside — no remote configured
+- The developer's git identity inside is the fake agent identity
 
-The feature would inject: phantom UID user, entrypoint wrapper, git identity isolation,
-mount restrictions.
+This is fine because:
+- Developers using Alcatrazer intentionally want agents to code — the point is
+  to delegate coding to agents, not to code alongside them
+- Being inside the container is for **observing and controlling**, not coding
+- The "real" git work (pushing, PRs, review) happens on the host, in the outer repo
+- Promotion daemon moves commits automatically
 
-### The Fundamental Tension with Devcontainers
+The developer operates in **two modes:**
+1. **Inside the container** (via IDE) — observe agents, prompt, control, review in real-time
+2. **On the host** (normal workflow) — review promoted code, push, create PRs
 
-Devcontainers were designed to **help** developers, not to **isolate from** them.
-The spec assumes the container is a trusted environment. It has:
+This two-mode workflow reflects how the software engineer's role is changing due to
+agentic coding — more designing, dialog, oversight, and heavy review; less direct coding.
+This should be clearly stated in documentation so developers know what to expect.
 
-- SSH key mounting built in (`mounts`)
-- Git credential forwarding by default
-- Host folder mounting as the workspace
-- Port forwarding to localhost
-
-These are exactly the things Alcatrazer is trying to **prevent**. We'd be fighting
-the spec's defaults.
-
-If a developer already has a `.devcontainer/`, it's likely configured with SSH keys
-mounted, git credentials forwarded — all the things we'd strip away. The agent-facing
-environment should be a *restricted* version of their devcontainer, not the full thing.
-
-### Open Question
-
-Does this mean we don't really "extend" a user's devcontainer but rather
-**use it as a recipe for what tools to install**, while replacing the
-security-sensitive parts (mounts, credentials, identity, entrypoint)?
+If a developer does edit files inside the container, those changes are committed with
+the phantom UID and agent identity — same as agent commits. No problem. The promotion
+daemon treats all inner commits the same.
 
 ---
 
-## Open Questions
+## Devcontainer Security Research
+
+### The Fundamental Problem
+
+**Devcontainers are designed for developer convenience, not security.**
+
+Their goal is to make containers feel like local development — sharing credentials,
+forwarding SSH keys, mounting host folders. This is the opposite of what Alcatrazer needs.
+
+Binding Alcatrazer to the devcontainer concept would send a false message to developers —
+"ah, this is for my convenience of working with agentic coding." Our message must be
+straight: **don't trust AI agents, put them in Alcatraz.**
+
+### VS Code: Actively Hostile to Security
+
+VS Code automatically forwards the following into devcontainers:
+
+| What gets forwarded | Mechanism | Can be disabled? |
+|---|---|---|
+| **SSH agent** | Relay socket (`/tmp/vscode-ssh-auth-*.sock`) via VS Code server IPC | **No official setting** (confirmed by Microsoft maintainer in [#9897](https://github.com/microsoft/vscode-remote-release/issues/9897)) |
+| **Git credential helper** | Node.js relay script injected into global git config, communicates via IPC socket | **Partially** — `dev.containers.copyGitConfig: false` + `gitCredentialHelperConfigLocation: "none"` stops the helper, but not env vars |
+| **GPG agent** | Socket forwarding | **No official setting** |
+| **Host command execution** | `vscode-ipc-*.sock` — enables running commands on host via `code` CLI | **No official setting** |
+| **Git IPC** | `vscode-git-*.sock`, `VSCODE_GIT_IPC_HANDLE` | **No official setting** |
+| **GIT_ASKPASS** | Credential prompt handler delegating to host | Re-injected even after clearing |
+| **Environment variables** | `VSCODE_IPC_HOOK_CLI`, `REMOTE_CONTAINERS_IPC`, `REMOTE_CONTAINERS_SOCKETS`, etc. | Re-injected after `remoteEnv` clears them |
+
+Microsoft maintainer's position ([#4426](https://github.com/microsoft/vscode-remote-release/issues/4426)):
+> *"This won't make the container safe to run untrusted code though. 1) We also forward
+> ssh and gpg agents. 2) Docker containers are not considered a secure sandbox."*
+
+#### Three-Layer Defense (Best Available Mitigation)
+
+Daniel Demmel documented a comprehensive defense in
+[Coding Agents in Secured VS Code Dev Containers](https://www.danieldemmel.me/blog/coding-agents-in-secured-vscode-dev-containers).
+It requires three layers and still has race windows:
+
+**Layer 1 — remoteEnv (partial):**
+```jsonc
+"remoteEnv": {
+  "SSH_AUTH_SOCK": "",
+  "GPG_AGENT_INFO": "",
+  "BROWSER": "",
+  "VSCODE_IPC_HOOK_CLI": null,
+  "VSCODE_GIT_IPC_HANDLE": null,
+  "GIT_ASKPASS": null,
+  "VSCODE_GIT_ASKPASS_MAIN": null,
+  "VSCODE_GIT_ASKPASS_NODE": null,
+  "VSCODE_GIT_ASKPASS_EXTRA_ARGS": null,
+  "REMOTE_CONTAINERS_IPC": null,
+  "REMOTE_CONTAINERS_SOCKETS": null,
+  "REMOTE_CONTAINERS_DISPLAY_SOCK": null,
+  "WAYLAND_DISPLAY": null
+}
+```
+
+**Critical limitation:** VS Code re-injects its own variables when spawning new processes.
+
+**Layer 2 — Shell hardening (.bashrc, line 1, before interactive guard):**
+```bash
+unset VSCODE_IPC_HOOK_CLI VSCODE_GIT_IPC_HANDLE GIT_ASKPASS \
+      VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_EXTRA_ARGS \
+      REMOTE_CONTAINERS_IPC REMOTE_CONTAINERS_SOCKETS REMOTE_CONTAINERS_DISPLAY_SOCK \
+      WAYLAND_DISPLAY
+export BROWSER= SSH_AUTH_SOCK= GPG_AGENT_INFO=
+```
+
+Must be at line 1 because AI agents invoke bash as non-interactive shells.
+
+**Layer 3 — Socket file deletion (postStartCommand + background loop):**
+```bash
+find /tmp -maxdepth 2 \( -name 'vscode-ssh-auth-*.sock' \
+  -o -name 'vscode-remote-containers-ipc-*.sock' \
+  -o -name 'vscode-remote-containers-*.js' \) -delete 2>/dev/null || true
+```
+
+Plus a background cleanup loop (10 passes at 30-second intervals) because VS Code
+creates sockets **after** `postStartCommand` runs.
+
+**Even all three layers have race windows.** The socket exists briefly before deletion,
+and VS Code may re-create it.
+
+#### Security Research on VS Code Container Escape
+
+- [The Red Guild](https://blog.theredguild.org/leveraging-vscode-internals-to-escape-containers/) —
+  demonstrated that VS Code's forwarded SSH socket can be used to exfiltrate data
+  from "isolated" containers.
+- [Jamie McCrindle](https://dev.to/jamiemccrindle/exploiting-visual-studio-code-devcontainers-16fb) —
+  showed SSH agent exploitation from inside devcontainers.
+
+### JetBrains: Significantly Less Hostile
+
+JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.) use their own devcontainer implementation
+(`ijdevc` CLI), NOT Microsoft's open-source CLI. Their architecture is fundamentally different:
+the full IDE backend runs inside the container, communicating with a thin client on the host
+via TLS 1.3-encrypted RD protocol.
+
+| What gets forwarded | JetBrains behavior |
+|---|---|
+| **SSH agent** | **NOT forwarded** (broken/missing — [IJPL-162844](https://youtrack.jetbrains.com/issue/IJPL-162844)) |
+| **Git credential helper** | **NOT forwarded** (open feature request — [IJPL-181474](https://youtrack.jetbrains.com/issue/IJPL-181474)) |
+| **GPG agent** | **NOT forwarded** (open feature request — [IJPL-162470](https://youtrack.jetbrains.com/issue/IJPL-162470)) |
+| **Docker credentials** | **NOT forwarded** (open feature request — [GTW-8899](https://youtrack.jetbrains.com/issue/GTW-8899)) |
+| **.gitconfig** | **Partially copied** — only `user.name`, `user.email`, `pull.rebase`, `alias.*` |
+| **IPC sockets for host escape** | **No equivalent** of VS Code's `vscode-ipc-*.sock` |
+
+**The only leak is `.gitconfig` identity** (`user.name`, `user.email`) — which our workspace
+local git config already overrides (local config takes priority over global).
+
+JetBrains deploys IJent (IntelliJ Execution Agent) into the container for file system
+and process APIs, but these serve the IDE backend itself, not as a relay back to the host.
+
+### Open-Source Devcontainer CLI: Clean
+
+The open-source devcontainer CLI (`@devcontainers/cli`, used by GitHub Codespaces and DevPod)
+has **zero credential forwarding code**. Confirmed by maintainer in
+[devcontainers/cli#441](https://github.com/devcontainers/cli/issues/441):
+> *"The ssh-agent forwarding is part of the Dev Containers extension and not part of
+> the Dev Containers CLI."*
+
+No SSH agent, no git credential helper, no GPG, no IPC sockets.
+
+### Summary: IDE Security Comparison
+
+| IDE / Tool | SSH agent | Git credentials | GPG | IPC escape | Overall |
+|------------|-----------|----------------|-----|------------|---------|
+| **Devcontainer CLI** (open-source) | No | No | No | No | **Clean** |
+| **JetBrains** (IntelliJ, PyCharm, etc.) | No | No (only gitconfig identity, overridden by local config) | No | No | **Very good** |
+| **GitHub Codespaces** | Uses CLI (no forwarding) + scoped GITHUB_TOKEN | Block token via remoteEnv | No | No | **Good** |
+| **VS Code** | Yes, no disable | Partially disableable | Yes, no disable | Yes, no disable | **Hostile** |
+
+---
+
+## Conclusion: Devcontainers Are Not the Right Frame
+
+### Why We Should NOT Bind Alcatrazer to the Devcontainer Concept
+
+The research shows a clear picture: **devcontainers are designed for developer convenience,
+not security.** That's why VS Code implemented all the "backdoors" to the host — SSH agent
+forwarding, git credential relay, IPC sockets. They make development seamless. Developers
+like this convenience because they can share whole dev environments with team members,
+solving "works on my machine." The question is whether developers are aware of the
+security impact — that under VS Code especially, this is not a good environment for
+agentic coding.
+
+Look at the [Daniel Demmel article](https://www.danieldemmel.me/blog/coding-agents-in-secured-vscode-dev-containers) —
+it shows the enormous effort needed to secure a VS Code devcontainer for AI agents.
+Three defensive layers, race conditions, background cleanup loops, shell hardening.
+Why? **Because we are fighting against the goal of the given technology.**
+Devcontainers' goal is not security but convenience.
+
+**Binding Alcatrazer to the devcontainer term would send a false message to developers** —
+a message like "ah, this is for my convenience of working with agentic coding."
+
+**Our message must be straight:**
+
+> Watch out developers community. Your paradigm has changed. You trust yourself - that is
+> understood. And that was you who have coded inside container up till now. But the world has
+> changed. It is no more you who is coding inside container. These are AI agents that might
+> do harmful things due to hallucination or prompt injecting via accidental download of
+> malicious software. Harmful both - to your localhost and to your public git repository.
+> So, don't trust them - put them in Alcatraz.
+
+### What We Take From This Research
+
+1. **Alcatrazer is NOT a devcontainer.** It is a security tool that happens to use Docker
+   containers as an isolation mechanism. The framing matters.
+
+2. **The devcontainer spec is useful as input, not as identity.** If a user has a
+   `.devcontainer/`, we can read it as a recipe for what tools to install — but we build
+   our own secure container, not a devcontainer.
+
+3. **IDE attachment is a feature, not the architecture.** If developers want to observe
+   agents via VS Code or JetBrains, that's optional. JetBrains attachment is safe.
+   VS Code attachment requires documented caveats and defensive layers.
+
+4. **The devcontainer CLI (open-source) is safe.** If we ever do interact with
+   the devcontainer ecosystem, the CLI is the right integration point — it has
+   zero credential forwarding.
+
+---
+
+## Open Questions (Remaining)
 
 1. **Detection heuristics for build vs coding Docker** — is asking the user during
    `alcatrazer init` sufficient, or should we autodetect? Signals for build Docker:
@@ -386,14 +561,19 @@ security-sensitive parts (mounts, credentials, identity, entrypoint)?
    (better isolation, no UID gymnastics) and fall back to regular Docker on macOS?
    Or is maintaining two backends too complex?
 
-3. **Devcontainer feature approach** — is it viable to package the security layer as a
-   devcontainer feature, given that we need to *remove* default devcontainer behaviors
-   (credential forwarding, SSH mounts) rather than add to them?
-
-4. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
+3. **How common are coding Dockerfiles in the wild?** If most Alcatrazer users start
    from scratch (scenarios A/B), the "wrap existing" problem can be deferred.
    If many have devcontainers, it's a priority.
 
-5. **Can the isolation mechanism be pluggable?** Define the security fundamentals
+4. **Can the isolation mechanism be pluggable?** Define the security fundamentals
    (filesystem, secret, identity, process, git isolation) as an interface,
    then implement backends: Docker, Sysbox, Podman, etc.
+
+5. **What is Alcatrazer's integration model?** Now that we've ruled out "be a devcontainer,"
+   the question returns: wrap the user's image, be a base image, or something else entirely?
+   The wrap/base analysis above still applies.
+
+6. **How to handle existing `.devcontainer/` repos (scenarios C/D)?** If we don't become
+   a devcontainer ourselves, how do we coexist with existing devcontainer setups?
+   Do we read the devcontainer config as a "recipe" and build our own parallel
+   secure container from it?
