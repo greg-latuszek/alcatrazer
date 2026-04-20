@@ -154,8 +154,9 @@ laptop/GitHub security — Alcatrazer will do it for you."
 - Promotion mechanics (daemon does it automatically)
 
 **What cannot be fully hidden:**
-- The `.alcatrazer/` directory exists (gitignored, but visible)
-- `alcatrazer.toml` exists (version controlled — the user's one deliberate config file)
+- The `.alcatrazer/` directory exists (gitignored, but visible on the host)
+- `coding-environment.toml` exists (version controlled — but zero alcatrazer branding,
+  see "Resolved: Config Split" below)
 - The user must provide API keys (`.env`)
 - The user must review promoted code (that's the whole point)
 
@@ -565,7 +566,8 @@ exclusion for free: what's gitignored isn't in the repo, isn't in the snapshot, 
 visible to agents. No filtering, no configuration, no edge cases.
 
 This also aligns with:
-- **Zero Pollution** — repo gets only `alcatrazer.toml`, `.gitignore` entries, `.env.example`
+- **Zero Pollution** — repo gets only `coding-environment.toml` and `.env.example`
+  (see "Resolved: Config Split" below for how `alcatrazer.toml` was eliminated)
 - **Single Self-Contained Package** — Docker templates live in the package, get generated
   into `.alcatrazer/` during init
 - **Per-Repo Install** — each repo's `.alcatrazer/` is its own self-contained installation
