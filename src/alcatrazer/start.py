@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from alcatrazer import identity, snapshot
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 
@@ -260,6 +261,56 @@ def write_env_example(project_dir: Path) -> Path | None:
         "# .env should stay out of version control; .env.example is committed.\n"
     )
     return target
+
+
+def create_workspace(project_dir: Path, workspace_name: str) -> Path:
+    """Create the inner workspace for the agent (Step 3j).
+
+    - Creates `project_dir / workspace_name` (the leading dot is expected
+      to be part of `workspace_name`, matching identity.generate_workspace_dir_name).
+    - `git init`s it with a fresh history disconnected from the outer repo.
+    - Generates + persists the random agent identity (or reuses an existing
+      one) via identity.ensure_identity.
+    - Wires the workspace-local git config: user.name / user.email from the
+      stored identity, `commit.gpgsign false`; clears any host signing-key
+      path so host state does not leak into the inner repo.
+    - Takes a flat snapshot of the outer repo's default branch via
+      snapshot.snapshot_workspace — files only, no history, single initial
+      commit authored by the agent identity.
+
+    Returns the workspace directory path.
+    """
+    workspace_dir = project_dir / workspace_name
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    alcatrazer_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(
+        ["git", "init", str(workspace_dir)],
+        capture_output=True,
+        check=True,
+    )
+
+    name, email = identity.ensure_identity(str(alcatrazer_dir))
+
+    def _wgit(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(workspace_dir), *args],
+            capture_output=True,
+            check=True,
+        )
+
+    _wgit("config", "--local", "user.name", name)
+    _wgit("config", "--local", "user.email", email)
+    _wgit("config", "--local", "commit.gpgsign", "false")
+    # Defensive: clear any host signing-key references so they cannot leak
+    # into the inner repo's config.
+    _wgit("config", "--local", "user.signingkey", "")
+    _wgit("config", "--local", "gpg.ssh.allowedSignersFile", "")
+
+    snapshot.snapshot_workspace(str(project_dir), str(workspace_dir))
+
+    return workspace_dir
 
 
 def write_python_symlink(project_dir: Path) -> Path:
