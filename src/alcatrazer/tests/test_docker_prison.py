@@ -269,11 +269,14 @@ class DockerPrisonBuildTests(unittest.TestCase):
         self.assertEqual((self.alcatraz_dir / "uid").read_text().strip(), "1042")
 
     def test_raises_prison_build_error_on_non_zero_exit(self):
-        with patch.object(
-            docker_prison.subprocess,
-            "run",
-            return_value=self._fail(stdout="build stdout", stderr="build stderr"),
-        ), self.assertRaises(PrisonBuildError) as cm:
+        with (
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=self._fail(stdout="build stdout", stderr="build stderr"),
+            ),
+            self.assertRaises(PrisonBuildError) as cm,
+        ):
             DockerPrison(self.project_dir).build()
         self.assertIn("build stdout", cm.exception.stdout)
         self.assertIn("build stderr", cm.exception.stderr)

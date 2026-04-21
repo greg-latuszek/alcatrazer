@@ -54,10 +54,6 @@ class DockerPrisonSkeletonTests(unittest.TestCase):
     def test_stores_project_dir(self):
         self.assertEqual(self.prison.project_dir, Path("/tmp"))
 
-    def test_build_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.build()
-
     def test_image_exists_raises_not_implemented(self):
         with self.assertRaises(NotImplementedError):
             self.prison.image_exists()

@@ -15,9 +15,11 @@ step that first needs it:
 """
 
 import shutil
+import subprocess
 from pathlib import Path
 
-from alcatrazer.alcatraz import Alcatraz
+from alcatrazer import identity
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 # --- Dockerfile generation ---------------------------------------------------
@@ -186,7 +188,32 @@ class DockerPrison(Alcatraz):
         shutil.copy(source, alcatrazer_dir / "entrypoint.sh")
 
     def build(self) -> None:
-        raise NotImplementedError("DockerPrison.build lands in Step 3i")
+        """Run `docker build` with the generated Dockerfile.
+
+        Uses a tight build context (`.alcatrazer/` only), the phantom UID as
+        the USER_UID build arg, and captures stdout/stderr so callers can
+        present them per the error-reporting contract.
+        """
+        alcatraz_dir = self.project_dir / ".alcatrazer"
+        uid = identity.ensure_phantom_uid(alcatraz_dir)
+        cmd = [
+            "docker",
+            "build",
+            "--build-arg",
+            f"USER_UID={uid}",
+            "-f",
+            str(alcatraz_dir / "Dockerfile"),
+            "-t",
+            self.image_tag,
+            str(alcatraz_dir),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise PrisonBuildError(
+                f"docker build failed (exit {result.returncode})",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
 
     def image_exists(self) -> bool:
         raise NotImplementedError("DockerPrison.image_exists lands in Step 4")
