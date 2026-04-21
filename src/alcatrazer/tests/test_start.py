@@ -27,7 +27,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from alcatrazer import cli, identity, languages, start
-from alcatrazer.alcatraz import Alcatraz
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
@@ -105,18 +105,9 @@ class FirstTimeGitRepoCheckTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn(GIT_REPO_ROOT_ERROR, err)
 
-    def test_proceeds_when_git_is_directory(self):
-        (self.project_dir / ".git").mkdir()
-        rc, _, err = self._run_first_time()
-        self.assertEqual(rc, 0)
-        self.assertNotIn(GIT_REPO_ROOT_ERROR, err)
-
-    def test_proceeds_when_git_is_file_worktree(self):
-        # In git worktrees and submodules, `.git` is a file pointing elsewhere.
-        (self.project_dir / ".git").write_text("gitdir: /some/path/.git\n")
-        rc, _, err = self._run_first_time()
-        self.assertEqual(rc, 0)
-        self.assertNotIn(GIT_REPO_ROOT_ERROR, err)
+    # The two "proceeds" cases moved to FirstTimeSetupIntegrationTests below,
+    # since running past the git check now executes the full orchestration
+    # and requires downstream helpers to be mocked.
 
 
 class ReadGitIdentityTests(unittest.TestCase):
@@ -1156,6 +1147,135 @@ class SubsequentRunTests(unittest.TestCase):
             (self.alcatraz_dir / "coding-environment.toml.last").read_text(),
             original_last,
         )
+
+
+class FirstTimeSetupIntegrationTests(unittest.TestCase):
+    """End-to-end orchestration of _first_time_setup: every Step 3 helper is
+    invoked, data flows between them, errors at any stage propagate per the
+    "Build & Startup Error Handling" contract."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".git").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.exec.return_value = 0
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "ask_promotion_identity", ("Alice", "alice@example.com")),
+            (
+                start,
+                "ask_coding_environment",
+                {
+                    "languages": {"python": {"version": "3.12"}},
+                    "startup": {"commands": ["uv sync"]},
+                },
+            ),
+            (
+                start,
+                "write_coding_environment_toml",
+                self.project_dir / "coding-environment.toml",
+            ),
+            (start, "write_alcatrazer_config", None),
+            (start, "write_env_example", None),
+            (start, "write_git_exclude", None),
+            (start, "extract_package_source", None),
+            (start, "write_python_symlink", None),
+            (start, "create_workspace", None),
+            (start, "run_startup_commands", 0),
+            (start, "save_coding_environment_snapshot", None),
+            (identity, "generate_workspace_dir_name", ".devspace-abcd"),
+            (identity, "store_workspace_dir", None),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return start._first_time_setup(self.project_dir, prison=self.prison)
+
+    def test_happy_path_returns_zero(self):
+        self.assertEqual(self._run(), 0)
+
+    def test_proceeds_when_git_is_file_worktree(self):
+        """.git as a file (git worktrees / submodules) counts as a valid repo."""
+        shutil.rmtree(self.project_dir / ".git")
+        (self.project_dir / ".git").write_text("gitdir: /some/path/.git\n")
+        self.assertEqual(self._run(), 0)
+
+    def test_every_helper_is_called(self):
+        self._run()
+        for name, mock in self.mocks.items():
+            self.assertGreaterEqual(mock.call_count, 1, f"{name} should have been called")
+        self.prison.generate_prison.assert_called_once()
+        self.prison.build.assert_called_once()
+        self.prison.start.assert_called_once()
+
+    def test_promotion_identity_flows_into_alcatrazer_config_writer(self):
+        self.mocks["ask_promotion_identity"].return_value = (
+            "Bob Builder",
+            "bob@example.com",
+        )
+        self._run()
+        call = self.mocks["write_alcatrazer_config"].call_args
+        self.assertEqual(call.args[1], "Bob Builder")
+        self.assertEqual(call.args[2], "bob@example.com")
+
+    def test_coding_environment_flows_into_prison_generate_prison(self):
+        coding_env = {
+            "os": {"packages": ["libpq-dev"]},
+            "languages": {"rust": {"version": "1.75"}},
+        }
+        self.mocks["ask_coding_environment"].return_value = coding_env
+        self._run()
+        self.prison.generate_prison.assert_called_once_with(coding_env)
+
+    def test_workspace_name_flows_into_exclude_and_workspace_creation(self):
+        self.mocks["generate_workspace_dir_name"].return_value = ".devspace-zzzz"
+        self._run()
+        exclude_call = self.mocks["write_git_exclude"].call_args
+        self.assertEqual(exclude_call.args[1], ".devspace-zzzz")
+        workspace_call = self.mocks["create_workspace"].call_args
+        self.assertEqual(workspace_call.args[1], ".devspace-zzzz")
+
+    def test_generate_prison_runs_before_build(self):
+        parent = Mock()
+        parent.attach_mock(self.prison.generate_prison, "generate_prison")
+        parent.attach_mock(self.prison.build, "build")
+        self._run()
+        names = [c[0] for c in parent.mock_calls]
+        self.assertLess(names.index("generate_prison"), names.index("build"))
+
+    def test_startup_failure_returns_nonzero_and_skips_snapshot(self):
+        self.mocks["run_startup_commands"].return_value = 7
+        rc = self._run()
+        self.assertEqual(rc, 7)
+        self.mocks["save_coding_environment_snapshot"].assert_not_called()
+
+    def test_build_failure_reports_and_returns_nonzero(self):
+        self.prison.build.side_effect = PrisonBuildError(
+            "docker build failed",
+            stdout="build stdout",
+            stderr="build stderr",
+        )
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            rc = start._first_time_setup(self.project_dir, prison=self.prison)
+        self.assertNotEqual(rc, 0)
+        err = stderr.getvalue()
+        self.assertIn("build", err.lower())
+        self.assertIn("build stderr", err)
+        self.prison.start.assert_not_called()
+        self.mocks["run_startup_commands"].assert_not_called()
+        self.mocks["save_coding_environment_snapshot"].assert_not_called()
 
 
 class CmdStopTests(unittest.TestCase):

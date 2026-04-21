@@ -34,7 +34,7 @@ def cmd_start(project_dir: Path) -> int:
     return _subsequent_run(project_dir)
 
 
-def _first_time_setup(project_dir: Path) -> int:
+def _first_time_setup(project_dir: Path, prison: Alcatraz | None = None) -> int:
     if not (project_dir / ".git").exists():
         print("alcatrazer must be run from a git repository root.", file=sys.stderr)
         return 1
