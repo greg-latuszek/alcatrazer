@@ -24,8 +24,7 @@ target-repo/
 ├── .alcatrazer/                 <-- gitignored via .git/info/exclude
 │   ├── config.toml              <-- alcatrazer config (promotion, daemon, pointer)
 │   ├── Dockerfile               <-- generated from coding-environment.toml
-│   ├── docker-compose.yml       <-- generated
-│   ├── entrypoint.sh            <-- generated
+│   ├── entrypoint.sh            <-- copied from package template (byte-exact)
 │   ├── coding-environment.toml.last  <-- copy from last successful build
 │   ├── uid                      <-- phantom UID
 │   ├── agent-identity           <-- randomly generated name + email
@@ -337,15 +336,33 @@ Optional section. Omit if agents can figure out setup themselves (they have sudo
 
 #### Dockerfile generation mapping
 
-| TOML section | Dockerfile action | When |
-|---|---|---|
-| `[os]` packages | `RUN apt-get install -y ...` | build time (layer 1) |
-| `[languages.*]` version | `RUN mise use --global <lang>@<version>` | build time (layer 2) |
-| `[languages.*]` manager | `RUN mise use --global <manager>` or `pip install <manager>` | build time (layer 2) |
-| `[startup]` commands | post-start script | container start |
+The Dockerfile has three stages that cleanly separate concerns. Only the last
+one is driven by `coding-environment.toml`:
 
-The alcatrazer security base (phantom UID, gosu, git, mise, entrypoint) is always the
-foundation — generated unconditionally, not configurable via this file.
+| TOML section | Dockerfile action | Stage |
+|---|---|---|
+| (none — hardcoded) | phantom UID `agent` user, `gosu`, `git`, `mise`, `curl`, `ca-certificates` | `dev-base` |
+| (none — hardcoded for MVP) | Claude Code CLI install | `ai-base` |
+| `[os]` packages | `RUN apt-get install -y ...` | `dev` (build time, layer 1) |
+| `[languages.*]` version | `RUN mise use --global <lang>@<version>` | `dev` (build time, layer 2) |
+| `[languages.*]` manager | `RUN mise use --global <manager>` (non-default only) | `dev` (build time, layer 2) |
+| `[startup]` commands | run at container start (not baked into image) | — |
+
+- **`dev-base`** — security + core infrastructure. Only what alcatrazer's own
+  machinery needs: the phantom-UID `agent` user, `gosu`, `git`, `mise`, `curl` +
+  `ca-certificates` (needed by this stage's own installs). Hardcoded, always
+  identical. Dev-ergonomics packages (`tmux`, `ripgrep`, …) and project-specific
+  build deps (`build-essential`, `libpq-dev`, …) do not belong here — they live
+  in the user's `[os]` section.
+
+- **`ai-base`** — the AI agent CLI layer. Hardcoded to install Claude Code for the
+  MVP. This stage exists to separate "AI tooling" from "security infrastructure"
+  so it can later be generated dynamically from a new `[ai]` section of
+  `coding-environment.toml` (letting a repo pick Claude, another agent, or none)
+  without disturbing `dev-base`.
+
+- **`dev`** — language runtimes, OS packages, project-specific bits. Fully
+  generated from `coding-environment.toml`.
 
 #### Examples
 
@@ -741,16 +758,61 @@ Store workspace dir name in `.alcatrazer/workspace-dir`.
 Copy the full `src/alcatrazer/` tree from the installed package into
 `.alcatrazer/src/alcatrazer/`. This gives the user readable source and bundled tests.
 
-#### Step 3h: Generate Dockerfile
+#### Step 3h: Generate Dockerfile and entrypoint.sh
 
-Read `coding-environment.toml`. Generate Dockerfile into `.alcatrazer/Dockerfile`:
-- Base layer: alcatrazer security (phantom UID, gosu, git, mise, entrypoint)
-- Layer 1: `[os]` packages → `RUN apt-get install -y ...`
-- Layer 2: `[languages.*]` → `RUN mise use --global <lang>@<version>` per language,
-  plus non-default manager installation
-- Entrypoint: copy entrypoint.sh, set WORKDIR, ENTRYPOINT, CMD
+Read `coding-environment.toml`. Write two files into `.alcatrazer/`:
 
-Also generate `docker-compose.yml` and `entrypoint.sh` into `.alcatrazer/`.
+**`.alcatrazer/Dockerfile`** — three stages (see "Dockerfile generation mapping"
+above for the full scope of each):
+
+- **Stage 1 `FROM ubuntu:24.04 AS dev-base`** — security + core infrastructure.
+  Emitted verbatim from a Python constant; not driven by the TOML.
+- **Stage 2 `FROM dev-base AS ai-base`** — the AI CLI layer. Emitted verbatim
+  from a Python constant for the MVP (installs Claude Code). A future step will
+  generate this stage from a new `[ai]` section of `coding-environment.toml`.
+- **Stage 3 `FROM ai-base AS dev`** — fully generated from the TOML:
+    - `RUN apt-get install -y …` from `[os]` packages (skipped if the section is absent)
+    - `RUN mise use --global <lang>@<version>` per `[languages.*]` entry
+    - `RUN mise use --global <manager>` per non-default manager (skipped when the
+      `manager` field is absent, which means the language default is in use)
+    - Verify block: a single `RUN` that `&&`-chains `git --version`,
+      `mise --version`, `claude --version` (always present) plus the per-language
+      check command drawn from the hardcoded `SUPPORTED_LANGUAGES` map. Each
+      language carries its own check (`python --version`, `rustc --version`,
+      `go version`, …) because not every tool accepts `--version`.
+    - Entrypoint tail: `COPY --chmod=755 entrypoint.sh …`, `WORKDIR`,
+      `ENTRYPOINT`, `CMD`.
+
+**`.alcatrazer/entrypoint.sh`** — byte-exact copy of the packaged template. Nothing
+to parameterize; the script chowns `/workspace`, primes the mise cache, and drops
+to the agent user.
+
+**Not generated: `docker-compose.yml`.** A single-service compose wrapper is a
+leaky abstraction here — users never run `docker compose` themselves; everything
+goes through `alcatrazer start/stop/upgrade`. Container orchestration uses
+`docker` subprocess calls from Python instead. This keeps the sandboxing
+machinery internal and swappable (see "Hexagonal sandboxing architecture"
+below), avoids a second source of truth for container config, and gives us
+tighter control over volume / network / container names (better Principle-2
+hygiene than compose's project-name prefixing).
+
+#### Hexagonal sandboxing architecture
+
+The sandboxing backend is a hexagonal port with dependency injection so the
+implementation can change without touching the installer logic:
+
+- **`alcatrazer.alcatraz.Alcatraz`** — abstract base class. Defines the
+  operations the installer needs from any sandboxing backend: `build`,
+  `image_exists`, `start`, `stop`, `is_running`, `exec`, `remove`. The "prison"
+  in the Alcatraz metaphor.
+- **`alcatrazer.docker_prison.DockerPrison(Alcatraz)`** — the only adapter
+  implemented for MVP. Shells out to `docker build` / `run` / `start` / `stop` /
+  `ps` / `exec` subprocesses.
+
+Installer functions that need sandbox operations (Steps 3i, 3k, Step 4 detection
+logic) accept an `Alcatraz` instance with a `DockerPrison` default, so tests can
+inject a mock and future backends (podman, sysbox, …) can plug in without
+editing callers.
 
 #### Step 3i: Docker build
 
