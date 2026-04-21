@@ -149,24 +149,23 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ## Getting Started
 
-### 1. Initialize Alcatraz
+### 1. Start Alcatrazer
+
+From the root of any git repository you want to protect:
 
 ```bash
-./src/alcatrazer/scripts/initialize_alcatraz.sh
+alcatrazer start
 ```
 
-This script:
-1. Verifies it's running at the repository root
-2. Creates `.env` from `.env.example` (if it doesn't exist)
-3. Finds the first unused UID on the host (>= 1001) and writes it to `.alcatrazer/uid`
-4. Resolves Python 3.11+ (four-tier fallback: system python3 → mise install → mise bootstrap → manual path) and creates `.alcatrazer/python` symlink
-5. **Selects workspace directory** — presents 3 randomly generated directory names (e.g., `.devspace-7f3a`), user picks one. The selection is stored in `.alcatrazer/workspace-dir` and added to `.gitignore`. On subsequent runs, the stored selection is reused.
-6. **Generates a random agent identity** — realistic-looking name and email (e.g., `Sarah Martinez <s_martinez42@gmail.com>`). Stored in `.alcatrazer/agent-identity`, used as the workspace git identity. Agents see this instead of anything that hints at Alcatrazer.
-7. Creates the workspace directory with an isolated git repo configured with the random identity
-8. **Snapshots the outer repo's main branch** into the workspace — files only, no git history. `.gitignore` is copied with the `.alcatrazer/` rule filtered out. `.env` and `.alcatrazer/` are excluded even if tracked.
-9. Adds the workspace to `git safe.directory` so host git can read it despite phantom UID ownership
+On the first run, `alcatrazer start` asks a few interactive questions
+(promotion identity, languages, OS packages, startup commands), writes
+configuration files, generates the Dockerfile, builds the image, sets up
+the inner workspace with a random agent identity, and starts the container.
+Subsequent runs detect what (if anything) changed in your
+`coding-environment.toml` and rebuild or restart only as needed.
 
-If the outer repo has no commits (greenfield project), the snapshot step is a no-op and the workspace starts with an empty initial commit.
+For the full per-step breakdown see
+[docs/features/install_method.md](docs/features/install_method.md).
 
 ### 2. LLM Authentication
 
@@ -178,14 +177,18 @@ If the outer repo has no commits (greenfield project), the snapshot step is a no
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 3. Build and run
+### 3. Attach to the container
+
+`alcatrazer start` leaves the container detached. Open a shell inside it via:
 
 ```bash
-docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build
-docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace
+docker exec -it workspace /bin/bash
 ```
 
-You are now inside the container as a non-root agent user. All tools are available: Python, Node.js, Bun, Git, Tmux, Ripgrep, mise.
+You are now inside the container as the non-root `agent` user. All tools
+you requested in `coding-environment.toml` are available: Python / Node /
+Rust / Go (from `[languages.*]`), any `[os]` packages, plus the always-on
+security baseline (git, mise, Claude Code CLI, gosu).
 
 ### 4. Start the promotion daemon
 
@@ -195,7 +198,10 @@ In a separate terminal:
 .alcatrazer/python -m alcatrazer.daemon
 ```
 
-The daemon watches the workspace directory for new commits and automatically promotes them to the outer repo with your identity (from `alcatrazer.toml`). Agent work appears in your repo in near real-time.
+The daemon watches the workspace directory for new commits and
+automatically promotes them to the outer repo with your identity (from
+`.alcatrazer/config.toml`). Agent work appears in your repo in near
+real-time.
 
 To watch promotion activity:
 
@@ -203,64 +209,83 @@ To watch promotion activity:
 .alcatrazer/python -m alcatrazer.inspect
 ```
 
-### Resetting Alcatraz
-
-Files created inside the container are owned by the phantom UID and cannot be deleted by the host user directly. Use the `--reset` flag, which spins up a disposable Docker container to clean up:
+### Stopping
 
 ```bash
-./src/alcatrazer/scripts/initialize_alcatraz.sh --reset
+alcatrazer stop
 ```
 
-If the workspace has commits that haven't been promoted to the outer repo, you'll be warned before anything is destroyed:
+Idempotent — no-op when nothing is running.
 
-```
-Warning: 5 commit(s) in workspace have not been promoted to outer repo.
-Proceeding with --reset will discard them.
+### Resetting
 
-  1. Proceed — discard workspace, re-snapshot, reinitialize
-  2. Cancel — abort reset, no changes
-```
-
-To skip the prompt (e.g., in scripts):
+There is no `alcatrazer reset` command yet. To start over: stop the
+container, then remove `.alcatrazer/` and the randomly-named workspace
+directory. Because files inside the workspace are owned by the phantom
+UID, use a disposable container to do the cleanup:
 
 ```bash
-./src/alcatrazer/scripts/initialize_alcatraz.sh --reset --force
+alcatrazer stop
+docker run --rm -v "$(pwd)":/w alpine sh -c 'rm -rf /w/.alcatrazer /w/.devspace-*'
 ```
 
-After reset, the workspace is re-snapshotted from the outer repo's current main branch — picking up any changes that were merged since the last initialization.
+(Adjust the `.devspace-*` glob to whatever workspace name `alcatrazer
+start` chose — stored in `.alcatrazer/workspace-dir`.) Then run
+`alcatrazer start` again.
 
 ## Configuration
 
-All configuration lives in `alcatrazer.toml` (version controlled):
+Alcatrazer splits configuration across three files so that nothing in the
+target repo's working tree reveals the tool to agents (Principle 2).
+
+### `coding-environment.toml` — repo root, version-controlled
+
+Agent-visible, zero alcatrazer branding. Describes what the container
+must provide before the project's own setup can run:
 
 ```toml
+[os]
+packages = ["build-essential", "libpq-dev"]
+
+[languages.python]
+version = "3.12"
+manager = "uv"          # omit for the language default (pip)
+
+[languages.node]
+version = "22"
+
+[startup]
+commands = ["uv sync", "npm install"]
+```
+
+### `.alcatrazer/config.toml` — gitignored, per-developer
+
+Alcatrazer-specific, invisible to agents. Contains the promotion identity
+and daemon settings:
+
+```toml
+coding_environment_file = "coding-environment.toml"
+
 [promotion]
-# Identity used when promoting agent commits to the outer repo
-name = "Your Name"
+name  = "Your Name"
 email = "your@email.com"
 
-[tools]
-# Default tool versions in the container (agents can override via mise.toml)
-python = "3.13"
-node = "22"
-bun = "latest"
-
 [promotion-daemon]
-# Polling interval in seconds
-interval = 5
-
-# Which branches to promote: "all", a single branch name, or a list of glob patterns
-branches = "all"           # or "main" or "master" or ["main", "feature/*"]
-
-# Conflict handling mode: "mirror" or "alcatraz-tree"
-mode = "mirror"
-
-# Logging verbosity: "normal" or "detailed"
-verbosity = "normal"
-
-# Maximum log file size before rotation (in KB)
-max_log_size = 512
+interval     = 5                # polling interval (seconds)
+branches     = "all"            # or "main" or ["main", "feature/*"]
+mode         = "mirror"         # or "alcatraz-tree"
+verbosity    = "normal"         # or "detailed"
+max_log_size = 512              # log rotation threshold (KB)
 ```
+
+### `.git/info/exclude` — per-repo gitignore, not committed
+
+`alcatrazer start` appends `.alcatrazer/` and the workspace directory
+here instead of the working-tree `.gitignore` — so the ignore patterns
+themselves don't enter the agent snapshot.
+
+See [docs/features/install_method.md](docs/features/install_method.md) for
+the full rationale.
 
 ## Promoting Agent Work
 
@@ -353,7 +378,8 @@ This avoids re-downloading tools and packages on every `docker compose run`.
 
 ## Docker Container Rules
 
-These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` configuration:
+These rules are enforced by `DockerPrison` (the Docker adapter of the
+Alcatraz sandboxing port) when it builds and runs the workspace container:
 
 1. **Mount only the workspace directory** as the working volume — never the outer repo or the host home directory.
 2. **Mount only `~/.claude/.credentials.json`** (read-only) for LLM auth — never the entire `~/.claude/` directory (which contains project memories, settings, and other config).
@@ -365,13 +391,18 @@ These rules are enforced by the `src/alcatrazer/container/docker-compose.yml` co
 
 ## Workflow
 
-1. `./src/alcatrazer/scripts/initialize_alcatraz.sh` — creates the inner repo, finds phantom UID, resolves Python, generates random identity, selects workspace directory.
-2. `docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build && docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace` — build and enter the container.
-3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon (separate terminal).
-4. Agents inside the container write code, run tests, and commit incrementally. They may use branches, delegate to sub-agents, and merge.
-5. The daemon automatically promotes agent commits to the outer repo with your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
+1. `alcatrazer start` — first-time wizard + install, or a no-op/rebuild on
+   subsequent runs depending on what changed in `coding-environment.toml`.
+2. `docker exec -it workspace /bin/bash` — attach a shell as the agent user.
+3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon
+   (separate terminal).
+4. Agents inside the container write code, run tests, and commit
+   incrementally. They may use branches, delegate to sub-agents, and merge.
+5. The daemon automatically promotes agent commits to the outer repo with
+   your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
 6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
 7. Human pushes the promoted commits to GitHub from the outer repo.
+8. `alcatrazer stop` when done for the day.
 
 ## Running Tests
 
