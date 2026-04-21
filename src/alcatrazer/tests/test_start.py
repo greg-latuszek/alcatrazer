@@ -6,6 +6,7 @@ Step 3c — promotion-identity read + interactive prompt helpers.
 Step 3d — coding-environment wizard (languages, OS packages, startup).
 Step 3e — config-file writers (coding-environment.toml, .alcatrazer/config.toml,
           .env.example).
+Step 3f — .git/info/exclude writer (idempotent, preserves user content).
 """
 
 import contextlib
@@ -19,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from alcatrazer import cli, start
+from alcatrazer import cli, identity, start
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
@@ -537,6 +538,97 @@ class WriteEnvExampleTests(unittest.TestCase):
         result = start.write_env_example(self.project_dir)
         self.assertIsNone(result)
         self.assertEqual(existing.read_text(), "USER_VAR=1\n")
+
+
+class WriteGitExcludeTests(unittest.TestCase):
+    """Step 3f: append alcatrazer + workspace patterns to .git/info/exclude."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        (self.project_dir / ".git" / "info").mkdir(parents=True)
+
+    def _content(self) -> str:
+        return (self.project_dir / ".git" / "info" / "exclude").read_text()
+
+    def test_returns_path_to_exclude_file(self):
+        path = start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        self.assertEqual(path, self.project_dir / ".git" / "info" / "exclude")
+        self.assertTrue(path.is_file())
+
+    def test_writes_both_patterns(self):
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        lines = self._content().splitlines()
+        self.assertIn(".alcatrazer/", lines)
+        self.assertIn(".devspace-abcd/", lines)
+
+    def test_includes_header_comment_verbatim_from_doc(self):
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        self.assertIn(
+            "# alcatrazer patterns (written by alcatrazer start)",
+            self._content(),
+        )
+
+    def test_preserves_existing_user_content(self):
+        existing = self.project_dir / ".git" / "info" / "exclude"
+        existing.write_text("# user's exclude\n*.log\nbuild/\n")
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        content = self._content()
+        self.assertIn("# user's exclude", content)
+        self.assertIn("*.log", content)
+        self.assertIn("build/", content)
+        self.assertIn(".alcatrazer/", content)
+        self.assertIn(".devspace-abcd/", content)
+
+    def test_idempotent_when_patterns_already_present(self):
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        first = self._content()
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        second = self._content()
+        self.assertEqual(first, second)
+        self.assertEqual(second.count(".alcatrazer/"), 1)
+        self.assertEqual(second.count(".devspace-abcd/"), 1)
+
+    def test_creates_info_dir_when_missing(self):
+        # .git exists but .git/info does not — must create it.
+        import shutil
+
+        shutil.rmtree(self.project_dir / ".git" / "info")
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        self.assertTrue((self.project_dir / ".git" / "info" / "exclude").is_file())
+
+    def test_workspace_name_used_verbatim_no_double_dot(self):
+        # Contract: caller passes the full directory name (usually with a
+        # leading dot from identity.generate_workspace_dir_name()).
+        start.write_git_exclude(self.project_dir, ".devspace-abcd")
+        self.assertNotIn("..devspace-abcd", self._content())
+
+
+class Step3fCompositionTests(unittest.TestCase):
+    """End-to-end sanity: identity helpers + write_git_exclude compose cleanly."""
+
+    def test_generate_then_store_then_exclude(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        project_dir = Path(tmp.name)
+        alcatraz_dir = project_dir / ".alcatrazer"
+        alcatraz_dir.mkdir()
+        (project_dir / ".git" / "info").mkdir(parents=True)
+
+        # 1. Generate a random workspace name (existing identity helper).
+        name = identity.generate_workspace_dir_name()
+        self.assertTrue(name.startswith("."))
+
+        # 2. Persist the name (existing identity helper).
+        identity.store_workspace_dir(str(alcatraz_dir), name)
+        self.assertEqual((alcatraz_dir / "workspace-dir").read_text().strip(), name)
+
+        # 3. Write the exclude patterns (new Step 3f helper).
+        start.write_git_exclude(project_dir, name)
+        content = (project_dir / ".git" / "info" / "exclude").read_text()
+        self.assertIn(".alcatrazer/", content)
+        self.assertIn(f"{name}/", content)
 
 
 if __name__ == "__main__":
