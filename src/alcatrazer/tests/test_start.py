@@ -1158,5 +1158,66 @@ class SubsequentRunTests(unittest.TestCase):
         )
 
 
+class CmdStopTests(unittest.TestCase):
+    """Step 5: `alcatrazer stop` — idempotent container stop."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, prison=None):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_stop(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_error_when_no_alcatrazer_setup(self):
+        rc, _, err = self._run()
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer", err.lower())
+
+    def test_noop_when_container_not_running(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = False
+        rc, out, _ = self._run(prison=prison)
+        self.assertEqual(rc, 0)
+        prison.stop.assert_not_called()
+        self.assertIn("not running", out.lower())
+
+    def test_stops_running_container(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, out, _ = self._run(prison=prison)
+        self.assertEqual(rc, 0)
+        prison.stop.assert_called_once()
+        self.assertIn("stopped", out.lower())
+
+
+class CliStopTests(unittest.TestCase):
+    """Step 5: `alcatrazer stop` CLI wiring."""
+
+    def test_cli_stop_command_invokes_cmd_stop(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "stop"]),
+            patch.object(start, "cmd_stop", return_value=0) as mock_stop,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        mock_stop.assert_called_once()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_cli_stop_propagates_nonzero_exit(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "stop"]),
+            patch.object(start, "cmd_stop", return_value=1),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        self.assertEqual(cm.exception.code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
