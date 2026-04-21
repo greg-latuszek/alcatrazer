@@ -86,12 +86,13 @@ class CliVersionFlagTests(unittest.TestCase):
     def test_long_flag_prints_version(self):
         out, _, rc = self._run(["alcatrazer", "--version"])
         self.assertIn(__version__, out)
-        self.assertIsNone(rc)  # returns, does not sys.exit
+        # argparse's `action="version"` sys.exit(0)s after printing.
+        self.assertEqual(rc, 0)
 
     def test_short_flag_prints_version(self):
         out, _, rc = self._run(["alcatrazer", "-V"])
         self.assertIn(__version__, out)
-        self.assertIsNone(rc)
+        self.assertEqual(rc, 0)
 
     def test_version_output_is_just_name_and_version(self):
         """Single line, easy to parse: `alcatrazer <version>`."""
@@ -100,10 +101,12 @@ class CliVersionFlagTests(unittest.TestCase):
 
     def test_version_subcommand_no_longer_recognized(self):
         """`alcatrazer version` was a noun-as-verb wart — retired in favor
-        of the `--version` flag."""
-        out, err, rc = self._run(["alcatrazer", "version"])
-        self.assertIn("Unknown command", out + err)
-        self.assertEqual(rc, 1)
+        of the `--version` flag. argparse's "invalid choice" error handles
+        the rejection; exit code 2 is the Unix convention for usage errors."""
+        _, err, rc = self._run(["alcatrazer", "version"])
+        self.assertIn("invalid choice", err)
+        self.assertIn("version", err)
+        self.assertNotEqual(rc, 0)
 
 
 class CliIntegrationTests(unittest.TestCase):
