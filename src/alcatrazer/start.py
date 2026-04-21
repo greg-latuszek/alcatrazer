@@ -1,17 +1,20 @@
 """The `alcatrazer start` command — primary entry point for daily work.
 
-Steps 3a-3f so far: route on `.alcatrazer/` presence; in the first-time
+Steps 3a-3g so far: route on `.alcatrazer/` presence; in the first-time
 branch verify we are at a git repo root; helpers to read + prompt for the
 promotion identity; wizard that collects the coding-environment answers
 (languages, OS packages, startup commands); writers that persist the
 answers to coding-environment.toml, .alcatrazer/config.toml, and
 .env.example; writer that appends alcatrazer patterns to
-.git/info/exclude. Workspace name generation and its persistence to
-.alcatrazer/workspace-dir are covered by alcatrazer.identity. Steps 3g-3k
-fill in the remaining first-time work. Step 4 handles subsequent-run.
+.git/info/exclude; extractor that copies the installed alcatrazer package
+tree into .alcatrazer/src/alcatrazer/. Workspace name generation and its
+persistence to .alcatrazer/workspace-dir are covered by
+alcatrazer.identity. Steps 3h-3k fill in the remaining first-time work.
+Step 4 handles subsequent-run.
 """
 
 import secrets
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -273,6 +276,33 @@ def write_env_example(project_dir: Path) -> Path | None:
         "# .env should stay out of version control; .env.example is committed.\n"
     )
     return target
+
+
+_PACKAGE_IGNORE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
+
+
+def extract_package_source(
+    project_dir: Path,
+    source_dir: Path | None = None,
+) -> Path:
+    """Copy the alcatrazer package tree into .alcatrazer/src/alcatrazer/.
+
+    Gives the user readable source and bundled tests. Compiled artifacts
+    (__pycache__, .pyc, .pyo) are skipped. If the destination already
+    exists (e.g., on re-run or during `alcatrazer upgrade`), it is removed
+    first so stale files cannot linger from an older version.
+
+    `source_dir` defaults to the installed package directory (Step 6
+    upgrade passes a freshly-downloaded wheel's extracted tree instead).
+    """
+    if source_dir is None:
+        source_dir = Path(__file__).parent
+    dest = project_dir / ".alcatrazer" / "src" / "alcatrazer"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(*_PACKAGE_IGNORE_PATTERNS))
+    return dest
 
 
 _GIT_EXCLUDE_HEADER = "# alcatrazer patterns (written by alcatrazer start)"
