@@ -137,8 +137,8 @@ def create_initial_commit(workspace: str) -> None:
 def snapshot_workspace(outer_repo: str, workspace: str) -> None:
     """Full snapshot flow: validate repo, detect branch, extract, filter, commit.
 
-    Called by initialize_alcatraz.sh after git init of the workspace.
-    Expects the workspace to already have git init + identity configured.
+    Called by `alcatrazer.start.create_workspace` after `git init` + identity
+    are configured on the workspace.
     """
     require_git_repo(outer_repo)
     branch = detect_default_branch(outer_repo)

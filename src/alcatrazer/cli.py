@@ -6,8 +6,8 @@ Usage:
     alcatrazer test     — run bundled test suite to verify installation
     alcatrazer version  — show version
 
-Legacy (pre-config-split) placeholders that will be retired:
-    alcatrazer init, alcatrazer update
+Legacy placeholder (retires when Step 6 lands):
+    alcatrazer update
 """
 
 import sys
@@ -57,12 +57,6 @@ def main():
     elif command == "test":
         smoke = "--smoke" in sys.argv
         sys.exit(run_tests(smoke=smoke))
-    elif command == "init":
-        print(f"alcatrazer {__version__} — init")
-        print()
-        print("Interactive installer not yet implemented.")
-        print("This is a placeholder release to reserve the PyPI package name.")
-        sys.exit(1)
     elif command == "update":
         print(f"alcatrazer {__version__} — update")
         print()

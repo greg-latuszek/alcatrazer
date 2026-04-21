@@ -18,7 +18,7 @@ import sys
 if sys.version_info < (3, 11):
     print(
         f"ERROR: Python 3.11+ required, got {sys.version}\n"
-        "Run ./src/initialize_alcatraz.sh to set up the correct Python.",
+        "Run `alcatrazer start` to set up the correct Python.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -63,7 +63,7 @@ def check_workspace(alcatraz_dir: Path) -> None:
     if not workspace_git.is_dir():
         print(
             f"ERROR: No workspace found at {workspace_git}\n"
-            "Run ./src/initialize_alcatraz.sh first to create the workspace.",
+            "Run `alcatrazer start` first to create the workspace.",
             file=sys.stderr,
         )
         sys.exit(1)

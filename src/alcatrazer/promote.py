@@ -28,7 +28,7 @@ import sys
 if sys.version_info < (3, 11):
     print(
         f"ERROR: Python 3.11+ required, got {sys.version}\n"
-        "Run ./src/initialize_alcatraz.sh to set up the correct Python.",
+        "Run `alcatrazer start` to set up the correct Python.",
         file=sys.stderr,
     )
     sys.exit(1)
