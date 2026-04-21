@@ -24,9 +24,10 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from alcatrazer import cli, identity, languages, start
+from alcatrazer.alcatraz import Alcatraz
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
@@ -911,6 +912,91 @@ class WritePythonSymlinkTests(unittest.TestCase):
         stale.symlink_to("/nonexistent/old/python")
         path = start.write_python_symlink(self.project_dir)
         self.assertEqual(str(path.readlink()), sys.executable)
+
+
+class RunStartupCommandsTests(unittest.TestCase):
+    """Step 3k: orchestrate [startup] commands via prison.exec, fail-fast."""
+
+    def _run(self, prison, commands):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.run_startup_commands(prison, commands)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_empty_command_list_returns_zero_without_invoking_prison(self):
+        prison = Mock(spec=Alcatraz)
+        rc, _, _ = self._run(prison, [])
+        self.assertEqual(rc, 0)
+        prison.exec.assert_not_called()
+
+    def test_all_succeed_returns_zero(self):
+        prison = Mock(spec=Alcatraz)
+        prison.exec.return_value = 0
+        rc, _, _ = self._run(prison, ["uv sync", "npm install"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(prison.exec.call_count, 2)
+
+    def test_each_command_wrapped_as_bash_c(self):
+        prison = Mock(spec=Alcatraz)
+        prison.exec.return_value = 0
+        self._run(prison, ["uv sync"])
+        prison.exec.assert_called_once_with(["bash", "-c", "uv sync"])
+
+    def test_fail_fast_on_first_non_zero(self):
+        prison = Mock(spec=Alcatraz)
+        prison.exec.side_effect = [0, 7, 0]  # second fails
+        rc, _, _ = self._run(prison, ["a", "b", "c"])
+        self.assertEqual(rc, 7)
+        self.assertEqual(prison.exec.call_count, 2)  # third never runs
+
+    def test_error_output_identifies_command_index_and_text(self):
+        prison = Mock(spec=Alcatraz)
+        prison.exec.side_effect = [0, 1]
+        _, _, err = self._run(prison, ["uv sync", "npm install"])
+        self.assertIn("#2", err)
+        self.assertIn("npm install", err)
+
+
+class SaveCodingEnvironmentSnapshotTests(unittest.TestCase):
+    """Step 3k: copy current coding-environment file to
+    .alcatrazer/coding-environment.toml.last — the .last record Step 4
+    diffs against for change detection."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+
+    def _write_config(self, filename: str) -> None:
+        (self.alcatraz_dir / "config.toml").write_text(
+            f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
+        )
+
+    def test_copies_default_filename(self):
+        self._write_config("coding-environment.toml")
+        src = self.project_dir / "coding-environment.toml"
+        src.write_text("[os]\npackages = []\n")
+        target = start.save_coding_environment_snapshot(self.project_dir)
+        self.assertEqual(target, self.alcatraz_dir / "coding-environment.toml.last")
+        self.assertEqual(target.read_text(), src.read_text())
+
+    def test_copies_hex_suffixed_filename(self):
+        self._write_config("coding-environment-a3f7.toml")
+        src = self.project_dir / "coding-environment-a3f7.toml"
+        src.write_text("[os]\npackages = ['libpq-dev']\n")
+        target = start.save_coding_environment_snapshot(self.project_dir)
+        # Target name is always canonical, regardless of source filename.
+        self.assertEqual(target, self.alcatraz_dir / "coding-environment.toml.last")
+        self.assertEqual(target.read_text(), src.read_text())
+
+    def test_target_is_alcatrazer_coding_environment_toml_last(self):
+        self._write_config("coding-environment.toml")
+        (self.project_dir / "coding-environment.toml").write_text("x = 1\n")
+        target = start.save_coding_environment_snapshot(self.project_dir)
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.name, "coding-environment.toml.last")
 
 
 if __name__ == "__main__":
