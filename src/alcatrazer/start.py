@@ -73,18 +73,24 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
     "python": {
         "default_manager": "pip",
         "managers": ("pip", "uv", "poetry", "pipenv"),
+        "version_check": "python --version",
     },
     "node": {
         "default_manager": "npm",
         "managers": ("npm", "pnpm", "yarn"),
+        "version_check": "node --version",
     },
     "rust": {
         "default_manager": "cargo",
         "managers": ("cargo",),
+        # `rustc` is the compiler binary; `rust` is not a command.
+        "version_check": "rustc --version",
     },
     "go": {
         "default_manager": "go",
         "managers": ("go",),
+        # `go version` is a subcommand — go's CLI does not accept --version.
+        "version_check": "go version",
     },
 }
 
