@@ -999,5 +999,164 @@ class SaveCodingEnvironmentSnapshotTests(unittest.TestCase):
         self.assertEqual(target.name, "coding-environment.toml.last")
 
 
+class CodingEnvironmentChangedTests(unittest.TestCase):
+    """Step 4: compare current coding-environment.toml against the .last snapshot."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+
+    def _write_config(self, filename: str) -> None:
+        (self.alcatraz_dir / "config.toml").write_text(
+            f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
+        )
+
+    def test_true_when_last_snapshot_missing(self):
+        self._write_config("coding-environment.toml")
+        (self.project_dir / "coding-environment.toml").write_text("x = 1\n")
+        self.assertTrue(start.coding_environment_changed(self.project_dir))
+
+    def test_true_when_contents_differ(self):
+        self._write_config("coding-environment.toml")
+        current = self.project_dir / "coding-environment.toml"
+        current.write_text("x = 1\n")
+        (self.alcatraz_dir / "coding-environment.toml.last").write_text("x = 2\n")
+        self.assertTrue(start.coding_environment_changed(self.project_dir))
+
+    def test_false_when_contents_identical(self):
+        self._write_config("coding-environment.toml")
+        current = self.project_dir / "coding-environment.toml"
+        current.write_text("x = 1\n")
+        (self.alcatraz_dir / "coding-environment.toml.last").write_text("x = 1\n")
+        self.assertFalse(start.coding_environment_changed(self.project_dir))
+
+    def test_uses_hex_suffixed_filename_from_config(self):
+        self._write_config("coding-environment-a3f7.toml")
+        (self.project_dir / "coding-environment-a3f7.toml").write_text("x = 1\n")
+        (self.alcatraz_dir / "coding-environment.toml.last").write_text("x = 1\n")
+        self.assertFalse(start.coding_environment_changed(self.project_dir))
+
+
+class SubsequentRunTests(unittest.TestCase):
+    """Step 4: _subsequent_run detection logic — branches on needs_rebuild,
+    is_running, and coding_environment_changed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+            '[promotion]\nname = "x"\nemail = "y"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\n[startup]\ncommands = ["uv sync"]\n'
+        )
+
+    def _prison(self, running=False, rebuild=False, exec_rc=0):
+        p = Mock(spec=Alcatraz)
+        p.is_running.return_value = running
+        p.needs_rebuild.return_value = rebuild
+        p.exec.return_value = exec_rc
+        return p
+
+    def _seed_last(self, match: bool) -> None:
+        """Write coding-environment.toml.last matching (or drifting from) current."""
+        content = (self.project_dir / "coding-environment.toml").read_text()
+        if not match:
+            content += "\n# drift\n"
+        (self.alcatraz_dir / "coding-environment.toml.last").write_text(content)
+
+    def _run(self, prison) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start._subsequent_run(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_fast_path_when_running_and_nothing_changed(self):
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=False)
+        rc, out, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+        prison.start.assert_not_called()
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        prison.exec.assert_not_called()
+        self.assertIn("up to date", out.lower())
+
+    def test_full_rebuild_when_dockerfile_would_differ_and_running(self):
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=True)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.generate_prison.assert_called_once()
+        prison.stop.assert_called_once()
+        prison.remove.assert_called_once()
+        prison.build.assert_called_once()
+        prison.start.assert_called_once()
+        prison.exec.assert_called()
+
+    def test_rebuild_when_stopped_skips_stop(self):
+        self._seed_last(match=True)
+        prison = self._prison(running=False, rebuild=True)
+        self._run(prison)
+        prison.stop.assert_not_called()
+        prison.remove.assert_called_once()
+        prison.build.assert_called_once()
+        prison.start.assert_called_once()
+
+    def test_restart_when_only_toml_changed(self):
+        self._seed_last(match=False)
+        prison = self._prison(running=True, rebuild=False)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        # Not a rebuild: no generate_prison, no build
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+        # But must cycle the container to re-run startup
+        prison.stop.assert_called_once()
+        prison.remove.assert_called_once()
+        prison.start.assert_called_once()
+        prison.exec.assert_called()
+
+    def test_start_when_stopped_and_unchanged(self):
+        self._seed_last(match=True)
+        prison = self._prison(running=False, rebuild=False)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+        prison.stop.assert_not_called()
+        prison.start.assert_called_once()
+
+    def test_snapshot_updated_on_success(self):
+        self._seed_last(match=False)  # initially drifted
+        prison = self._prison(running=True, rebuild=False)
+        self._run(prison)
+        self.assertEqual(
+            (self.alcatraz_dir / "coding-environment.toml.last").read_text(),
+            (self.project_dir / "coding-environment.toml").read_text(),
+        )
+
+    def test_startup_failure_returns_nonzero_and_skips_snapshot_save(self):
+        self._seed_last(match=False)
+        original_last = (self.alcatraz_dir / "coding-environment.toml.last").read_text()
+        prison = self._prison(running=True, rebuild=False, exec_rc=7)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 7)
+        # .last must not be refreshed when startup failed
+        self.assertEqual(
+            (self.alcatraz_dir / "coding-environment.toml.last").read_text(),
+            original_last,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
