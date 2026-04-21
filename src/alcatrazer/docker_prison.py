@@ -188,7 +188,12 @@ class DockerPrison(Alcatraz):
         shutil.copy(source, alcatrazer_dir / "entrypoint.sh")
 
     def needs_rebuild(self, coding_environment: dict) -> bool:
-        raise NotImplementedError("DockerPrison.needs_rebuild lands in Step 4")
+        """True when the on-disk Dockerfile differs from what the current
+        `coding_environment` would produce (or no Dockerfile exists yet)."""
+        dockerfile = self.project_dir / ".alcatrazer" / "Dockerfile"
+        if not dockerfile.exists():
+            return True
+        return _render_dockerfile(coding_environment) != dockerfile.read_text()
 
     def build(self) -> None:
         """Run `docker build` with the generated Dockerfile.
@@ -219,7 +224,12 @@ class DockerPrison(Alcatraz):
             )
 
     def image_exists(self) -> bool:
-        raise NotImplementedError("DockerPrison.image_exists lands in Step 4")
+        """True when `docker image inspect <tag>` succeeds."""
+        result = subprocess.run(
+            ["docker", "image", "inspect", self.image_tag],
+            capture_output=True,
+        )
+        return result.returncode == 0
 
     def start(self) -> None:
         """Run the workspace container in detached mode.
@@ -275,10 +285,53 @@ class DockerPrison(Alcatraz):
             )
 
     def stop(self) -> None:
-        raise NotImplementedError("DockerPrison.stop lands in Step 5")
+        """Stop the container if running; no-op otherwise."""
+        if not self.is_running():
+            return
+        subprocess.run(
+            ["docker", "stop", self.container_name],
+            capture_output=True,
+            check=True,
+        )
 
     def is_running(self) -> bool:
-        raise NotImplementedError("DockerPrison.is_running lands in Step 4")
+        """True when a container matching `container_name` is in state=running.
+
+        Uses anchored regex (`name=^workspace$`) so it doesn't match
+        containers whose names contain "workspace" as a substring.
+        """
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"name=^{self.container_name}$",
+                "--filter",
+                "status=running",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() == self.container_name
+
+    def _container_exists(self) -> bool:
+        """True when a container matching `container_name` exists (any state)."""
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"name=^{self.container_name}$",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip() == self.container_name
 
     def exec(self, command: list[str]) -> int:
         """Run `command` inside the running workspace container as the `agent` user.
@@ -291,4 +344,11 @@ class DockerPrison(Alcatraz):
         return subprocess.run(full).returncode
 
     def remove(self) -> None:
-        raise NotImplementedError("DockerPrison.remove lands in Step 4")
+        """Remove the container (force, so running containers go too). No-op if absent."""
+        if not self._container_exists():
+            return
+        subprocess.run(
+            ["docker", "rm", "-f", self.container_name],
+            capture_output=True,
+            check=True,
+        )

@@ -55,22 +55,6 @@ class DockerPrisonSkeletonTests(unittest.TestCase):
     def test_stores_project_dir(self):
         self.assertEqual(self.prison.project_dir, Path("/tmp"))
 
-    def test_image_exists_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.image_exists()
-
-    def test_stop_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.stop()
-
-    def test_is_running_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.is_running()
-
-    def test_remove_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.remove()
-
 
 if __name__ == "__main__":
     unittest.main()
