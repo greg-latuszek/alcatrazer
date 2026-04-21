@@ -15,6 +15,7 @@ from alcatrazer.docker_prison import DockerPrison
 
 ALCATRAZ_OPERATIONS = frozenset(
     {
+        "generate_prison",
         "build",
         "image_exists",
         "start",

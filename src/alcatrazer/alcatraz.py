@@ -28,6 +28,16 @@ class Alcatraz(ABC):
         self.project_dir = project_dir
 
     @abstractmethod
+    def generate_prison(self, coding_environment: dict) -> None:
+        """Emit backend-specific artifacts (recipes, scripts, …) required by `build()`.
+
+        The caller hands over the parsed coding-environment data; the adapter
+        decides what to write. For DockerPrison that is `.alcatrazer/Dockerfile`
+        and `.alcatrazer/entrypoint.sh`; another backend might emit a
+        Containerfile, a podman-quadlet unit, a sysbox profile, etc.
+        """
+
+    @abstractmethod
     def build(self) -> None:
         """Build the workspace image from `.alcatrazer/Dockerfile`."""
 
