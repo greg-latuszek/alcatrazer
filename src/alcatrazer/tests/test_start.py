@@ -4,6 +4,8 @@ Step 3a — routing: `.alcatrazer/` presence decides first-time vs subsequent.
 Step 3b — first-time flow aborts unless run at a git repo root.
 Step 3c — promotion-identity read + interactive prompt helpers.
 Step 3d — coding-environment wizard (languages, OS packages, startup).
+Step 3e — config-file writers (coding-environment.toml, .alcatrazer/config.toml,
+          .env.example).
 """
 
 import contextlib
@@ -12,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -394,6 +397,146 @@ class AskCodingEnvironmentTests(unittest.TestCase):
         ]
         result = _run_wizard(start.ask_coding_environment, inputs)
         self.assertEqual(list(result), ["os", "languages", "startup"])
+
+
+class WriteCodingEnvironmentTomlTests(unittest.TestCase):
+    """Step 3e: coding-environment.toml writer — agent-visible, zero branding."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_writes_default_filename_when_no_collision(self):
+        data = {"languages": {"python": {"version": "3.12"}}}
+        path = start.write_coding_environment_toml(self.project_dir, data)
+        self.assertEqual(path, self.project_dir / "coding-environment.toml")
+        self.assertTrue(path.is_file())
+
+    def test_generated_file_is_valid_toml_and_round_trips(self):
+        data = {
+            "os": {"packages": ["build-essential", "libpq-dev"]},
+            "languages": {
+                "python": {"version": "3.12", "manager": "uv"},
+                "node": {"version": "22"},
+            },
+            "startup": {"commands": ["uv sync", "npm install"]},
+        }
+        path = start.write_coding_environment_toml(self.project_dir, data)
+        with open(path, "rb") as f:
+            parsed = tomllib.load(f)
+        self.assertEqual(parsed["os"]["packages"], ["build-essential", "libpq-dev"])
+        self.assertEqual(parsed["languages"]["python"]["version"], "3.12")
+        self.assertEqual(parsed["languages"]["python"]["manager"], "uv")
+        self.assertEqual(parsed["languages"]["node"]["version"], "22")
+        self.assertNotIn("manager", parsed["languages"]["node"])
+        self.assertEqual(parsed["startup"]["commands"], ["uv sync", "npm install"])
+
+    def test_zero_alcatrazer_branding_in_output(self):
+        data = {"languages": {"python": {"version": "3.12"}}}
+        path = start.write_coding_environment_toml(self.project_dir, data)
+        self.assertNotIn("alcatraz", path.read_text().lower())
+
+    def test_omits_absent_sections(self):
+        data = {"languages": {"python": {"version": "3.12"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        self.assertNotIn("[os]", content)
+        self.assertNotIn("[startup]", content)
+
+    def test_collision_uses_hex_suffix(self):
+        existing = self.project_dir / "coding-environment.toml"
+        existing.write_text("# user's existing file — do not clobber\n")
+        data = {"languages": {"python": {"version": "3.12"}}}
+        with patch.object(start.secrets, "token_hex", return_value="a3f7"):
+            path = start.write_coding_environment_toml(self.project_dir, data)
+        self.assertEqual(path, self.project_dir / "coding-environment-a3f7.toml")
+        self.assertEqual(existing.read_text(), "# user's existing file — do not clobber\n")
+
+
+class WriteAlcatrazerConfigTests(unittest.TestCase):
+    """Step 3e: .alcatrazer/config.toml writer — daemon defaults stay in template."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _parse(self, path: Path) -> dict:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+
+    def test_writes_to_alcatrazer_slash_config_toml(self):
+        path = start.write_alcatrazer_config(self.project_dir, "Alice", "alice@example.com")
+        self.assertEqual(path, self.project_dir / ".alcatrazer" / "config.toml")
+        self.assertTrue(path.is_file())
+
+    def test_creates_alcatrazer_dir_if_missing(self):
+        alcatrazer_dir = self.project_dir / ".alcatrazer"
+        self.assertFalse(alcatrazer_dir.exists())
+        start.write_alcatrazer_config(self.project_dir, "A", "a@e")
+        self.assertTrue(alcatrazer_dir.is_dir())
+
+    def test_promotion_identity_is_written(self):
+        path = start.write_alcatrazer_config(
+            self.project_dir, "Alice Smith", "alice.smith@example.com"
+        )
+        data = self._parse(path)
+        self.assertEqual(data["promotion"]["name"], "Alice Smith")
+        self.assertEqual(data["promotion"]["email"], "alice.smith@example.com")
+
+    def test_daemon_defaults_preserved_from_template(self):
+        path = start.write_alcatrazer_config(self.project_dir, "A", "a@e")
+        daemon = self._parse(path)["promotion-daemon"]
+        self.assertEqual(daemon["interval"], 5)
+        self.assertEqual(daemon["branches"], "all")
+        self.assertEqual(daemon["mode"], "mirror")
+        self.assertEqual(daemon["verbosity"], "normal")
+        self.assertEqual(daemon["max_log_size"], 512)
+
+    def test_coding_environment_file_defaults_to_standard_name(self):
+        path = start.write_alcatrazer_config(self.project_dir, "A", "a@e")
+        self.assertEqual(self._parse(path)["coding_environment_file"], "coding-environment.toml")
+
+    def test_coding_environment_file_custom_name_written(self):
+        path = start.write_alcatrazer_config(
+            self.project_dir,
+            "A",
+            "a@e",
+            coding_env_file="coding-environment-a3f7.toml",
+        )
+        self.assertEqual(
+            self._parse(path)["coding_environment_file"],
+            "coding-environment-a3f7.toml",
+        )
+
+    def test_name_with_quotes_is_escaped(self):
+        path = start.write_alcatrazer_config(self.project_dir, 'A "Quoted" Person', "a@e")
+        self.assertEqual(self._parse(path)["promotion"]["name"], 'A "Quoted" Person')
+
+
+class WriteEnvExampleTests(unittest.TestCase):
+    """Step 3e: .env.example writer — agent-visible, zero branding, skip if present."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_writes_env_example_at_repo_root(self):
+        path = start.write_env_example(self.project_dir)
+        self.assertEqual(path, self.project_dir / ".env.example")
+        self.assertTrue(path.is_file())
+
+    def test_zero_alcatrazer_branding(self):
+        path = start.write_env_example(self.project_dir)
+        self.assertNotIn("alcatraz", path.read_text().lower())
+
+    def test_skips_and_returns_none_when_file_exists(self):
+        existing = self.project_dir / ".env.example"
+        existing.write_text("USER_VAR=1\n")
+        result = start.write_env_example(self.project_dir)
+        self.assertIsNone(result)
+        self.assertEqual(existing.read_text(), "USER_VAR=1\n")
 
 
 if __name__ == "__main__":
