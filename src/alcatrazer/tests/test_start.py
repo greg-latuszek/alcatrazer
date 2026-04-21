@@ -253,6 +253,46 @@ class SupportedLanguagesTests(unittest.TestCase):
         self.assertIn("uv", py["managers"])
         self.assertIn("poetry", py["managers"])
 
+    def test_every_language_has_a_version_check_command(self):
+        # Step 3h prep: the Dockerfile's verify block needs a per-language
+        # command since not every tool accepts --version.
+        for name, cfg in start.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "version_check",
+                cfg,
+                f"{name!r} must declare a version_check command",
+            )
+            self.assertTrue(
+                cfg["version_check"].strip(),
+                f"{name!r} version_check must be non-empty",
+            )
+
+    def test_python_version_check(self):
+        self.assertEqual(
+            start.SUPPORTED_LANGUAGES["python"]["version_check"],
+            "python --version",
+        )
+
+    def test_node_version_check(self):
+        self.assertEqual(
+            start.SUPPORTED_LANGUAGES["node"]["version_check"],
+            "node --version",
+        )
+
+    def test_rust_version_check_uses_rustc(self):
+        # rust is the language; `rustc` is the compiler binary.
+        self.assertEqual(
+            start.SUPPORTED_LANGUAGES["rust"]["version_check"],
+            "rustc --version",
+        )
+
+    def test_go_version_check_has_no_dashes(self):
+        # `go version` (subcommand), not `go --version`.
+        self.assertEqual(
+            start.SUPPORTED_LANGUAGES["go"]["version_check"],
+            "go version",
+        )
+
     def test_node_default_manager_is_npm_with_alternatives(self):
         node = start.SUPPORTED_LANGUAGES["node"]
         self.assertEqual(node["default_manager"], "npm")
