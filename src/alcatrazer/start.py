@@ -1,13 +1,15 @@
 """The `alcatrazer start` command — primary entry point for daily work.
 
-Steps 3a-3d so far: route on `.alcatrazer/` presence; in the first-time
+Steps 3a-3e so far: route on `.alcatrazer/` presence; in the first-time
 branch verify we are at a git repo root; helpers to read + prompt for the
 promotion identity; wizard that collects the coding-environment answers
-(languages, OS packages, startup commands). Step 3e will orchestrate all
-these helpers into the first-time flow. Steps 3f-3k fill in the rest.
-Step 4 handles subsequent-run.
+(languages, OS packages, startup commands); writers that persist the
+answers to coding-environment.toml, .alcatrazer/config.toml, and
+.env.example. Steps 3f-3k fill in the remaining first-time work. Step 4
+handles subsequent-run.
 """
 
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -176,6 +178,99 @@ def ask_coding_environment() -> dict:
     if startup:
         result["startup"] = {"commands": startup}
     return result
+
+
+def _format_toml_string(value: str) -> str:
+    """Render a Python str as a TOML basic string (double-quoted, escaped)."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _format_toml_list(values: list[str]) -> str:
+    """Render a list of strings as an inline or multi-line TOML array."""
+    if not values:
+        return "[]"
+    items = [_format_toml_string(v) for v in values]
+    inline = "[" + ", ".join(items) + "]"
+    if len(inline) <= 72:
+        return inline
+    return "[\n    " + ",\n    ".join(items) + ",\n]"
+
+
+def _render_coding_environment(data: dict) -> str:
+    """Serialize a coding-environment dict to TOML text. Zero alcatrazer branding."""
+    lines = [
+        "# Coding environment for this repository.",
+        "# Sections run in dependency order: OS packages are installed first,",
+        "# then language runtimes and managers, then post-start commands.",
+        "",
+    ]
+    if "os" in data:
+        lines.append("[os]")
+        lines.append(f"packages = {_format_toml_list(data['os'].get('packages', []))}")
+        lines.append("")
+    if "languages" in data:
+        for lang, cfg in data["languages"].items():
+            lines.append(f"[languages.{lang}]")
+            lines.append(f"version = {_format_toml_string(cfg['version'])}")
+            if "manager" in cfg:
+                lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
+            lines.append("")
+    if "startup" in data:
+        lines.append("[startup]")
+        lines.append(f"commands = {_format_toml_list(data['startup'].get('commands', []))}")
+        lines.append("")
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def write_coding_environment_toml(project_dir: Path, data: dict) -> Path:
+    """Write coding-environment.toml at repo root; append hex suffix on collision."""
+    target = project_dir / "coding-environment.toml"
+    if target.exists():
+        suffix = secrets.token_hex(2)
+        target = project_dir / f"coding-environment-{suffix}.toml"
+    target.write_text(_render_coding_environment(data))
+    return target
+
+
+def write_alcatrazer_config(
+    project_dir: Path,
+    name: str,
+    email: str,
+    coding_env_file: str = "coding-environment.toml",
+) -> Path:
+    """Write .alcatrazer/config.toml by line-rewriting the packaged template."""
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    alcatrazer_dir.mkdir(parents=True, exist_ok=True)
+    template_path = Path(__file__).parent / "templates" / "alcatrazer-config.toml"
+    out_lines: list[str] = []
+    for line in template_path.read_text().splitlines():
+        if line.startswith("coding_environment_file = "):
+            out_lines.append(f"coding_environment_file = {_format_toml_string(coding_env_file)}")
+        elif line.startswith("name = "):
+            out_lines.append(f"name = {_format_toml_string(name)}")
+        elif line.startswith("email = "):
+            out_lines.append(f"email = {_format_toml_string(email)}")
+        else:
+            out_lines.append(line)
+    target = alcatrazer_dir / "config.toml"
+    target.write_text("\n".join(out_lines) + "\n")
+    return target
+
+
+def write_env_example(project_dir: Path) -> Path | None:
+    """Write a generic .env.example at repo root; skip and return None if it exists."""
+    target = project_dir / ".env.example"
+    if target.exists():
+        return None
+    target.write_text(
+        "# Example environment variables for this project.\n"
+        "# Copy to .env and fill in your values.\n"
+        "# .env should stay out of version control; .env.example is committed.\n"
+    )
+    return target
 
 
 def _subsequent_run(project_dir: Path) -> int:
