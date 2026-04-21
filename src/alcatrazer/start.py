@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 
 from alcatrazer import identity, snapshot
-from alcatrazer.alcatraz import Alcatraz
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 
@@ -35,12 +35,112 @@ def cmd_start(project_dir: Path) -> int:
 
 
 def _first_time_setup(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """Orchestrate the full first-time setup pipeline (Step 3).
+
+    Wires together the Step 3 substep helpers in the order mandated by the
+    install plan:
+
+      3b — git repo guard
+      3c — promotion identity prompt
+      3d — coding-environment wizard
+      3e — config-file writers (coding-environment.toml, .alcatrazer/config.toml,
+           .env.example)
+      3f — workspace name + .git/info/exclude patterns
+      3g — package source extraction into .alcatrazer/src/alcatrazer/
+      3i (symlink) — .alcatrazer/python -> sys.executable
+      3h — prison recipe (Dockerfile + entrypoint.sh)
+      3i (build) — docker build (phantom UID detected inside)
+      3j — workspace dir + git init + agent identity + flat snapshot
+      3k — start container + run startup commands + save .last snapshot
+
+    PrisonBuildError / PrisonStartError are caught, formatted per the
+    "Build & Startup Error Handling" contract, and returned as non-zero.
+    """
+    # 3b — git root guard.
     if not (project_dir / ".git").exists():
         print("alcatrazer must be run from a git repository root.", file=sys.stderr)
         return 1
-    print("No alcatrazer setup found in this repository.")
-    print("First-time setup flow is not yet implemented.")
-    return 0
+
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+
+    print("No alcatrazer setup found. Starting interactive setup...")
+    print()
+
+    # 3c — promotion identity.
+    name, email = ask_promotion_identity(project_dir)
+
+    # 3d — coding environment (languages, OS packages, startup commands).
+    coding_env = ask_coding_environment()
+
+    # 3e — config files.
+    print()
+    print("Writing configuration...")
+    coding_env_path = write_coding_environment_toml(project_dir, coding_env)
+    write_alcatrazer_config(project_dir, name, email, coding_env_file=coding_env_path.name)
+    write_env_example(project_dir)
+
+    # 3f — workspace dir name + .git/info/exclude patterns.
+    workspace_name = identity.generate_workspace_dir_name()
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    identity.store_workspace_dir(str(alcatrazer_dir), workspace_name)
+    write_git_exclude(project_dir, workspace_name)
+
+    # 3g — extract package source for trust (readable install + bundled tests).
+    extract_package_source(project_dir)
+
+    # 3i (symlink part) — stable python path for the daemon.
+    write_python_symlink(project_dir)
+
+    # 3h — generate prison recipe (backend-specific: Dockerfile + entrypoint.sh
+    # for DockerPrison).
+    print()
+    print("Generating container recipe...")
+    prison.generate_prison(coding_env)
+
+    # 3i (build part) — build the image. Phantom UID detection happens inside.
+    print("Building container image...")
+    try:
+        prison.build()
+    except PrisonBuildError as e:
+        print("ERROR: container image build failed.", file=sys.stderr)
+        if e.stdout:
+            print(e.stdout, file=sys.stderr)
+        if e.stderr:
+            print(e.stderr, file=sys.stderr)
+        print(
+            "→ Check [os] packages and [languages.*] in coding-environment.toml.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 3j — create workspace dir + git init + random agent identity + flat snapshot.
+    print("Creating workspace snapshot...")
+    create_workspace(project_dir, workspace_name)
+
+    # 3k — start container + run [startup] commands + save .last.
+    print("Starting container...")
+    try:
+        prison.start()
+    except PrisonStartError as e:
+        print("ERROR: container start failed.", file=sys.stderr)
+        if e.stdout:
+            print(e.stdout, file=sys.stderr)
+        if e.stderr:
+            print(e.stderr, file=sys.stderr)
+        return 1
+
+    startup_commands = coding_env.get("startup", {}).get("commands", [])
+    if startup_commands:
+        print("Running startup commands...")
+    rc = run_startup_commands(prison, startup_commands)
+    if rc == 0:
+        save_coding_environment_snapshot(project_dir)
+        print()
+        print("Ready.")
+    return rc
 
 
 def read_git_identity(project_dir: Path) -> tuple[str | None, str | None]:
