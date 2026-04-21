@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from alcatrazer import cli, identity, languages, start
+from alcatrazer import __version__, cli, identity, languages, start
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
@@ -63,6 +63,47 @@ class StartRoutingTests(unittest.TestCase):
         with patch.object(start, "_first_time_setup", return_value=7):
             rc = start.cmd_start(self.project_dir)
         self.assertEqual(rc, 7)
+
+
+class CliVersionFlagTests(unittest.TestCase):
+    """Standard `--version` / `-V` flag — the `alcatrazer version` subcommand
+    (noun-as-verb wart) is replaced by the flag form."""
+
+    def _run(self, argv: list[str]) -> tuple[str, str, int | None]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        exit_code = None
+        try:
+            with (
+                patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                cli.main()
+        except SystemExit as e:
+            exit_code = e.code
+        return stdout.getvalue(), stderr.getvalue(), exit_code
+
+    def test_long_flag_prints_version(self):
+        out, _, rc = self._run(["alcatrazer", "--version"])
+        self.assertIn(__version__, out)
+        self.assertIsNone(rc)  # returns, does not sys.exit
+
+    def test_short_flag_prints_version(self):
+        out, _, rc = self._run(["alcatrazer", "-V"])
+        self.assertIn(__version__, out)
+        self.assertIsNone(rc)
+
+    def test_version_output_is_just_name_and_version(self):
+        """Single line, easy to parse: `alcatrazer <version>`."""
+        out, _, _ = self._run(["alcatrazer", "--version"])
+        self.assertEqual(out.strip(), f"alcatrazer {__version__}")
+
+    def test_version_subcommand_no_longer_recognized(self):
+        """`alcatrazer version` was a noun-as-verb wart — retired in favor
+        of the `--version` flag."""
+        out, err, rc = self._run(["alcatrazer", "version"])
+        self.assertIn("Unknown command", out + err)
+        self.assertEqual(rc, 1)
 
 
 class CliIntegrationTests(unittest.TestCase):
