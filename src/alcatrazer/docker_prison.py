@@ -187,6 +187,9 @@ class DockerPrison(Alcatraz):
         source = Path(__file__).parent / "container" / "entrypoint.sh"
         shutil.copy(source, alcatrazer_dir / "entrypoint.sh")
 
+    def needs_rebuild(self, coding_environment: dict) -> bool:
+        raise NotImplementedError("DockerPrison.needs_rebuild lands in Step 4")
+
     def build(self) -> None:
         """Run `docker build` with the generated Dockerfile.
 

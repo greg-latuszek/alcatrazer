@@ -60,6 +60,16 @@ class Alcatraz(ABC):
         """
 
     @abstractmethod
+    def needs_rebuild(self, coding_environment: dict) -> bool:
+        """True when the on-disk recipe differs from what `coding_environment`
+        would produce — i.e., the image must be rebuilt.
+
+        The adapter owns the comparison (DockerPrison diffs the would-be
+        Dockerfile against `.alcatrazer/Dockerfile`); the orchestrator just
+        asks the boolean.
+        """
+
+    @abstractmethod
     def build(self) -> None:
         """Build the workspace image from `.alcatrazer/Dockerfile`."""
 

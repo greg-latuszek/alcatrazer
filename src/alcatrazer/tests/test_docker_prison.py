@@ -8,9 +8,9 @@
   + `sleep infinity`; raises PrisonStartError on failure (Step 3k).
 - exec(command) — runs `docker exec -u agent`, streams output, returns
   exit code (Step 3k).
-
-Remaining operational methods (stop, is_running, image_exists, remove)
-are still skeletons asserted in test_alcatraz.py until their steps land.
+- image_exists(), is_running(), stop(), remove(), needs_rebuild() — the
+  state-query and lifecycle methods the subsequent-run detection logic
+  (Step 4) needs.
 """
 
 import hashlib
@@ -435,6 +435,166 @@ class DockerPrisonExecTests(unittest.TestCase):
             DockerPrison(self.project_dir).exec(["true"])
         kwargs = mock_run.call_args.kwargs
         self.assertNotIn("capture_output", kwargs)
+
+
+class DockerPrisonImageExistsTests(unittest.TestCase):
+    """image_exists() → `docker image inspect <tag>` returncode == 0."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_true_when_docker_image_inspect_succeeds(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0),
+        ):
+            self.assertTrue(DockerPrison(self.project_dir).image_exists())
+
+    def test_false_when_docker_image_inspect_fails(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=1),
+        ):
+            self.assertFalse(DockerPrison(self.project_dir).image_exists())
+
+    def test_invokes_docker_image_inspect_with_image_tag(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0),
+        ) as mock_run:
+            DockerPrison(self.project_dir).image_exists()
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd, ["docker", "image", "inspect", "alcatraz-workspace:local"])
+
+
+class DockerPrisonIsRunningTests(unittest.TestCase):
+    """is_running() uses `docker ps --filter name=^workspace$ --filter status=running`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_true_when_container_name_returned(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="workspace\n", stderr=""
+            ),
+        ):
+            self.assertTrue(DockerPrison(self.project_dir).is_running())
+
+    def test_false_when_output_empty(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ):
+            self.assertFalse(DockerPrison(self.project_dir).is_running())
+
+    def test_filters_by_exact_name_and_status(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).is_running()
+        cmd_str = " ".join(mock_run.call_args.args[0])
+        # Anchored name filter so "workspace" doesn't match "my-workspace-2".
+        self.assertIn("name=^workspace$", cmd_str)
+        self.assertIn("status=running", cmd_str)
+
+
+class DockerPrisonStopTests(unittest.TestCase):
+    """stop() is idempotent: no-op if not running, else `docker stop <name>`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_noop_when_container_not_running(self):
+        with (
+            patch.object(DockerPrison, "is_running", return_value=False),
+            patch.object(docker_prison.subprocess, "run") as mock_run,
+        ):
+            DockerPrison(self.project_dir).stop()
+        mock_run.assert_not_called()
+
+    def test_runs_docker_stop_when_container_running(self):
+        with (
+            patch.object(DockerPrison, "is_running", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0),
+            ) as mock_run,
+        ):
+            DockerPrison(self.project_dir).stop()
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", "workspace"])
+
+
+class DockerPrisonRemoveTests(unittest.TestCase):
+    """remove() is idempotent: no-op if container absent, else `docker rm -f`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_noop_when_container_does_not_exist(self):
+        with (
+            patch.object(DockerPrison, "_container_exists", return_value=False),
+            patch.object(docker_prison.subprocess, "run") as mock_run,
+        ):
+            DockerPrison(self.project_dir).remove()
+        mock_run.assert_not_called()
+
+    def test_runs_docker_rm_force_when_container_exists(self):
+        with (
+            patch.object(DockerPrison, "_container_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0),
+            ) as mock_run,
+        ):
+            DockerPrison(self.project_dir).remove()
+        # -f so running containers are also removed (belt + suspenders).
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "rm", "-f", "workspace"])
+
+
+class DockerPrisonNeedsRebuildTests(unittest.TestCase):
+    """needs_rebuild compares the would-be Dockerfile against the on-disk one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        (self.project_dir / ".alcatrazer").mkdir()
+
+    def test_true_when_no_dockerfile_on_disk(self):
+        data = {"languages": {"python": {"version": "3.12"}}}
+        self.assertTrue(DockerPrison(self.project_dir).needs_rebuild(data))
+
+    def test_false_when_dockerfile_matches_would_be(self):
+        data = {"languages": {"python": {"version": "3.12"}}}
+        DockerPrison(self.project_dir).generate_prison(data)
+        self.assertFalse(DockerPrison(self.project_dir).needs_rebuild(data))
+
+    def test_true_when_dockerfile_differs(self):
+        DockerPrison(self.project_dir).generate_prison(
+            {"languages": {"python": {"version": "3.12"}}}
+        )
+        changed = {"languages": {"python": {"version": "3.13"}}}
+        self.assertTrue(DockerPrison(self.project_dir).needs_rebuild(changed))
 
 
 if __name__ == "__main__":
