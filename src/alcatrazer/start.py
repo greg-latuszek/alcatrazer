@@ -262,6 +262,22 @@ def write_env_example(project_dir: Path) -> Path | None:
     return target
 
 
+def write_python_symlink(project_dir: Path) -> Path:
+    """Symlink `.alcatrazer/python` → `sys.executable`.
+
+    Gives the post-install daemon (and any other tooling that needs to call
+    back into a host Python) a stable path to the resolved interpreter,
+    independent of the user's shell at run time.
+    """
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    alcatrazer_dir.mkdir(parents=True, exist_ok=True)
+    target = alcatrazer_dir / "python"
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    target.symlink_to(sys.executable)
+    return target
+
+
 _PACKAGE_IGNORE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
 
 
