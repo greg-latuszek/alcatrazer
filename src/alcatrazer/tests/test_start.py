@@ -780,6 +780,107 @@ class ExtractPackageSourceTests(unittest.TestCase):
         self.assertEqual(self._tree_signature(self.dest), expected)
 
 
+class CreateWorkspaceTests(unittest.TestCase):
+    """Step 3j: create the inner workspace — dir, git repo, agent identity,
+    flat snapshot, local git config."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+        # Isolate git config so the host user's global config doesn't leak in.
+        self.fake_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.fake_home.cleanup)
+        env_patch = patch.dict(
+            os.environ,
+            {
+                "HOME": self.fake_home.name,
+                "XDG_CONFIG_HOME": self.fake_home.name,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+        # Build a minimal outer git repo with two files on `main`.
+        self._outer_git("init", "-b", "main")
+        self._outer_git("config", "user.name", "Outer Dev")
+        self._outer_git("config", "user.email", "outer@example.com")
+        (self.project_dir / "README.md").write_text("# Outer repo\n")
+        (self.project_dir / "main.py").write_text("print('hi')\n")
+        self._outer_git("add", "-A")
+        self._outer_git("commit", "-m", "first")
+
+    def _outer_git(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(self.project_dir), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def _inner_git(self, workspace_dir: Path, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(workspace_dir), *args],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_creates_workspace_dir_at_project_root(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        self.assertEqual(ws, self.project_dir / ".devspace-abcd")
+        self.assertTrue(ws.is_dir())
+
+    def test_initializes_inner_git_repo(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        self.assertTrue((ws / ".git").is_dir())
+
+    def test_snapshot_contains_outer_tracked_files(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        self.assertEqual((ws / "README.md").read_text(), "# Outer repo\n")
+        self.assertEqual((ws / "main.py").read_text(), "print('hi')\n")
+
+    def test_snapshot_is_a_single_commit(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        count = self._inner_git(ws, "rev-list", "--count", "HEAD").stdout.strip()
+        self.assertEqual(count, "1")
+
+    def test_snapshot_history_diverges_from_outer(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        outer_sha = self._outer_git("rev-parse", "HEAD").stdout.strip()
+        inner_sha = self._inner_git(ws, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(outer_sha, inner_sha)
+
+    def test_agent_identity_persisted_to_alcatrazer_dir(self):
+        start.create_workspace(self.project_dir, ".devspace-abcd")
+        identity_file = self.project_dir / ".alcatrazer" / "agent-identity"
+        self.assertTrue(identity_file.is_file())
+        lines = identity_file.read_text().strip().split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(lines[0].split()), 2)  # "First Last"
+        self.assertIn("@", lines[1])
+
+    def test_inner_git_uses_agent_identity(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        identity_file = self.project_dir / ".alcatrazer" / "agent-identity"
+        stored_name, stored_email = identity_file.read_text().strip().split("\n")
+        inner_name = self._inner_git(ws, "config", "--local", "user.name").stdout.strip()
+        inner_email = self._inner_git(ws, "config", "--local", "user.email").stdout.strip()
+        self.assertEqual(inner_name, stored_name)
+        self.assertEqual(inner_email, stored_email)
+
+    def test_inner_git_disables_commit_signing(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        result = self._inner_git(ws, "config", "--local", "commit.gpgsign")
+        self.assertEqual(result.stdout.strip(), "false")
+
+    def test_inner_git_has_no_remote(self):
+        ws = start.create_workspace(self.project_dir, ".devspace-abcd")
+        result = self._inner_git(ws, "remote")
+        self.assertEqual(result.stdout.strip(), "")
+
+
 class WritePythonSymlinkTests(unittest.TestCase):
     """Step 3i: .alcatrazer/python is a symlink to sys.executable so the
     post-install daemon can find the host's resolved Python."""
