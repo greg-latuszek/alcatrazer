@@ -780,5 +780,37 @@ class ExtractPackageSourceTests(unittest.TestCase):
         self.assertEqual(self._tree_signature(self.dest), expected)
 
 
+class WritePythonSymlinkTests(unittest.TestCase):
+    """Step 3i: .alcatrazer/python is a symlink to sys.executable so the
+    post-install daemon can find the host's resolved Python."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_writes_symlink_to_alcatrazer_python(self):
+        path = start.write_python_symlink(self.project_dir)
+        self.assertEqual(path, self.project_dir / ".alcatrazer" / "python")
+        self.assertTrue(path.is_symlink())
+
+    def test_symlink_targets_sys_executable(self):
+        path = start.write_python_symlink(self.project_dir)
+        self.assertEqual(str(path.readlink()), sys.executable)
+
+    def test_creates_alcatrazer_dir_if_missing(self):
+        self.assertFalse((self.project_dir / ".alcatrazer").exists())
+        start.write_python_symlink(self.project_dir)
+        self.assertTrue((self.project_dir / ".alcatrazer").is_dir())
+
+    def test_overwrites_existing_symlink(self):
+        alcatraz = self.project_dir / ".alcatrazer"
+        alcatraz.mkdir()
+        stale = alcatraz / "python"
+        stale.symlink_to("/nonexistent/old/python")
+        path = start.write_python_symlink(self.project_dir)
+        self.assertEqual(str(path.readlink()), sys.executable)
+
+
 if __name__ == "__main__":
     unittest.main()
