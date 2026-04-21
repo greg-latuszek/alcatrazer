@@ -1,12 +1,14 @@
 """The `alcatrazer start` command — primary entry point for daily work.
 
-Steps 3a-3e so far: route on `.alcatrazer/` presence; in the first-time
+Steps 3a-3f so far: route on `.alcatrazer/` presence; in the first-time
 branch verify we are at a git repo root; helpers to read + prompt for the
 promotion identity; wizard that collects the coding-environment answers
 (languages, OS packages, startup commands); writers that persist the
 answers to coding-environment.toml, .alcatrazer/config.toml, and
-.env.example. Steps 3f-3k fill in the remaining first-time work. Step 4
-handles subsequent-run.
+.env.example; writer that appends alcatrazer patterns to
+.git/info/exclude. Workspace name generation and its persistence to
+.alcatrazer/workspace-dir are covered by alcatrazer.identity. Steps 3g-3k
+fill in the remaining first-time work. Step 4 handles subsequent-run.
 """
 
 import secrets
@@ -271,6 +273,34 @@ def write_env_example(project_dir: Path) -> Path | None:
         "# .env should stay out of version control; .env.example is committed.\n"
     )
     return target
+
+
+_GIT_EXCLUDE_HEADER = "# alcatrazer patterns (written by alcatrazer start)"
+
+
+def write_git_exclude(project_dir: Path, workspace_name: str) -> Path:
+    """Append alcatrazer + workspace patterns to .git/info/exclude, idempotently.
+
+    `workspace_name` is used verbatim (callers pass the full directory name,
+    typically from `alcatrazer.identity.generate_workspace_dir_name()` which
+    already includes the leading dot). We just append a trailing slash to
+    form the directory pattern.
+    """
+    exclude_path = project_dir / ".git" / "info" / "exclude"
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude_path.read_text() if exclude_path.exists() else ""
+    existing_lines = set(existing.splitlines())
+
+    patterns = (".alcatrazer/", f"{workspace_name}/")
+    missing = [p for p in patterns if p not in existing_lines]
+    if not missing:
+        return exclude_path
+
+    prefix = existing
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    exclude_path.write_text(prefix + _GIT_EXCLUDE_HEADER + "\n" + "\n".join(missing) + "\n")
+    return exclude_path
 
 
 def _subsequent_run(project_dir: Path) -> int:
