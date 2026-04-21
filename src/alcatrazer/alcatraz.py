@@ -15,17 +15,26 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
-class PrisonBuildError(Exception):
-    """Raised when an Alcatraz adapter's `build()` fails.
+class PrisonError(Exception):
+    """Base for adapter operational errors carrying raw subprocess output.
 
-    Carries the raw subprocess stdout/stderr so callers can present them
-    per the "Build & Startup Error Handling" contract in install_method.md.
+    Per the "Build & Startup Error Handling" contract in install_method.md,
+    callers surface `stdout` / `stderr` to the user along with a pointer to
+    the phase that failed.
     """
 
     def __init__(self, message: str, stdout: str = "", stderr: str = ""):
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
+
+
+class PrisonBuildError(PrisonError):
+    """Raised when an Alcatraz adapter's `build()` fails."""
+
+
+class PrisonStartError(PrisonError):
+    """Raised when an Alcatraz adapter's `start()` fails."""
 
 
 class Alcatraz(ABC):

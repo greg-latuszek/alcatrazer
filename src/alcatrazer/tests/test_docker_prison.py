@@ -4,12 +4,17 @@
   (Step 3h).
 - build() — runs `docker build` with the generated Dockerfile, detects or
   reuses the phantom UID, raises PrisonBuildError on failure (Step 3i).
+- start() — runs `docker run -d` with workspace + cache volumes + env-file
+  + `sleep infinity`; raises PrisonStartError on failure (Step 3k).
+- exec(command) — runs `docker exec -u agent`, streams output, returns
+  exit code (Step 3k).
 
-Remaining operational methods (start, stop, exec, …) are still skeletons
-asserted in test_alcatraz.py until their respective installer steps land.
+Remaining operational methods (stop, is_running, image_exists, remove)
+are still skeletons asserted in test_alcatraz.py until their steps land.
 """
 
 import hashlib
+import os
 import subprocess
 import tempfile
 import unittest
@@ -17,7 +22,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from alcatrazer import docker_prison
-from alcatrazer.alcatraz import PrisonBuildError
+from alcatrazer.alcatraz import PrisonBuildError, PrisonStartError
 from alcatrazer.docker_prison import DockerPrison
 
 
@@ -284,6 +289,152 @@ class DockerPrisonBuildTests(unittest.TestCase):
     def test_success_returns_none(self):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()):
             self.assertIsNone(DockerPrison(self.project_dir).build())
+
+
+class DockerPrisonStartTests(unittest.TestCase):
+    """DockerPrison.start runs `docker run -d` with the workspace bind-mount,
+    cache volumes, .env file, and `sleep infinity` as the long-lived CMD."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-abcd\n")
+        (self.project_dir / ".devspace-abcd").mkdir()
+        (self.project_dir / ".env").write_text("FOO=bar\n")
+
+        # Isolate HOME so Claude credential presence is controlled per test.
+        self.fake_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.fake_home.cleanup)
+        env_patch = patch.dict(os.environ, {"HOME": self.fake_home.name})
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+    def _ok(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def _fail(self, stdout="", stderr="") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout=stdout, stderr=stderr)
+
+    def test_invokes_docker_run_with_expected_skeleton(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[:3], ["docker", "run", "-d"])
+        self.assertIn("--name", cmd)
+        self.assertIn("workspace", cmd)
+        self.assertIn("alcatraz-workspace:local", cmd)
+        self.assertEqual(cmd[-2:], ["sleep", "infinity"])
+
+    def test_workspace_dir_bind_mounted_to_slash_workspace(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd = mock_run.call_args.args[0]
+        expected = f"{self.project_dir / '.devspace-abcd'}:/workspace"
+        self.assertIn(expected, cmd)
+
+    def test_claude_credentials_mounted_readonly_when_present(self):
+        claude = Path(self.fake_home.name) / ".claude"
+        claude.mkdir()
+        (claude / ".credentials.json").write_text("{}")
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd = mock_run.call_args.args[0]
+        expected = f"{claude / '.credentials.json'}:/home/agent/.claude/.credentials.json:ro"
+        self.assertIn(expected, cmd)
+
+    def test_claude_credentials_skipped_when_missing(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd_str = " ".join(mock_run.call_args.args[0])
+        self.assertNotIn(".credentials.json", cmd_str)
+
+    def test_named_cache_volumes_attached(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd_str = " ".join(mock_run.call_args.args[0])
+        self.assertIn("alcatraz-mise-cache:/home/agent/.local/share/mise", cmd_str)
+        self.assertIn("alcatraz-pip-cache:/home/agent/.cache/pip", cmd_str)
+        self.assertIn("alcatraz-npm-cache:/home/agent/.npm", cmd_str)
+
+    def test_env_file_wired_when_present(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        cmd = mock_run.call_args.args[0]
+        self.assertIn("--env-file", cmd)
+        self.assertIn(str(self.project_dir / ".env"), cmd)
+
+    def test_env_file_skipped_when_missing(self):
+        (self.project_dir / ".env").unlink()
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).start()
+        self.assertNotIn("--env-file", mock_run.call_args.args[0])
+
+    def test_raises_prison_start_error_when_workspace_dir_missing(self):
+        (self.alcatraz_dir / "workspace-dir").unlink()
+        with (
+            patch.object(docker_prison.subprocess, "run") as mock_run,
+            self.assertRaises(PrisonStartError),
+        ):
+            DockerPrison(self.project_dir).start()
+        mock_run.assert_not_called()
+
+    def test_raises_prison_start_error_on_docker_failure(self):
+        with (
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=self._fail(stdout="run stdout", stderr="run stderr"),
+            ),
+            self.assertRaises(PrisonStartError) as cm,
+        ):
+            DockerPrison(self.project_dir).start()
+        self.assertIn("run stdout", cm.exception.stdout)
+        self.assertIn("run stderr", cm.exception.stderr)
+
+
+class DockerPrisonExecTests(unittest.TestCase):
+    """DockerPrison.exec wraps `docker exec -u agent <container> <cmd>`,
+    streams output to the caller's terminal, returns the exit code."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_invokes_docker_exec_with_agent_user(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0),
+        ) as mock_run:
+            DockerPrison(self.project_dir).exec(["bash", "-c", "uv sync"])
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        self.assertEqual(cmd[5:], ["bash", "-c", "uv sync"])
+
+    def test_returns_the_exit_code(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=42),
+        ):
+            rc = DockerPrison(self.project_dir).exec(["false"])
+        self.assertEqual(rc, 42)
+
+    def test_does_not_capture_output(self):
+        """Output streams to the user's terminal so long-running commands
+        like `uv sync` show progress in real time."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0),
+        ) as mock_run:
+            DockerPrison(self.project_dir).exec(["true"])
+        kwargs = mock_run.call_args.kwargs
+        self.assertNotIn("capture_output", kwargs)
 
 
 if __name__ == "__main__":
