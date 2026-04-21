@@ -429,7 +429,76 @@ def write_git_exclude(project_dir: Path, workspace_name: str) -> Path:
     return exclude_path
 
 
-def _subsequent_run(project_dir: Path) -> int:
-    print("Alcatrazer setup detected.")
-    print("Subsequent-run logic is not yet implemented.")
-    return 0
+def coding_environment_changed(project_dir: Path) -> bool:
+    """True when the current coding-environment file differs from .last.
+
+    The source filename is read from .alcatrazer/config.toml's
+    `coding_environment_file` pointer (supports hex-suffixed collisions).
+    `.last` missing counts as changed.
+    """
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    with open(alcatrazer_dir / "config.toml", "rb") as f:
+        config = tomllib.load(f)
+    source = project_dir / config.get("coding_environment_file", "coding-environment.toml")
+    last = alcatrazer_dir / "coding-environment.toml.last"
+    if not last.exists():
+        return True
+    return source.read_text() != last.read_text()
+
+
+def _load_coding_environment(project_dir: Path) -> dict:
+    """Read config.toml pointer + parse the current coding-environment file."""
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    with open(alcatrazer_dir / "config.toml", "rb") as f:
+        config = tomllib.load(f)
+    source = project_dir / config.get("coding_environment_file", "coding-environment.toml")
+    with open(source, "rb") as f:
+        return tomllib.load(f)
+
+
+def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """Detect state and bring the workspace container into sync with the
+    current coding-environment.toml.
+
+    Branches on three signals:
+      - prison.needs_rebuild(data) — would-be recipe vs on-disk
+      - prison.is_running()        — container state
+      - coding_environment_changed(project_dir) — toml vs .last snapshot
+
+    Fast path: running + nothing changed → "already up to date".
+    Otherwise: stop (if running), remove, build (if rebuild), start,
+    run [startup] commands. `.last` refresh only on startup success so
+    a retry sees the same drift.
+    """
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+
+    coding_env = _load_coding_environment(project_dir)
+    commands = coding_env.get("startup", {}).get("commands", [])
+
+    rebuild = prison.needs_rebuild(coding_env)
+    running = prison.is_running()
+    toml_changed = coding_environment_changed(project_dir)
+
+    if not rebuild and not toml_changed and running:
+        print("Already running, environment up to date.")
+        return 0
+
+    if rebuild:
+        print("coding-environment.toml changed — rebuilding image.")
+        prison.generate_prison(coding_env)
+
+    if running:
+        prison.stop()
+    prison.remove()
+
+    if rebuild:
+        prison.build()
+
+    prison.start()
+    rc = run_startup_commands(prison, commands)
+    if rc == 0:
+        save_coding_environment_snapshot(project_dir)
+    return rc
