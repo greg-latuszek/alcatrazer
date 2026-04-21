@@ -2,6 +2,7 @@
 
 Usage:
     alcatrazer start    — set up (first run) or start the container (subsequent)
+    alcatrazer stop     — stop the running workspace container
     alcatrazer test     — run bundled test suite to verify installation
     alcatrazer version  — show version
 
@@ -37,6 +38,7 @@ def main():
         print()
         print("Usage:")
         print("  alcatrazer start     Set up (first run) or start the container")
+        print("  alcatrazer stop      Stop the running workspace container")
         print("  alcatrazer test      Run bundled tests to verify installation")
         print("  alcatrazer version   Show version")
         print()
@@ -50,6 +52,8 @@ def main():
         print(f"alcatrazer {__version__}")
     elif command == "start":
         sys.exit(start_module.cmd_start(Path.cwd()))
+    elif command == "stop":
+        sys.exit(start_module.cmd_stop(Path.cwd()))
     elif command == "test":
         smoke = "--smoke" in sys.argv
         sys.exit(run_tests(smoke=smoke))

@@ -456,6 +456,34 @@ def _load_coding_environment(project_dir: Path) -> dict:
         return tomllib.load(f)
 
 
+def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """`alcatrazer stop` — idempotent container stop.
+
+    Requires an existing alcatrazer setup (`.alcatrazer/`). Returns 0 on
+    success or when the container is already stopped; 1 when there is no
+    setup to stop.
+    """
+    if not (project_dir / ".alcatrazer").exists():
+        print(
+            "No alcatrazer setup in this repository — run `alcatrazer start` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+
+    if not prison.is_running():
+        print("Container is not running.")
+        return 0
+
+    prison.stop()
+    print("Container stopped.")
+    return 0
+
+
 def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """Detect state and bring the workspace container into sync with the
     current coding-environment.toml.
