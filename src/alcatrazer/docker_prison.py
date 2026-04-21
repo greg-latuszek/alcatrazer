@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 from alcatrazer import identity
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 # --- Dockerfile generation ---------------------------------------------------
@@ -219,7 +219,57 @@ class DockerPrison(Alcatraz):
         raise NotImplementedError("DockerPrison.image_exists lands in Step 4")
 
     def start(self) -> None:
-        raise NotImplementedError("DockerPrison.start lands in Step 3k")
+        """Run the workspace container in detached mode.
+
+        Bind-mounts the workspace dir at /workspace, mounts the host's
+        Claude credentials read-only (when present), attaches named cache
+        volumes, wires in .env, and uses `sleep infinity` as the long-lived
+        CMD so the container stays alive for later `docker exec` attaches.
+        """
+        alcatraz_dir = self.project_dir / ".alcatrazer"
+        workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+        if workspace_name is None:
+            raise PrisonStartError(
+                "No workspace dir recorded at .alcatrazer/workspace-dir; "
+                "call create_workspace first."
+            )
+        workspace_path = self.project_dir / workspace_name
+        env_file = self.project_dir / ".env"
+        claude_creds = Path.home() / ".claude" / ".credentials.json"
+
+        cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            self.container_name,
+            "-v",
+            f"{workspace_path}:/workspace",
+        ]
+        if claude_creds.exists():
+            cmd += [
+                "-v",
+                f"{claude_creds}:/home/agent/.claude/.credentials.json:ro",
+            ]
+        cmd += [
+            "-v",
+            "alcatraz-mise-cache:/home/agent/.local/share/mise",
+            "-v",
+            "alcatraz-pip-cache:/home/agent/.cache/pip",
+            "-v",
+            "alcatraz-npm-cache:/home/agent/.npm",
+        ]
+        if env_file.exists():
+            cmd += ["--env-file", str(env_file)]
+        cmd += [self.image_tag, "sleep", "infinity"]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise PrisonStartError(
+                f"docker run failed (exit {result.returncode})",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
 
     def stop(self) -> None:
         raise NotImplementedError("DockerPrison.stop lands in Step 5")
@@ -228,7 +278,14 @@ class DockerPrison(Alcatraz):
         raise NotImplementedError("DockerPrison.is_running lands in Step 4")
 
     def exec(self, command: list[str]) -> int:
-        raise NotImplementedError("DockerPrison.exec lands in Step 3k")
+        """Run `command` inside the running workspace container as the `agent` user.
+
+        Output is NOT captured — it streams to the caller's terminal so
+        long-running commands like `uv sync` show progress in real time.
+        Returns the command's exit code; the caller decides how to react.
+        """
+        full = ["docker", "exec", "-u", "agent", self.container_name, *command]
+        return subprocess.run(full).returncode
 
     def remove(self) -> None:
         raise NotImplementedError("DockerPrison.remove lands in Step 4")

@@ -58,10 +58,6 @@ class DockerPrisonSkeletonTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             self.prison.image_exists()
 
-    def test_start_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.start()
-
     def test_stop_raises_not_implemented(self):
         with self.assertRaises(NotImplementedError):
             self.prison.stop()
@@ -69,10 +65,6 @@ class DockerPrisonSkeletonTests(unittest.TestCase):
     def test_is_running_raises_not_implemented(self):
         with self.assertRaises(NotImplementedError):
             self.prison.is_running()
-
-    def test_exec_raises_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            self.prison.exec(["echo", "hi"])
 
     def test_remove_raises_not_implemented(self):
         with self.assertRaises(NotImplementedError):
