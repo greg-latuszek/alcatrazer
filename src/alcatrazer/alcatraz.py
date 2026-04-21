@@ -15,6 +15,19 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 
+class PrisonBuildError(Exception):
+    """Raised when an Alcatraz adapter's `build()` fails.
+
+    Carries the raw subprocess stdout/stderr so callers can present them
+    per the "Build & Startup Error Handling" contract in install_method.md.
+    """
+
+    def __init__(self, message: str, stdout: str = "", stderr: str = ""):
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class Alcatraz(ABC):
     """The sandboxing port — a prison that isolates AI agents from the host.
 

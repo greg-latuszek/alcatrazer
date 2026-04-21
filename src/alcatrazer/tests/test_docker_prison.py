@@ -1,17 +1,23 @@
 """Tests for DockerPrison — the docker-backed Alcatraz adapter.
 
-Currently covers `generate_prison()`, which emits the three-stage Dockerfile
-and copies entrypoint.sh. Operational methods (build, start, stop, …) remain
-skeletons asserted in test_alcatraz.py until their respective installer steps
-land.
+- generate_prison() — emits the three-stage Dockerfile + copies entrypoint.sh
+  (Step 3h).
+- build() — runs `docker build` with the generated Dockerfile, detects or
+  reuses the phantom UID, raises PrisonBuildError on failure (Step 3i).
+
+Remaining operational methods (start, stop, exec, …) are still skeletons
+asserted in test_alcatraz.py until their respective installer steps land.
 """
 
 import hashlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from alcatrazer import docker_prison
+from alcatrazer.alcatraz import PrisonBuildError
 from alcatrazer.docker_prison import DockerPrison
 
 
@@ -194,6 +200,87 @@ class DockerPrisonEntrypointGenerationTests(unittest.TestCase):
             hashlib.sha256(target.read_bytes()).hexdigest(),
             hashlib.sha256(source.read_bytes()).hexdigest(),
         )
+
+
+class DockerPrisonBuildTests(unittest.TestCase):
+    """DockerPrison.build runs `docker build` with the generated Dockerfile,
+    a phantom-UID build arg, and the tight .alcatrazer/ build context. On
+    non-zero exit it raises PrisonBuildError carrying the raw stdout/stderr."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "Dockerfile").write_text("FROM ubuntu:24.04\n")
+        # Pre-seed a persisted phantom UID unless a test overrides.
+        (self.alcatraz_dir / "uid").write_text("1007\n")
+
+    def _ok(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def _fail(self, stdout="", stderr="") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout=stdout, stderr=stderr)
+
+    def test_invokes_docker_build_with_expected_arguments(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).build()
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[0], "docker")
+        self.assertEqual(cmd[1], "build")
+        self.assertIn("--build-arg", cmd)
+        self.assertIn("USER_UID=1007", cmd)
+        self.assertIn("-t", cmd)
+        self.assertIn("alcatraz-workspace:local", cmd)
+        self.assertIn("-f", cmd)
+        self.assertIn(str(self.alcatraz_dir / "Dockerfile"), cmd)
+        # Build context is tight (just .alcatrazer/), not the whole project.
+        self.assertEqual(cmd[-1], str(self.alcatraz_dir))
+
+    def test_captures_output_via_subprocess(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            DockerPrison(self.project_dir).build()
+        # capture_output=True and text=True so build error messages are strings.
+        kwargs = mock_run.call_args.kwargs
+        self.assertTrue(kwargs.get("capture_output"))
+        self.assertTrue(kwargs.get("text"))
+
+    def test_reuses_persisted_uid_without_detecting(self):
+        with (
+            patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run,
+            patch("alcatrazer.identity.detect_phantom_uid") as mock_detect,
+        ):
+            DockerPrison(self.project_dir).build()
+        cmd = mock_run.call_args.args[0]
+        self.assertIn("USER_UID=1007", cmd)
+        mock_detect.assert_not_called()
+
+    def test_detects_and_persists_uid_when_missing(self):
+        (self.alcatraz_dir / "uid").unlink()
+        with (
+            patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run,
+            patch("alcatrazer.identity.detect_phantom_uid", return_value=1042),
+        ):
+            DockerPrison(self.project_dir).build()
+        cmd = mock_run.call_args.args[0]
+        self.assertIn("USER_UID=1042", cmd)
+        self.assertEqual((self.alcatraz_dir / "uid").read_text().strip(), "1042")
+
+    def test_raises_prison_build_error_on_non_zero_exit(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=self._fail(stdout="build stdout", stderr="build stderr"),
+        ), self.assertRaises(PrisonBuildError) as cm:
+            DockerPrison(self.project_dir).build()
+        self.assertIn("build stdout", cm.exception.stdout)
+        self.assertIn("build stderr", cm.exception.stderr)
+
+    def test_success_returns_none(self):
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()):
+            self.assertIsNone(DockerPrison(self.project_dir).build())
 
 
 if __name__ == "__main__":
