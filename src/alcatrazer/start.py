@@ -19,9 +19,11 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from alcatrazer import identity, snapshot
+from alcatrazer.alcatraz import Alcatraz
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 
@@ -260,6 +262,49 @@ def write_env_example(project_dir: Path) -> Path | None:
         "# Copy to .env and fill in your values.\n"
         "# .env should stay out of version control; .env.example is committed.\n"
     )
+    return target
+
+
+def run_startup_commands(prison: Alcatraz, commands: list[str]) -> int:
+    """Run each `[startup]` command inside the prison, fail-fast on first error.
+
+    Each toml entry is a single shell string, so it is invoked as
+    `bash -c <cmd>` — lets pipes, redirections, and multi-word commands
+    behave as the user wrote them. Progress goes to stdout; on failure a
+    pointer to the offending index + command goes to stderr. Returns 0 on
+    full success or the failing exit code.
+    """
+    for i, cmd in enumerate(commands, 1):
+        print(f"→ Running startup command #{i}: {cmd}")
+        rc = prison.exec(["bash", "-c", cmd])
+        if rc != 0:
+            print(
+                f"ERROR: startup command #{i} failed ({cmd!r}) — exit {rc}.",
+                file=sys.stderr,
+            )
+            print(
+                "→ Check the [startup] block in coding-environment.toml.",
+                file=sys.stderr,
+            )
+            return rc
+    return 0
+
+
+def save_coding_environment_snapshot(project_dir: Path) -> Path:
+    """Copy the current coding-environment file to .alcatrazer/coding-environment.toml.last.
+
+    The source filename is read from .alcatrazer/config.toml's
+    `coding_environment_file` pointer (supports hex-suffixed collisions).
+    The target name is always canonical (`coding-environment.toml.last`),
+    so Step 4 can diff against a fixed path.
+    """
+    alcatrazer_dir = project_dir / ".alcatrazer"
+    with open(alcatrazer_dir / "config.toml", "rb") as f:
+        config = tomllib.load(f)
+    source_name = config.get("coding_environment_file", "coding-environment.toml")
+    source = project_dir / source_name
+    target = alcatrazer_dir / "coding-environment.toml.last"
+    shutil.copy(source, target)
     return target
 
 
