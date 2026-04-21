@@ -1,10 +1,10 @@
 """Alcatrazer CLI entry point.
 
 Usage:
-    alcatrazer start    — set up (first run) or start the container (subsequent)
-    alcatrazer stop     — stop the running workspace container
-    alcatrazer test     — run bundled test suite to verify installation
-    alcatrazer version  — show version
+    alcatrazer start       — set up (first run) or start the container (subsequent)
+    alcatrazer stop        — stop the running workspace container
+    alcatrazer test        — run bundled test suite to verify installation
+    alcatrazer --version   — print the version (also accepts -V)
 
 Legacy placeholder (retires when Step 6 lands):
     alcatrazer update
@@ -33,6 +33,10 @@ def run_tests(smoke: bool = False) -> int:
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-V", "--version"):
+        print(f"alcatrazer {__version__}")
+        return
+
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print("Alcatrazer — secure AI agent workspace")
         print()
@@ -40,7 +44,7 @@ def main():
         print("  alcatrazer start     Set up (first run) or start the container")
         print("  alcatrazer stop      Stop the running workspace container")
         print("  alcatrazer test      Run bundled tests to verify installation")
-        print("  alcatrazer version   Show version")
+        print("  alcatrazer --version Show version (-V also works)")
         print()
         print(f"Version: {__version__}")
         print("https://github.com/greg-latuszek/alcatrazer")
@@ -48,9 +52,7 @@ def main():
 
     command = sys.argv[1]
 
-    if command == "version":
-        print(f"alcatrazer {__version__}")
-    elif command == "start":
+    if command == "start":
         sys.exit(start_module.cmd_start(Path.cwd()))
     elif command == "stop":
         sys.exit(start_module.cmd_stop(Path.cwd()))
