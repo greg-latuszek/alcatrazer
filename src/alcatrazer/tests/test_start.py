@@ -7,11 +7,14 @@ Step 3d — coding-environment wizard (languages, OS packages, startup).
 Step 3e — config-file writers (coding-environment.toml, .alcatrazer/config.toml,
           .env.example).
 Step 3f — .git/info/exclude writer (idempotent, preserves user content).
+Step 3g — package-source extraction into .alcatrazer/src/alcatrazer/.
 """
 
 import contextlib
+import hashlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -629,6 +632,109 @@ class Step3fCompositionTests(unittest.TestCase):
         content = (project_dir / ".git" / "info" / "exclude").read_text()
         self.assertIn(".alcatrazer/", content)
         self.assertIn(f"{name}/", content)
+
+
+class ExtractPackageSourceTests(unittest.TestCase):
+    """Step 3g: copy the real alcatrazer package tree, bit-exact, minus
+    compiled artifacts.
+
+    Strategy: snapshot the real src/alcatrazer/ into a temp dir (same ignore
+    rules the code under test uses), hash every file, run extract, hash the
+    destination tree, require equality. This catches missing files, wrong
+    content, and broken ignore rules in one assertion.
+    """
+
+    REAL_SRC = Path(start.__file__).parent
+    IGNORE_PATTERNS = ("__pycache__", "*.pyc", "*.pyo")
+
+    @classmethod
+    def _snapshot_real_source(cls, dest: Path) -> None:
+        shutil.copytree(cls.REAL_SRC, dest, ignore=shutil.ignore_patterns(*cls.IGNORE_PATTERNS))
+
+    @classmethod
+    def _tree_signature(cls, root: Path) -> dict[str, str]:
+        """Return {relative_path: sha256_hex} for every file under root."""
+        sig: dict[str, str] = {}
+        for path in root.rglob("*"):
+            if path.is_file():
+                rel = str(path.relative_to(root))
+                sig[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return sig
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    @property
+    def dest(self) -> Path:
+        return self.project_dir / ".alcatrazer" / "src" / "alcatrazer"
+
+    def test_returns_destination_path(self):
+        result = start.extract_package_source(self.project_dir)
+        self.assertEqual(result, self.dest)
+        self.assertTrue(self.dest.is_dir())
+
+    def test_extracted_tree_matches_real_source_bit_exact(self):
+        """Every file that should be copied IS copied, with identical bytes."""
+        with tempfile.TemporaryDirectory() as ref_tmp:
+            reference = Path(ref_tmp) / "alcatrazer"
+            self._snapshot_real_source(reference)
+            expected = self._tree_signature(reference)
+        start.extract_package_source(self.project_dir)
+        self.assertEqual(self._tree_signature(self.dest), expected)
+
+    def test_skips_pycache_directory(self):
+        """Even when the source contains __pycache__, the dest must not."""
+        with tempfile.TemporaryDirectory() as src_tmp:
+            src = Path(src_tmp) / "alcatrazer"
+            self._snapshot_real_source(src)
+            # Inject __pycache__ artifacts at multiple depths.
+            (src / "__pycache__").mkdir()
+            (src / "__pycache__" / "start.cpython-312.pyc").write_bytes(b"bc")
+            nested = src / "tests" / "__pycache__"
+            nested.mkdir(exist_ok=True)
+            (nested / "t.pyc").write_bytes(b"bc")
+            start.extract_package_source(self.project_dir, source_dir=src)
+        self.assertEqual(list(self.dest.rglob("__pycache__")), [])
+
+    def test_skips_pyc_and_pyo_files(self):
+        with tempfile.TemporaryDirectory() as src_tmp:
+            src = Path(src_tmp) / "alcatrazer"
+            self._snapshot_real_source(src)
+            (src / "cli.pyc").write_bytes(b"bc")
+            (src / "cli.pyo").write_bytes(b"bc")
+            start.extract_package_source(self.project_dir, source_dir=src)
+        self.assertEqual(list(self.dest.rglob("*.pyc")), [])
+        self.assertEqual(list(self.dest.rglob("*.pyo")), [])
+
+    def test_replaces_existing_destination_with_clean_slate(self):
+        """Simulates an upgrade: an "old version" already sits at the dest with
+        a different file tree and different content. After extraction, the tree
+        and per-file checksums must match the real source — proving both that
+        stale files were removed and that new files were installed correctly."""
+        # Lay down a fake "old version" at dest.
+        self.dest.parent.mkdir(parents=True)
+        self.dest.mkdir()
+        (self.dest / "old_file_removed_upstream.py").write_text("ancient\n")
+        (self.dest / "cli.py").write_text("different content from upstream\n")
+        (self.dest / "templates").mkdir()
+        (self.dest / "templates" / "stale_template.toml").write_text("x = 0\n")
+        old_sig = self._tree_signature(self.dest)
+
+        # Build the reference (what dest should look like after upgrade).
+        with tempfile.TemporaryDirectory() as ref_tmp:
+            reference = Path(ref_tmp) / "alcatrazer"
+            self._snapshot_real_source(reference)
+            expected = self._tree_signature(reference)
+
+        # Precondition: the old version really is different — otherwise the
+        # test would pass trivially.
+        self.assertNotEqual(old_sig, expected)
+
+        start.extract_package_source(self.project_dir)
+
+        self.assertEqual(self._tree_signature(self.dest), expected)
 
 
 if __name__ == "__main__":
