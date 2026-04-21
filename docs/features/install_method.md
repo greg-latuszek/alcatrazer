@@ -832,11 +832,24 @@ agent identity, no remote, `commit.gpgsign false`.
 
 #### Step 3k: Start container and run startup commands
 
-Start the container via docker-compose. Run `[startup]` commands in order inside
-the container. Fail-fast on first error. Report success or failure per the error
-handling contract.
+Start the container via `DockerPrison.start()` (raw `docker run -d` — no
+docker-compose, see "Hexagonal sandboxing architecture" above). The container
+runs detached with the workspace bind-mounted at `/workspace`, Claude
+credentials mounted read-only, named cache volumes attached (`mise-cache`,
+`pip-cache`, `npm-cache`), `.env` wired in, and `sleep infinity` as the
+long-lived CMD so the container stays alive for later `docker exec` attaches.
 
-Copy `coding-environment.toml` to `.alcatrazer/coding-environment.toml.last`.
+Run `[startup]` commands in order via `DockerPrison.exec()`, wrapping each
+toml entry as `bash -c <command>` and running as the `agent` user. Fail-fast:
+a non-zero exit stops execution and reports per the "Build & Startup Error
+Handling" contract (phase = "startup command #N"; raw output already
+streamed to the terminal; pointer = the `[startup]` block in
+`coding-environment.toml`).
+
+Copy the current coding-environment file (filename read from
+`.alcatrazer/config.toml`'s `coding_environment_file` pointer) to
+`.alcatrazer/coding-environment.toml.last`. Step 4 uses this `.last` record
+for change detection.
 
 ### Step 4: Implement `alcatrazer start` (subsequent runs)
 
