@@ -74,6 +74,9 @@ class AlcatrazSecurityInvariantsSurfaceTests(unittest.TestCase):
             # 6. Attack surface
             "test_docker_socket_not_mounted",
             "test_workspace_has_no_git_remotes",
+            # 7. Zero branding inside the Alcatraz
+            "test_no_alcatraz_branding_in_environment",
+            "test_no_alcatraz_branding_in_mount_points",
         }
     )
 

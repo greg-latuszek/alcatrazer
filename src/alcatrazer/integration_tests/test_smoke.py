@@ -12,17 +12,24 @@ invariants against the resulting running Alcatraz:
   runtimes) exists and responds to --version.
 - Workflow invariants  — smoke-only mixin here. Genuinely-intrusive
   checks (branch + merge, code execution) that need write state, so they
-  run in a scratch /tmp git repo with per-test setUp / tearDown.
+  run in a scratch /tmp location with per-test addCleanup — /tmp inside
+  the container is NOT bind-mounted to the host, so these stay isolated.
 
 The tier split + non-intrusiveness discipline is documented in
 install_method.md under "Three-tier test organization" and "Non-
 intrusiveness discipline for selftest".
 
+Mixin pattern — the three `_Alcatraz*Invariants` classes are plain
+classes, NOT `unittest.TestCase` subclasses. They rely on their concrete
+subclass (`TestAlcatrazSmokeCI` here) to bring in `unittest.TestCase`
+via MRO. This prevents `unittest discover` from running them standalone
+(where `cls.prison` is None) on either side of the import boundary.
+
 Requires Docker; skipped from the default `alcatrazer test`. Run with
 `alcatrazer test --smoke`.
 """
 
-import os
+import contextlib
 import subprocess
 import tempfile
 import unittest
@@ -96,13 +103,45 @@ def _seed_project(project_dir: Path) -> None:
     subprocess.run([*g, "commit", "-q", "-m", "initial"], check=True)
 
 
-# ── Smoke-only mixins: tooling + workflow ─────────────────────────────
+def _nuke_phantom_uid_files(path: Path) -> None:
+    """Remove files owned by the phantom UID via a disposable alpine.
+
+    The container's entrypoint `chown -R agent:agent /workspace`
+    propagates through the bind mount, so files inside the workspace dir
+    end up owned by the phantom UID on the host. The CI user (non-root)
+    cannot unlink them directly. Alpine runs as root inside its own
+    container, so it can delete anything on the mounted target. Mirrors
+    the pattern the old init.py's handle_reset used.
+    """
+    # Best-effort — if docker is gone or the mount fails, let Python's
+    # rmtree try; it may succeed for CI-owned entries.
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{path}:/target",
+                "alpine:3",
+                "sh",
+                "-c",
+                "find /target -mindepth 1 -delete",
+            ],
+            capture_output=True,
+            timeout=60,
+        )
 
 
-class _AlcatrazToolingInvariants(unittest.TestCase):
+# ── Smoke-only mixins: tooling + workflow (plain classes, see docstring) ──
+
+
+class _AlcatrazToolingInvariants:
     """ai-base + dev layer tooling sanity — not security, just "did the image
     build actually produce working binaries for what we declared?" Smoke-
-    test only; `--run-selftest` deliberately skips this tier."""
+    test only; `--run-selftest` deliberately skips this tier.
+
+    Plain class (not TestCase). See module docstring for the rationale."""
 
     prison: Alcatraz = None  # type: ignore[assignment]
 
@@ -140,26 +179,33 @@ class _AlcatrazToolingInvariants(unittest.TestCase):
         self.assertIn("node", result.stdout)
 
 
-class _AlcatrazWorkflowInvariants(unittest.TestCase):
+class _AlcatrazWorkflowInvariants:
     """Intrusive workflow checks — commits, branches, code execution. Each
-    test uses a fresh scratch git repo at /tmp/alcatraz-workflow-scratch
-    (INSIDE the container, NOT bind-mounted). Smoke-test only; `--run-
-    selftest` deliberately skips this tier because these probes write."""
+    test that needs write state owns its own scratch area in /tmp INSIDE
+    the container (NOT bind-mounted to the host, so these tests never
+    leak state into the user's /workspace). Cleanup registered per-test
+    via `self.addCleanup` rather than `setUp`/`tearDown` so the cost
+    stays scoped to tests that actually need it.
+
+    Smoke-test only; `--run-selftest` deliberately skips this tier
+    because these probes write. Plain class (not TestCase) for the same
+    reason as the tooling mixin."""
 
     prison: Alcatraz = None  # type: ignore[assignment]
 
-    SCRATCH = "/tmp/alcatraz-workflow-scratch"
+    SCRATCH_REPO = "/tmp/alcatraz-workflow-scratch-repo"
+    SCRATCH_PY = "/tmp/alcatraz-workflow-scratch.py"
 
-    def setUp(self):
-        # Fresh scratch git repo before every workflow test.
+    def _setup_scratch_repo(self) -> None:
+        """Create a fresh git repo at SCRATCH_REPO; cleanup auto-registered."""
         self.prison.query(
             [
                 "bash",
                 "-c",
                 f"""
-                    rm -rf {self.SCRATCH} &&
-                    git init -q -b main {self.SCRATCH} &&
-                    cd {self.SCRATCH} &&
+                    rm -rf {self.SCRATCH_REPO} &&
+                    git init -q -b main {self.SCRATCH_REPO} &&
+                    cd {self.SCRATCH_REPO} &&
                     git config --local user.name "workflow-test" &&
                     git config --local user.email "workflow@test.local" &&
                     echo initial > a &&
@@ -168,17 +214,16 @@ class _AlcatrazWorkflowInvariants(unittest.TestCase):
                 """,
             ]
         )
-
-    def tearDown(self):
-        self.prison.query(["rm", "-rf", self.SCRATCH])
+        self.addCleanup(self.prison.query, ["rm", "-rf", self.SCRATCH_REPO])
 
     def test_branching_and_merging_works(self):
+        self._setup_scratch_repo()
         result = self.prison.query(
             [
                 "bash",
                 "-c",
                 f"""
-                    cd {self.SCRATCH} &&
+                    cd {self.SCRATCH_REPO} &&
                     git checkout -qb feature &&
                     echo feature-change > b &&
                     git add b &&
@@ -191,16 +236,16 @@ class _AlcatrazWorkflowInvariants(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
 
     def test_new_commit_records_its_author_identity(self):
-        """Sanity: commits honor the local user.name/user.email (not some
-        mysterious system default). Uses the scratch repo's intentionally-
-        set workflow-test identity; no coupling to the workspace's agent
-        identity."""
+        """Sanity: commits honor the local user.name/user.email. Uses the
+        scratch repo's intentionally-set workflow-test identity; no
+        coupling to the workspace's agent identity."""
+        self._setup_scratch_repo()
         result = self.prison.query(
             [
                 "bash",
                 "-c",
                 f"""
-                    cd {self.SCRATCH} &&
+                    cd {self.SCRATCH_REPO} &&
                     echo more > c &&
                     git add c &&
                     git commit -qm more &&
@@ -212,13 +257,14 @@ class _AlcatrazWorkflowInvariants(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "workflow-test|workflow@test.local")
 
     def test_python_can_execute_a_file(self):
+        self.addCleanup(self.prison.query, ["rm", "-f", self.SCRATCH_PY])
         result = self.prison.query(
             [
                 "bash",
                 "-c",
                 f"""
-                    echo 'print("hello from python")' > {self.SCRATCH}/hello.py &&
-                    python {self.SCRATCH}/hello.py
+                    echo 'print("hello from python")' > {self.SCRATCH_PY} &&
+                    python {self.SCRATCH_PY}
                 """,
             ]
         )
@@ -226,6 +272,7 @@ class _AlcatrazWorkflowInvariants(unittest.TestCase):
         self.assertIn("hello from python", result.stdout)
 
     def test_node_can_execute_inline_code(self):
+        # No scratch — `node -e` runs inline without a file.
         result = self.prison.query(["node", "-e", "console.log('hello from node')"])
         self.assertEqual(result.returncode, 0)
         self.assertIn("hello from node", result.stdout)
@@ -239,13 +286,18 @@ class TestAlcatrazSmokeCI(
     _AlcatrazSecurityInvariants,
     _AlcatrazToolingInvariants,
     _AlcatrazWorkflowInvariants,
+    unittest.TestCase,
 ):
     """Full end-to-end CI path: bring up a fresh Alcatraz, run all three
-    tiers against it, tear down."""
+    tiers against it, tear down.
+
+    Inheritance order: mixins first (for method resolution on plain
+    classes) then `unittest.TestCase` last so `self.assertXxx` and
+    `self.addCleanup` resolve correctly via MRO."""
 
     @classmethod
     def setUpClass(cls):
-        cls._tmp = tempfile.TemporaryDirectory()
+        cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         cls.project_dir = Path(cls._tmp.name)
         _seed_project(cls.project_dir)
 
@@ -273,58 +325,16 @@ class TestAlcatrazSmokeCI(
 
     @classmethod
     def tearDownClass(cls):
-        try:
+        with contextlib.suppress(Exception):
             cls.prison.stop()
+        with contextlib.suppress(Exception):
             cls.prison.remove()
-        except Exception:
-            pass
-        cls._tmp.cleanup()
-
-
-# ── Orthogonal "zero-branding inside the Alcatraz" grep check ─────────
-
-
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestZeroAlcatrazFootprint(unittest.TestCase):
-    """Grep for 'alcatraz' across env / git config / hostname / mountinfo.
-
-    Shares its Alcatraz with TestAlcatrazSmokeCI above — setUpClass there
-    is expected to have already booted the prison. Uses the canonical
-    container name so the query targets the same box.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.prison = DockerPrison(Path("/"))  # project_dir unused for query
-
-    def _footprint_grep(self, command: str) -> str:
-        result = self.prison.query(["bash", "-c", command])
-        return result.stdout + result.stderr
-
-    def test_no_alcatraz_in_alcatraz(self):
-        output = self._footprint_grep(
-            "{ env; git config --global --list; "
-            "git -C /workspace config --local --list; "
-            "hostname; } "
-            "| grep -i alcatraz || echo CLEAN"
-        )
-        self.assertIn(
-            "CLEAN",
-            output,
-            f"Alcatraz footprint detected inside Alcatraz: {output}",
-        )
-
-    @unittest.skipIf(
-        os.environ.get("CI") == "true",
-        "Skipped in CI — host path contains repo name 'alcatrazer'",
-    )
-    def test_no_alcatraz_in_alcatraz_mount_points(self):
-        output = self._footprint_grep("cat /proc/self/mountinfo | grep -i alcatraz || echo CLEAN")
-        self.assertIn(
-            "CLEAN",
-            output,
-            f"Alcatraz footprint in mount points: {output}",
-        )
+        # Nuke phantom-UID-owned files before Python's rmtree — the
+        # workspace's chown at entrypoint time propagated through the
+        # bind mount, so the CI user can't unlink them directly.
+        _nuke_phantom_uid_files(cls.project_dir)
+        with contextlib.suppress(Exception):
+            cls._tmp.cleanup()
 
 
 if __name__ == "__main__":

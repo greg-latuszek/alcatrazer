@@ -29,6 +29,7 @@ would reuse the same assertions (only the `query` mechanics differ).
 
 from __future__ import annotations
 
+import os
 import re
 import unittest
 from pathlib import Path
@@ -42,8 +43,17 @@ from alcatrazer.alcatraz import Alcatraz
 _ALLOWED_SECRET_ENV_PATTERN = re.compile(r"^(ANTHROPIC_API_KEY|OPENAI_API_KEY|MINIMAX_API_KEY)=")
 
 
-class _AlcatrazSecurityInvariants(unittest.TestCase):
-    """Read-only security invariants for any running Alcatraz.
+class _AlcatrazSecurityInvariants:
+    """Read-only security invariants for any running Alcatraz — MIXIN.
+
+    Deliberately NOT a `unittest.TestCase` subclass. If it were, importing
+    this name into another module (e.g. `test_smoke.py`) would make it a
+    module-level `TestCase` under that module's namespace, which
+    `unittest discover` then runs standalone — with no `setUpClass`
+    populating `cls.prison`. Concrete classes MUST add `unittest.TestCase`
+    to their bases (see `make_alcatraz_selftest_testcase` below and
+    `TestAlcatrazSmokeCI` in test_smoke.py). MRO resolves `self.assertXxx`
+    / `self.addCleanup` via TestCase at runtime.
 
     Subclasses populate two class attributes in `setUpClass` and inherit
     all the assertion methods:
@@ -183,6 +193,42 @@ class _AlcatrazSecurityInvariants(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
 
+    # --- 7. Zero "alcatraz" branding inside the Alcatraz ---------------
+
+    def test_no_alcatraz_branding_in_environment(self):
+        """Broad sweep across env / git config / hostname for any
+        'alcatraz' string leaking inside the sandbox."""
+        result = self.prison.query(
+            [
+                "bash",
+                "-c",
+                "{ env; git config --global --list; "
+                "git -C /workspace config --local --list; "
+                "hostname; } | grep -i alcatraz || echo CLEAN",
+            ]
+        )
+        combined = result.stdout + result.stderr
+        self.assertIn("CLEAN", combined, f"Alcatraz footprint detected: {combined}")
+
+    @unittest.skipIf(
+        os.environ.get("CI") == "true",
+        "Skipped in CI — the runner's host path contains 'alcatrazer'",
+    )
+    def test_no_alcatraz_branding_in_mount_points(self):
+        result = self.prison.query(
+            [
+                "bash",
+                "-c",
+                "cat /proc/self/mountinfo | grep -i alcatraz || echo CLEAN",
+            ]
+        )
+        combined = result.stdout + result.stderr
+        self.assertIn(
+            "CLEAN",
+            combined,
+            f"Alcatraz footprint in mount points: {combined}",
+        )
+
 
 def make_alcatraz_selftest_testcase(project_dir: Path) -> type[unittest.TestCase]:
     """Build a TestCase bound to the already-running Alcatraz at `project_dir`.
@@ -193,7 +239,7 @@ def make_alcatraz_selftest_testcase(project_dir: Path) -> type[unittest.TestCase
     """
     from alcatrazer.docker_prison import DockerPrison
 
-    class SelftestAlcatraz(_AlcatrazSecurityInvariants):
+    class SelftestAlcatraz(_AlcatrazSecurityInvariants, unittest.TestCase):
         @classmethod
         def setUpClass(cls):
             alcatraz_dir = project_dir / ".alcatrazer"
