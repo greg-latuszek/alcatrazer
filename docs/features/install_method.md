@@ -56,7 +56,7 @@ for the full reasoning behind this architecture.
 
 ---
 
-## CLI: Four Commands
+## CLI: Five Commands
 
 **Design goal:** Minimalism. Developers are tired of learning new tools. Alcatrazer
 should be operable and invisible — as few commands as possible, no Docker vocabulary
@@ -76,7 +76,8 @@ named command per phase maps 1:1 to the two decisions the user actually makes:
 ```
 alcatrazer init                      one-time: wizards → config + recipe on disk
 alcatrazer start                     daily: build (if needed) + start + run startup
-alcatrazer stop                      stop the container
+alcatrazer stop                      freeze the Alcatraz (writable layer preserved)
+alcatrazer clear                     throw away the Alcatraz (next start recreates)
 alcatrazer upgrade                   check for and install new alcatrazer version
 ```
 
@@ -174,9 +175,31 @@ commands, which picks up external script changes. Simple, predictable, no magic.
 After each successful build, the current `coding-environment.toml` is copied to
 `.alcatrazer/coding-environment.toml.last` as a record of what the last build used.
 
-### `alcatrazer stop` — stop the container
+### `alcatrazer stop` — freeze the Alcatraz
+
+Stop the Alcatraz without throwing it away. The container's writable overlay
+layer (and thus its caches — mise, pip, npm — see "Ephemeral caches" below)
+survives. A subsequent `alcatrazer start` with no config changes resumes
+from exactly where you left off.
 
 No flags, no options. Just stop.
+
+### `alcatrazer clear` — throw away the Alcatraz
+
+Remove the container entirely. The writable layer and its caches are
+discarded. The image stays; `.alcatrazer/` config stays. Next
+`alcatrazer start` hits the "fresh start" branch of the lifecycle table
+(Step 4) and recreates the container from the existing image — no
+rebuild needed, caches populated fresh from scratch.
+
+Typical use: "my container state got weird, but I don't want to re-init
+the repo." For a fully fresh image too, follow with
+`alcatrazer start --rebuild`.
+
+No flags. Idempotent (no container present = no-op). Does NOT remove
+`.alcatrazer/` (factory-reset belongs to a future `alcatrazer uninstall`)
+and does NOT touch user-owned repo-root files (`coding-environment.toml`,
+`.env`, `.env.example`).
 
 ### `alcatrazer upgrade` — self-update
 
@@ -1110,7 +1133,7 @@ Docker volumes" above) survives every "nothing important changed" restart.
 | `toml_changed` | `coding-environment.toml` content vs `.alcatrazer/coding-environment.toml.last` | `[startup]`-only changes (Dockerfile byte-identical but startup script list differs) |
 | `env_changed` | hash of `.env` vs `.alcatrazer/env.hash.last` (both absent counts as unchanged) | env is baked at `docker run` time, so any change means recreate |
 | `running` | `prison.is_running()` | container state |
-| `exists` | `prison.container_exists()` | container present in any state (running or stopped) |
+| `exists` | `prison.prison_exists()` | Alcatraz present in any state (running or stopped) — stays backend-neutral at the port; DockerPrison maps this to the existing `_container_exists()` internal helper |
 
 **Lifecycle branches:**
 
@@ -1129,10 +1152,12 @@ port so `DockerPrison` can implement them and future adapters stay honest:
   layer. For `DockerPrison`: `docker start <container_name>`. Raises
   `PrisonStartError` on failure. Distinct from `start()` which always creates
   a fresh container via `docker run`.
-- `container_exists()` — True if a container with the configured name exists
-  in any state. Promote the existing private `DockerPrison._container_exists`
-  to the port. Needed so `_subsequent_run` can distinguish "no container,
-  must `start`" from "stopped container, can `resume`".
+- `prison_exists()` — True if an Alcatraz instance with the configured
+  identity exists in any state (running or stopped). Backend-neutral name
+  per the memory's `feedback_alcatraz_naming.md` rule; for `DockerPrison`
+  it wraps the existing private `_container_exists` helper. Needed so
+  `_subsequent_run` can distinguish "no Alcatraz, must `start`" from
+  "stopped Alcatraz, can `resume`".
 
 `ALCATRAZ_OPERATIONS` surface test in `test_alcatraz.py` grows by two.
 
@@ -1144,13 +1169,29 @@ which were its own). Release notes should call out
 `docker volume rm alcatraz-mise-cache alcatraz-pip-cache alcatraz-npm-cache`
 as a one-shot cleanup for early adopters.
 
-**`.env` change detection (Step 4c):** two small helpers in `start.py`:
-- `env_file_changed(project_dir) -> bool` — SHA256 `.env` (if present),
-  compare against the first line of `.alcatrazer/env.hash.last`. Absent
-  `.env` + absent `.hash.last` = unchanged. Absent `.env` + present `.hash.last`
-  = changed (user removed the file; recreate to drop the env vars).
-- `save_env_snapshot(project_dir)` — write the current hash to `.hash.last`
-  on successful run. Symmetric to `save_coding_environment_snapshot`.
+**`.env` change detection (Step 4c):** two small helpers in `start.py`,
+hashing only the **meaningful** content (comments and blank lines are
+noise — a user who only tweaks a `# comment` line shouldn't pay the cost
+of a recreate):
+
+- `env_file_changed(project_dir) -> bool` — read `.env` (if present),
+  normalize by dropping blank lines and full-line comments (lines whose
+  first non-whitespace char is `#`), **preserve line order** (duplicate
+  keys with different values may matter to some parsers; conservative
+  default), SHA256 the UTF-8-encoded filtered content, compare against
+  `.alcatrazer/env.hash.last`. Rules:
+    - Absent `.env` + absent `.hash.last` → unchanged.
+    - Absent `.env` + present `.hash.last` → changed (user removed the
+      file; recreate to drop the env vars that were baked in).
+    - Present `.env` + hash matches → unchanged.
+    - Otherwise → changed.
+  **Do NOT** strip inline `# ...` tails on a `KEY=VALUE` line — docker's
+  `--env-file` treats `FOO=bar  # x` as value `bar  # x`, so stripping
+  would change semantics. Only whole-line comments are free to ignore.
+- `save_env_snapshot(project_dir)` — write the current hash to
+  `.alcatrazer/env.hash.last` on successful run. Symmetric to
+  `save_coding_environment_snapshot`. Writes empty hash when `.env`
+  is absent (so the "absent + present last" transition detects correctly).
 
 **Lifecycle rewrite (Step 4d):** `_subsequent_run` grows the new branches
 above. `SubsequentRunTests` grows cases for: resume-from-stopped,
@@ -1164,7 +1205,43 @@ Substeps land in TDD order: 4a (port surface — smallest, unblocks the rest),
 
 ### Step 5: Implement `alcatrazer stop`
 
-Stop the container. Straightforward.
+Stop the Alcatraz without removing it — `prison.stop()` maps to
+`docker stop <container>`. The writable overlay layer (and its caches)
+is preserved. Idempotent: no-op when not running. Straightforward.
+
+### Step 5.5: Implement `alcatrazer clear`
+
+`cmd_clear(project_dir, prison=None) -> int` removes the Alcatraz
+entirely (writable layer + caches discarded), leaves the image and
+`.alcatrazer/` config untouched so `alcatrazer start` recreates
+trivially on next invocation.
+
+Implementation reuses existing port methods only — no new abstractions:
+- `prison.stop()` — idempotent; skipped if not running.
+- `prison.remove()` — idempotent; `docker rm -f <container>` in
+  `DockerPrison`.
+
+Guards:
+- `.alcatrazer/` missing → print "no alcatrazer setup here — run
+  `alcatrazer init` first" and return 1 (symmetric to `cmd_start` /
+  `cmd_stop`).
+- No Alcatraz present (`!prison.prison_exists()`) → no-op exit 0 with
+  a friendly message ("Nothing to clear — Alcatraz not present.").
+
+Does NOT:
+- Remove the image (use `alcatrazer start --rebuild` afterwards if
+  wanted).
+- Remove `.alcatrazer/` config, `coding-environment.toml`, `.env`,
+  `.env.example`, or the workspace directory. Those are either user-
+  owned repo-root artifacts or fall under a future `alcatrazer
+  uninstall` command.
+
+CLI wiring: `alcatrazer clear` subcommand → `start_module.cmd_clear`.
+No flags.
+
+Tests: `CmdClearTests` mirroring `CmdStopTests` (guard for missing
+`.alcatrazer/`, no-op when no Alcatraz, stop-then-remove when present)
++ `CliClearTests` for argparse wiring.
 
 ### Step 6: Implement `alcatrazer upgrade`
 
