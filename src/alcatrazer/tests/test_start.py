@@ -631,28 +631,79 @@ class WriteAlcatrazerConfigTests(unittest.TestCase):
 
 
 class WriteEnvExampleTests(unittest.TestCase):
-    """Step 3e: .env.example writer — agent-visible, zero branding, skip if present."""
+    """Step 3e: .env.example writer — emits an alcatrazer-branded block
+    with an ANTHROPIC_API_KEY placeholder so the user has concrete
+    guidance on what to fill in before running `alcatrazer start`.
+
+    Idempotency: on repos that already have a .env.example, the writer
+    appends (or replaces in place) a bracketed block — never duplicates."""
+
+    BEGIN_MARKER = "# --- alcatrazer begin ---"
+    END_MARKER = "# --- alcatrazer end ---"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
+    def _read(self) -> str:
+        return (self.project_dir / ".env.example").read_text()
+
     def test_writes_env_example_at_repo_root(self):
         path = start.write_env_example(self.project_dir)
         self.assertEqual(path, self.project_dir / ".env.example")
         self.assertTrue(path.is_file())
 
-    def test_zero_alcatrazer_branding(self):
-        path = start.write_env_example(self.project_dir)
-        self.assertNotIn("alcatraz", path.read_text().lower())
+    def test_includes_anthropic_api_key_placeholder(self):
+        start.write_env_example(self.project_dir)
+        self.assertIn("ANTHROPIC_API_KEY", self._read())
 
-    def test_skips_and_returns_none_when_file_exists(self):
+    def test_fresh_write_contains_marker_block(self):
+        start.write_env_example(self.project_dir)
+        text = self._read()
+        self.assertIn(self.BEGIN_MARKER, text)
+        self.assertIn(self.END_MARKER, text)
+        self.assertLess(text.index(self.BEGIN_MARKER), text.index(self.END_MARKER))
+
+    def test_appends_block_when_file_exists_without_markers(self):
+        """Target repo may already have its own .env.example; we append
+        our block without touching existing content."""
         existing = self.project_dir / ".env.example"
-        existing.write_text("USER_VAR=1\n")
+        existing_content = "USER_VAR=1\nANOTHER=two\n"
+        existing.write_text(existing_content)
+
+        start.write_env_example(self.project_dir)
+        text = self._read()
+        self.assertIn("USER_VAR=1", text)
+        self.assertIn("ANOTHER=two", text)
+        self.assertIn(self.BEGIN_MARKER, text)
+        self.assertIn("ANTHROPIC_API_KEY", text)
+        # User content appears before our appended block.
+        self.assertLess(text.index("USER_VAR=1"), text.index(self.BEGIN_MARKER))
+
+    def test_idempotent_when_markers_already_present(self):
+        """Re-running on a file that already has the alcatrazer block
+        rewrites in place — no duplication, existing non-block content
+        preserved."""
+        start.write_env_example(self.project_dir)  # first pass
+        user_addition = "\n# user added below\nMY_VAR=x\n"
+        path = self.project_dir / ".env.example"
+        path.write_text(path.read_text() + user_addition)
+
+        start.write_env_example(self.project_dir)  # second pass
+        text = self._read()
+        # Exactly one block.
+        self.assertEqual(text.count(self.BEGIN_MARKER), 1)
+        self.assertEqual(text.count(self.END_MARKER), 1)
+        # User addition preserved.
+        self.assertIn("MY_VAR=x", text)
+        # Placeholder still present.
+        self.assertIn("ANTHROPIC_API_KEY", text)
+
+    def test_returns_path_even_when_file_existed(self):
+        (self.project_dir / ".env.example").write_text("EXISTING=1\n")
         result = start.write_env_example(self.project_dir)
-        self.assertIsNone(result)
-        self.assertEqual(existing.read_text(), "USER_VAR=1\n")
+        self.assertEqual(result, self.project_dir / ".env.example")
 
 
 class WriteGitExcludeTests(unittest.TestCase):
