@@ -91,7 +91,23 @@ class Alcatraz(ABC):
 
     @abstractmethod
     def exec(self, command: list[str]) -> int:
-        """Run a command inside the running workspace container. Return exit code."""
+        """Run a command inside the running workspace container. Return exit code.
+
+        Output streams directly to the caller's terminal — for human-facing
+        work (startup commands, interactive attaches) where live progress
+        matters. If you need to capture output for programmatic inspection,
+        use `query` instead.
+        """
+
+    @abstractmethod
+    def query(self, command: list[str]):
+        """Run a command inside the workspace and return the captured result.
+
+        Unlike `exec` (which streams output for humans), `query` captures
+        stdout / stderr / exit code and returns them as a
+        `subprocess.CompletedProcess`-shaped object so programs can read
+        and decide — security self-tests, health checks, diagnostics.
+        """
 
     @abstractmethod
     def remove(self) -> None:

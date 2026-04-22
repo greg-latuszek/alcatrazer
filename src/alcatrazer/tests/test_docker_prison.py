@@ -8,6 +8,8 @@
   + `sleep infinity`; raises PrisonStartError on failure (Step 3k).
 - exec(command) — runs `docker exec -u agent`, streams output, returns
   exit code (Step 3k).
+- query(command) — runs `docker exec -u agent`, captures stdout / stderr
+  / exit, returns CompletedProcess for programmatic inspection (Step 7).
 - image_exists(), is_running(), stop(), remove(), needs_rebuild() — the
   state-query and lifecycle methods the subsequent-run detection logic
   (Step 4) needs.
@@ -289,6 +291,53 @@ class DockerPrisonBuildTests(unittest.TestCase):
     def test_success_returns_none(self):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()):
             self.assertIsNone(DockerPrison(self.project_dir).build())
+
+
+class DockerPrisonQueryTests(unittest.TestCase):
+    """query() captures stdout/stderr/exit for programmatic inspection —
+    counterpart to exec() which streams to the terminal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_invokes_docker_exec_as_agent_with_container_name(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(["id"])
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        self.assertEqual(cmd[5:], ["id"])
+
+    def test_captures_stdout_and_stderr_as_text(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(["id"])
+        kwargs = mock_run.call_args.kwargs
+        self.assertTrue(kwargs.get("capture_output"))
+        self.assertTrue(kwargs.get("text"))
+
+    def test_returns_completed_process_for_inspection(self):
+        fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="uid=1007", stderr="")
+        with patch.object(docker_prison.subprocess, "run", return_value=fake):
+            result = DockerPrison(self.project_dir).query(["id"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "uid=1007")
+
+    def test_nonzero_exit_is_returned_not_raised(self):
+        """query surfaces failures via the result — callers decide."""
+        fake = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        with patch.object(docker_prison.subprocess, "run", return_value=fake):
+            result = DockerPrison(self.project_dir).query(["false"])
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "boom")
 
 
 class DockerPrisonStartTests(unittest.TestCase):

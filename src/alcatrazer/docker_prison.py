@@ -343,6 +343,9 @@ class DockerPrison(Alcatraz):
         full = ["docker", "exec", "-u", "agent", self.container_name, *command]
         return subprocess.run(full).returncode
 
+    def query(self, command: list[str]) -> subprocess.CompletedProcess:
+        raise NotImplementedError("DockerPrison.query lands in Step 7 refactor")
+
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""
         if not self._container_exists():
