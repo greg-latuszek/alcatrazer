@@ -365,29 +365,114 @@ def _format_toml_list(values: list[str]) -> str:
     return "[\n    " + ",\n    ".join(items) + ",\n]"
 
 
+# Commented-out syntax reference for each supported language. Emitted in
+# the generated coding-environment.toml so a user who didn't pick (say)
+# node at init time can uncomment the block later and run `alcatrazer start`
+# without hunting for docs.
+_EXAMPLE_LANGUAGE_BLOCKS: dict[str, list[str]] = {
+    "python": ["# [languages.python]", '# version = "3.12"', '# manager = "uv"'],
+    "node": ["# [languages.node]", '# version = "22"'],
+    "rust": ["# [languages.rust]", '# version = "1.75"'],
+    "go": ["# [languages.go]", '# version = "1.22"'],
+}
+
+_CODING_ENVIRONMENT_HEADER = [
+    "# Coding environment definition for this repository.",
+    "#",
+    "# Describes what must exist before the project's own setup can run — OS",
+    "# packages, language runtimes and their managers, and post-start commands.",
+    "# Sections follow dependency order: OS -> languages -> startup.",
+    "#",
+    "# Edit freely. Changes to [os] or [languages] trigger a workspace rebuild",
+    "# on the next run; changes to [startup] only trigger a restart.",
+    "#",
+    "# Language libraries (pip, npm, cargo, ...) do NOT belong here — they live",
+    "# in the project's own manifests (requirements.txt, package.json, etc.)",
+    "# and get installed by [startup] commands or by agents at runtime.",
+]
+
+_OS_SECTION_COMMENT = [
+    "# System packages installed when the workspace is built.",
+    "# Typical uses: compilation toolchains, shared libraries for native modules,",
+    "# system tools that language packages cannot provide.",
+]
+_OS_EXAMPLE = ["# [os]", '# packages = ["build-essential", "libpq-dev"]']
+
+_LANGUAGES_SECTION_COMMENT = [
+    "# Language runtimes and package managers, one subtable per language.",
+    '# `version` is required — pin to a concrete number, never "latest".',
+    "# `manager` is optional — omit to use the language's standard manager.",
+]
+
+_STARTUP_SECTION_COMMENT = [
+    "# Commands run after the workspace starts, in order. Fail-fast: a non-zero",
+    "# exit stops the remaining commands. Use for installing project dependencies",
+    "# from the repo's own manifests, configuring frameworks, arbitrary setup.",
+]
+_STARTUP_EXAMPLE = [
+    "# [startup]",
+    "# commands = [",
+    '#     "uv sync",',
+    '#     "npm install",',
+    "# ]",
+]
+
+
 def _render_coding_environment(data: dict) -> str:
-    """Serialize a coding-environment dict to TOML text. Zero alcatrazer branding."""
-    lines = [
-        "# Coding environment for this repository.",
-        "# Sections run in dependency order: OS packages are installed first,",
-        "# then language runtimes and managers, then post-start commands.",
-        "",
-    ]
-    if "os" in data:
+    """Serialize a coding-environment dict to rich, comment-heavy TOML.
+
+    Intent: whatever the user picks via the init wizard, the generated
+    file also carries enough inline documentation + commented-out
+    examples that the user can edit the toml directly later ("add rust",
+    "add an [os] package", "wire up a [startup] command") and run
+    `alcatrazer start` without consulting docs.
+
+    Anti-leak discipline: this file is at the outer repo root, so it
+    gets committed to the user's git AND snapshotted into /workspace.
+    Zero `alcatraz` / `alcatrazer` strings, zero backend-specific
+    vocabulary (no "container", no "image" — "workspace" is the neutral
+    term that survives a future podman/sysbox/VM backend).
+    """
+    lines: list[str] = [*_CODING_ENVIRONMENT_HEADER, ""]
+
+    # --- [os] -----------------------------------------------------------
+    lines += _OS_SECTION_COMMENT
+    os_packages = data.get("os", {}).get("packages", [])
+    if os_packages:
         lines.append("[os]")
-        lines.append(f"packages = {_format_toml_list(data['os'].get('packages', []))}")
+        lines.append(f"packages = {_format_toml_list(os_packages)}")
+    else:
+        lines += _OS_EXAMPLE
+    lines.append("")
+
+    # --- [languages.*] --------------------------------------------------
+    lines += _LANGUAGES_SECTION_COMMENT
+    languages = data.get("languages", {})
+    for lang, cfg in languages.items():
+        lines.append(f"[languages.{lang}]")
+        lines.append(f"version = {_format_toml_string(cfg['version'])}")
+        if "manager" in cfg:
+            lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
         lines.append("")
-    if "languages" in data:
-        for lang, cfg in data["languages"].items():
-            lines.append(f"[languages.{lang}]")
-            lines.append(f"version = {_format_toml_string(cfg['version'])}")
-            if "manager" in cfg:
-                lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
-            lines.append("")
-    if "startup" in data:
+    # One commented syntax-reference block for a language the user DIDN'T
+    # pick. If they picked all four, fall back to python as a generic
+    # reference (copy-paste-able).
+    example_lang = next(
+        (lang for lang in _EXAMPLE_LANGUAGE_BLOCKS if lang not in languages),
+        "python",
+    )
+    lines += _EXAMPLE_LANGUAGE_BLOCKS[example_lang]
+    lines.append("")
+
+    # --- [startup] ------------------------------------------------------
+    lines += _STARTUP_SECTION_COMMENT
+    startup_commands = data.get("startup", {}).get("commands", [])
+    if startup_commands:
         lines.append("[startup]")
-        lines.append(f"commands = {_format_toml_list(data['startup'].get('commands', []))}")
-        lines.append("")
+        lines.append(f"commands = {_format_toml_list(startup_commands)}")
+    else:
+        lines += _STARTUP_EXAMPLE
+
     while lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines) + "\n"

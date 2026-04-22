@@ -553,11 +553,54 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         path = start.write_coding_environment_toml(self.project_dir, data)
         self.assertNotIn("alcatraz", path.read_text().lower())
 
-    def test_omits_absent_sections(self):
+    def test_absent_sections_have_commented_examples_not_active_headers(self):
+        """When the user doesn't pick [os] or [startup] at init time, the
+        generated file carries commented-out example blocks (so they can
+        edit and run `alcatrazer start` later) but NOT an active header."""
+        import re
+
         data = {"languages": {"python": {"version": "3.12"}}}
         content = start.write_coding_environment_toml(self.project_dir, data).read_text()
-        self.assertNotIn("[os]", content)
-        self.assertNotIn("[startup]", content)
+
+        # Active headers (line-anchored, no leading '#') must be absent.
+        self.assertNotRegex(content, r"(?m)^\[os\]")
+        self.assertNotRegex(content, r"(?m)^\[startup\]")
+        # Commented examples must be present.
+        self.assertRegex(content, r"(?m)^# \[os\]")
+        self.assertRegex(content, r"(?m)^# \[startup\]")
+        # And parses cleanly as TOML (commented blocks don't break it).
+        tomllib.loads(content)
+        # Keep the `re` import from being flagged as unused if the assertRegex
+        # implementation is reshuffled later.
+        self.assertTrue(re.compile(r"^# \[os\]", re.MULTILINE).search(content))
+
+    def test_shows_commented_example_for_a_language_user_didnt_pick(self):
+        """Syntax reference so the user can add another language later."""
+        data = {"languages": {"python": {"version": "3.12"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        # Python is active (chosen), so the commented example must be
+        # one of the OTHER supported languages — never a duplicated python
+        # block that'd shadow the real one.
+        self.assertRegex(content, r"(?m)^# \[languages\.(node|rust|go)\]")
+        self.assertNotRegex(content, r"(?m)^# \[languages\.python\]")
+
+    def test_header_explains_rebuild_vs_restart_semantics(self):
+        """Users editing this file directly need to know which sections
+        trigger a rebuild (os, languages) vs just a restart (startup)."""
+        data = {"languages": {"python": {"version": "3.12"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        self.assertIn("rebuild", content.lower())
+        self.assertIn("restart", content.lower())
+
+    def test_backend_agnostic_vocabulary(self):
+        """Agent-visible file — no 'container' / 'image' / 'docker' leaks."""
+        data = {"languages": {"python": {"version": "3.12"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text().lower()
+        self.assertNotIn("container", content)
+        self.assertNotIn("docker", content)
+        # "image" doesn't appear in any of our comments.
+        self.assertNotIn(" image ", content)
+        self.assertIn("workspace", content)
 
     def test_collision_uses_hex_suffix(self):
         existing = self.project_dir / "coding-environment.toml"
