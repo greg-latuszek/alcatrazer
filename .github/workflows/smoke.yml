@@ -1,11 +1,25 @@
 name: Smoke Tests
 
-# Docker integration tests — run on merge to main only.
-# Verifies container isolation properties on a clean machine.
+# Docker integration tests — verifies container isolation properties on
+# a clean machine. Triggers:
+#   push to main     — authoritative run after merge
+#   PR to main       — validate a branch before merging; fires on opened
+#                      + synchronize (each new commit) + reopened
+#   workflow_dispatch — manual run: `gh workflow run smoke.yml --ref <branch>`
+#                      or the "Run workflow" button in the GitHub UI
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel any in-progress run on the same ref when a newer commit lands.
+# Groups per-branch / per-PR, so pushes to one PR never cancel another.
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
