@@ -26,7 +26,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from alcatrazer import __version__, cli, identity, languages, start
+from alcatrazer import __version__, cli, identity, languages, selftest, start
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
@@ -1381,6 +1381,107 @@ class CliStopTests(unittest.TestCase):
         ):
             cli.main()
         self.assertEqual(cm.exception.code, 1)
+
+
+class CmdSelftestTests(unittest.TestCase):
+    """`alcatrazer.start.cmd_selftest(project_dir)` builds the factory's
+    TestCase against the running Alcatraz and runs it, returning 0 on
+    success or non-zero on failure."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _build_fake_testcase(self) -> type[unittest.TestCase]:
+        """Return a trivial TestCase subclass we can hand to the factory mock."""
+
+        class Fake(unittest.TestCase):
+            def test_nothing(self_):
+                pass
+
+        return Fake
+
+    def test_invokes_factory_with_project_dir(self):
+        fake = self._build_fake_testcase()
+        with (
+            patch.object(selftest, "make_alcatraz_selftest_testcase", return_value=fake) as factory,
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            start.cmd_selftest(self.project_dir)
+        factory.assert_called_once_with(self.project_dir)
+
+    def test_returns_zero_on_success(self):
+        fake = self._build_fake_testcase()
+        with (
+            patch.object(selftest, "make_alcatraz_selftest_testcase", return_value=fake),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_selftest(self.project_dir)
+        self.assertEqual(rc, 0)
+
+    def test_returns_nonzero_on_failure(self):
+        class Failing(unittest.TestCase):
+            def test_always_fails(self_):
+                self_.fail("intentional")
+
+        with (
+            patch.object(selftest, "make_alcatraz_selftest_testcase", return_value=Failing),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_selftest(self.project_dir)
+        self.assertNotEqual(rc, 0)
+
+
+class CliRunSelftestFlagTests(unittest.TestCase):
+    """`alcatrazer start --run-selftest` runs cmd_start, then cmd_selftest —
+    but only if cmd_start succeeded."""
+
+    def test_runs_selftest_after_successful_start(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "start", "--run-selftest"]),
+            patch.object(start, "cmd_start", return_value=0) as mock_start,
+            patch.object(start, "cmd_selftest", return_value=0) as mock_selftest,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        mock_start.assert_called_once()
+        mock_selftest.assert_called_once()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_skips_selftest_when_start_failed(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "start", "--run-selftest"]),
+            patch.object(start, "cmd_start", return_value=1),
+            patch.object(start, "cmd_selftest") as mock_selftest,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        mock_selftest.assert_not_called()
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_nonzero_selftest_propagates_to_exit(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "start", "--run-selftest"]),
+            patch.object(start, "cmd_start", return_value=0),
+            patch.object(start, "cmd_selftest", return_value=3),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        self.assertEqual(cm.exception.code, 3)
+
+    def test_no_selftest_when_flag_absent(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "start"]),
+            patch.object(start, "cmd_start", return_value=0),
+            patch.object(start, "cmd_selftest") as mock_selftest,
+            self.assertRaises(SystemExit),
+        ):
+            cli.main()
+        mock_selftest.assert_not_called()
 
 
 if __name__ == "__main__":
