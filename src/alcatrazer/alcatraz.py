@@ -107,7 +107,7 @@ class Alcatraz(ABC):
         """Whether the workspace container is currently running."""
 
     @abstractmethod
-    def prison_exists(self) -> bool:
+    def exists(self) -> bool:
         """Whether an Alcatraz instance with the configured identity exists.
 
         Covers BOTH running and stopped instances — unlike `is_running()`.

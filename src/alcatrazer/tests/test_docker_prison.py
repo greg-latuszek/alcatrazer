@@ -631,9 +631,8 @@ class DockerPrisonResumeTests(unittest.TestCase):
         self.assertIn("no such container", ctx.exception.stderr)
 
 
-class DockerPrisonPrisonExistsTests(unittest.TestCase):
-    """prison_exists() — port-level check mapping to the existing private
-    _container_exists in DockerPrison. True if a container matching the
+class DockerPrisonExistsTests(unittest.TestCase):
+    """exists() — port-level check. True if a container matching the
     configured name exists in ANY state (running or stopped). Used by
     _subsequent_run to distinguish 'no container, fresh start' from
     'stopped container, resume candidate'."""
@@ -651,7 +650,7 @@ class DockerPrisonPrisonExistsTests(unittest.TestCase):
                 args=[], returncode=0, stdout="workspace\n", stderr=""
             ),
         ):
-            self.assertTrue(DockerPrison(self.project_dir).prison_exists())
+            self.assertTrue(DockerPrison(self.project_dir).exists())
 
     def test_false_when_output_empty(self):
         with patch.object(
@@ -659,10 +658,10 @@ class DockerPrisonPrisonExistsTests(unittest.TestCase):
             "run",
             return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ):
-            self.assertFalse(DockerPrison(self.project_dir).prison_exists())
+            self.assertFalse(DockerPrison(self.project_dir).exists())
 
     def test_uses_ps_dash_a_so_stopped_containers_count(self):
-        """Unlike is_running (which filters status=running), prison_exists
+        """Unlike is_running (which filters status=running), exists
         must see stopped containers too — that's exactly the case the
         resume-from-stopped lifecycle branch depends on."""
         with patch.object(
@@ -670,7 +669,7 @@ class DockerPrisonPrisonExistsTests(unittest.TestCase):
             "run",
             return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ) as mock_run:
-            DockerPrison(self.project_dir).prison_exists()
+            DockerPrison(self.project_dir).exists()
         args = mock_run.call_args.args[0]
         self.assertIn("-a", args)
         # No status=running filter (which would hide stopped containers).
@@ -690,7 +689,7 @@ class DockerPrisonRemoveTests(unittest.TestCase):
 
     def test_noop_when_container_does_not_exist(self):
         with (
-            patch.object(DockerPrison, "prison_exists", return_value=False),
+            patch.object(DockerPrison, "exists", return_value=False),
             patch.object(docker_prison.subprocess, "run") as mock_run,
         ):
             DockerPrison(self.project_dir).remove()
@@ -698,7 +697,7 @@ class DockerPrisonRemoveTests(unittest.TestCase):
 
     def test_runs_docker_rm_force_when_container_exists(self):
         with (
-            patch.object(DockerPrison, "prison_exists", return_value=True),
+            patch.object(DockerPrison, "exists", return_value=True),
             patch.object(
                 docker_prison.subprocess,
                 "run",

@@ -23,7 +23,7 @@ ALCATRAZ_OPERATIONS = frozenset(
         "resume",
         "stop",
         "is_running",
-        "prison_exists",
+        "exists",
         "exec",
         "query",
         "remove",

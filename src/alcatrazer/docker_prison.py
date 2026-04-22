@@ -337,7 +337,7 @@ class DockerPrison(Alcatraz):
         )
         return result.stdout.strip() == self.container_name
 
-    def prison_exists(self) -> bool:
+    def exists(self) -> bool:
         """True when a container matching `container_name` exists (any state).
 
         Port method — backend-neutral name. Uses `docker ps -a` so stopped
@@ -382,7 +382,7 @@ class DockerPrison(Alcatraz):
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""
-        if not self.prison_exists():
+        if not self.exists():
             return
         subprocess.run(
             ["docker", "rm", "-f", self.container_name],
