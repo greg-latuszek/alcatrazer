@@ -344,7 +344,13 @@ class DockerPrison(Alcatraz):
         return subprocess.run(full).returncode
 
     def query(self, command: list[str]) -> subprocess.CompletedProcess:
-        raise NotImplementedError("DockerPrison.query lands in Step 7 refactor")
+        """Run `command` inside the workspace container as `agent` and return
+        the captured result. stdout / stderr / returncode are inspectable
+        on the returned object; non-zero exit does NOT raise — the caller
+        decides (mirrors `exec`'s "return code, don't throw" contract).
+        """
+        full = ["docker", "exec", "-u", "agent", self.container_name, *command]
+        return subprocess.run(full, capture_output=True, text=True)
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""
