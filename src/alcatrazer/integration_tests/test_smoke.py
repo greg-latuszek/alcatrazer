@@ -34,6 +34,41 @@ from alcatrazer.alcatraz import Alcatraz
 from alcatrazer.docker_prison import DockerPrison
 from alcatrazer.selftest import _AlcatrazSecurityInvariants
 
+# ── How CODING_ENV plumbs down to the running container ─────────────
+#
+# Dev-base (git, mise, gosu, the `agent` user) and ai-base (claude) are
+# hardcoded in the Dockerfile constants in docker_prison.py — nothing
+# surprising about testing those.
+#
+# What IS non-trivial: how the `[languages.*]` declaration below ends
+# up as working binaries inside the container, and how the two
+# interactive wizards get stubbed out so CI never blocks on stdin.
+#
+#   CODING_ENV = {languages: {python, node}}
+#        │   (ask_coding_environment patched → returns this)
+#        ▼
+#   _first_time_setup(project_dir)
+#        │
+#        ├─ prison.generate_prison(coding_env)
+#        │     └─ .alcatrazer/Dockerfile Stage 3 `dev` ends up with
+#        │          RUN mise use --global python@3.12 && \
+#        │              mise use --global node@22
+#        │
+#        ├─ prison.build()     docker build runs it → mise installs the
+#        │                     runtimes + puts shims on PATH (dev-base
+#        │                     sets the PATH env to include the shims)
+#        │
+#        └─ prison.start()     container up; node/python resolve via
+#                              the mise shims
+#
+# Then tests reach into it:
+#     prison.query(["node", "--version"])
+#   → docker exec -u agent workspace node --version
+#   → shim → Node 22 → exit 0, stdout "v22.x.y"
+#
+# ask_promotion_identity is patched the same way — returns a fixed
+# Ghost Agent rather than prompting for name/email.
+
 CODING_ENV = {
     "languages": {
         "python": {"version": "3.12"},
