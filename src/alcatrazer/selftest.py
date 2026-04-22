@@ -3,9 +3,9 @@
 Two callers consume this module:
 
 - `integration_tests/test_smoke.py` — CI-mode smoke test. Its TestCase
-  subclass creates a fresh tempdir project, drives `_first_time_setup`
-  end-to-end, runs the assertions here plus its own tooling + workflow
-  mixins, tears down.
+  subclass creates a fresh tempdir project, drives `cmd_init` then
+  `cmd_start` end-to-end, runs the assertions here plus its own tooling +
+  workflow mixins, tears down.
 - `alcatrazer.start.cmd_selftest` — `alcatrazer start --run-selftest`
   post-boot check on the user's live project. Uses
   `make_alcatraz_selftest_testcase(project_dir)` to build a TestCase

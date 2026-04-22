@@ -1,7 +1,8 @@
 """Alcatrazer CLI entry point.
 
 Usage:
-    alcatrazer start       — set up (first run) or start the container (subsequent)
+    alcatrazer init        — one-time: wizards + config + recipe on disk
+    alcatrazer start       — build (if needed) + start the workspace container
     alcatrazer stop        — stop the running workspace container
     alcatrazer test        — run bundled test suite to verify installation
     alcatrazer --version   — print the version (also accepts -V)
@@ -48,9 +49,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
+    subparsers.add_parser(
+        "init",
+        help="One-time interactive setup (wizards + config + recipe)",
+    )
+
     start_parser = subparsers.add_parser(
         "start",
-        help="Set up (first run) or start the container",
+        help="Build (if needed) and start the workspace container",
     )
     start_parser.add_argument(
         "--run-selftest",
@@ -89,7 +95,9 @@ def main():
         parser.print_help()
         return
 
-    if args.command == "start":
+    if args.command == "init":
+        sys.exit(start_module.cmd_init(Path.cwd()))
+    elif args.command == "start":
         rc = start_module.cmd_start(Path.cwd())
         if rc == 0 and args.run_selftest:
             rc = start_module.cmd_selftest(Path.cwd())

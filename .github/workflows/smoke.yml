@@ -32,9 +32,9 @@ jobs:
           python-version: "3.12"
 
       - name: Configure git for CI
-        # `_first_time_setup` reads user.name/email from git config as the
-        # default promotion identity; give CI a deterministic one even
-        # though the smoke test stubs ask_promotion_identity.
+        # `cmd_init` reads user.name/email from git config as the default
+        # promotion identity; give CI a deterministic one even though the
+        # smoke test stubs ask_promotion_identity.
         run: |
           git config --global user.name "CI Test"
           git config --global user.email "ci@test.local"
@@ -47,7 +47,8 @@ jobs:
 
       - name: Run smoke tests
         # setUpClass creates a fresh tempdir project and drives
-        # alcatrazer.start._first_time_setup end-to-end: generate recipe
-        # -> docker build -> docker run -> run commands via docker exec.
-        # tearDownClass stops + removes the container.
+        # alcatrazer.start.cmd_init then cmd_start end-to-end: init
+        # generates the recipe; start does docker build -> docker run ->
+        # run commands via docker exec. tearDownClass stops + removes
+        # the container.
         run: python -m unittest discover -s src/alcatrazer/integration_tests -v

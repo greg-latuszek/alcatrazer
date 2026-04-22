@@ -1,7 +1,7 @@
 """Docker smoke tests for Alcatrazer — CI path.
 
-Drives `alcatrazer.start._first_time_setup` against a fresh temp project
-(with the interactive wizards stubbed), then runs three tiers of
+Drives `alcatrazer.start.cmd_init` + `cmd_start` against a fresh temp
+project (with the interactive wizards stubbed), then runs three tiers of
 invariants against the resulting running Alcatraz:
 
 - Security invariants  — from `alcatrazer.selftest._AlcatrazSecurityInvariants`;
@@ -54,12 +54,14 @@ from alcatrazer.selftest import _AlcatrazSecurityInvariants
 #   CODING_ENV = {languages: {python, node}}
 #        │   (ask_coding_environment patched → returns this)
 #        ▼
-#   _first_time_setup(project_dir)
+#   cmd_init(project_dir)
 #        │
-#        ├─ prison.generate_prison(coding_env)
-#        │     └─ .alcatrazer/Dockerfile Stage 3 `dev` ends up with
-#        │          RUN mise use --global python@3.12 && \
-#        │              mise use --global node@22
+#        └─ prison.generate_prison(coding_env)
+#              └─ .alcatrazer/Dockerfile Stage 3 `dev` ends up with
+#                   RUN mise use --global python@3.12 && \
+#                       mise use --global node@22
+#
+#   cmd_start(project_dir)      (image not built yet → first-run branch)
 #        │
 #        ├─ prison.build()     docker build runs it → mise installs the
 #        │                     runtimes + puts shims on PATH (dev-base
@@ -309,11 +311,14 @@ class TestAlcatrazSmokeCI(
             ),
             patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
         ):
-            rc = start_mod._first_time_setup(cls.project_dir)
+            rc = start_mod.cmd_init(cls.project_dir)
         if rc != 0:
-            raise RuntimeError(f"alcatrazer first-time setup failed (rc={rc})")
+            raise RuntimeError(f"alcatrazer init failed (rc={rc})")
 
         cls.prison = DockerPrison(cls.project_dir)
+        rc = start_mod.cmd_start(cls.project_dir, prison=cls.prison)
+        if rc != 0:
+            raise RuntimeError(f"alcatrazer start failed (rc={rc})")
 
         alcatraz_dir = cls.project_dir / ".alcatrazer"
         identity_lines = (alcatraz_dir / "agent-identity").read_text().strip().split("\n")
