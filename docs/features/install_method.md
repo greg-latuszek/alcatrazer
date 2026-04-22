@@ -613,6 +613,92 @@ Smart suggestions are a convenience, not a requirement for MVP. The essential co
 
 ---
 
+## Ephemeral caches — no shared Docker volumes
+
+### The shared-volume trap
+
+An earlier design mounted named Docker volumes for per-runtime caches, intending
+that every Alcatraz on the laptop reuse the same downloads:
+
+```
+-v alcatraz-mise-cache:/home/agent/.local/share/mise
+-v alcatraz-pip-cache:/home/agent/.cache/pip
+-v alcatraz-npm-cache:/home/agent/.npm
+```
+
+Three shared writable volumes across independent sandboxes. It sounds economical.
+It breaks Alcatraz's isolation promise in three concrete ways:
+
+**Cross-sandbox attack surface (the critical one).** The agent running inside
+Alcatraz A has write access to `/home/agent/.local/share/mise/installs/python/
+3.12/bin/python`. A single compromised agent can plant a trojaned `python` there.
+The next time Alcatraz B — *any other repo on the same laptop* — invokes `python`
+via a `[startup]` command or during an agent's own work, it executes A's trojan.
+Phantom UID, no-docker-socket, no-SSH, host-credential scrubbing — every other
+isolation primitive is rendered irrelevant by one shared writable directory.
+**One agent compromise escalates to universal agent compromise.**
+
+**Silent reproducibility drift.** A runs `pip install` and refreshes a cached
+wheel. B re-uses the new wheel on its next startup even though B's
+`coding-environment.toml` never changed. Cross-repo coupling invisible from any
+single repo's config — debugging "why did my build break, I didn't change
+anything" is harder when the real cause was a different repo's cache write.
+
+**Debugging dead-end.** Cache corruption has no traceable origin — any Alcatraz
+could have caused it. Recovery means wiping the shared volume, which also nukes
+every other repo's downloads.
+
+### Why per-workspace volume naming is insufficient
+
+A natural patch is to prefix volume names with the workspace name
+(`buildkit-b0dc-mise-cache`), mirroring the workspace-name-as-marker technique
+used for `.env.example`. It looks per-repo, but the isolation is probabilistic,
+not structural:
+
+- `identity.generate_workspace_dir_name()` returns `.{word}-{4hex}`. The
+  collision check in `generate_workspace_choices()` only scans **the target repo's
+  own directory**, not the developer's laptop or the Docker daemon's volume list.
+- With ~23 words × 65536 hex suffixes ≈ 1.5M combinations, the birthday-paradox
+  crossover for independent installs on the same laptop is low but nonzero.
+  Collision probability ≥ 1% at ~170 installs — unlikely for one developer, not
+  unthinkable at team scale or on CI runners that churn workspaces.
+- When collision hits, the two Alcatrazes silently share the same volume, and
+  the attack + drift + debug failure modes return — harder to reproduce, same
+  blast radius.
+
+A sandbox whose isolation depends on a dice roll fails exactly when it matters.
+"Low probability" is not a security property.
+
+### The fix: caches live in the container's writable overlay
+
+Drop named volumes entirely. Each Alcatraz's container owns its own writable
+overlay layer — per-container by construction, with zero shared filesystem
+surface between Alcatrazes. A cache-poisoning agent inside A can't reach B's
+filesystem at all, because B's filesystem is another container's overlay.
+
+**Lifecycle consequence.** Today `_subsequent_run` calls `prison.remove()`
+unconditionally on every `alcatrazer start`, which would erase the writable
+layer (and its caches). The refactor removes the container only when a rebuild
+is genuinely required:
+
+| Trigger (detected in `_subsequent_run`) | Action | Cache state |
+|---|---|---|
+| Nothing changed, running | no-op + early return | preserved |
+| Nothing changed, stopped | `docker start` | preserved |
+| `[startup]` changed only | `docker start` (if stopped) + re-run startup via `exec` | preserved |
+| `[os]` / `[languages]` changed (rebuild) | `docker rm` + `docker run` | cleared (correct — runtime/OS changed, stale cache would be wrong) |
+| `.env` changed (mtime or hash) | `docker rm` + `docker run` | cleared (env is baked at `docker run` time) |
+
+Caches clear exactly when the user's change makes them stale, and persist
+whenever nothing runtime-affecting has changed. No shared state, no attack
+surface, no volumes to inventory on uninstall.
+
+**Uninstall becomes trivial.** Removing an Alcatraz from a repo is
+`docker rm -f <container> && docker rmi <image>` — no volume hunt, no "did I
+catch them all?" ambiguity.
+
+---
+
 ## Installation Entry Points
 
 All entry points converge to the same PyPI package. The only difference is who provides
