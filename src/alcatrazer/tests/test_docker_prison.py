@@ -400,13 +400,26 @@ class DockerPrisonStartTests(unittest.TestCase):
         cmd_str = " ".join(mock_run.call_args.args[0])
         self.assertNotIn(".credentials.json", cmd_str)
 
-    def test_named_cache_volumes_attached(self):
+    def test_no_named_cache_volumes_attached(self):
+        """Caches (mise, pip, npm) live in the container's writable overlay
+        layer, not in named Docker volumes — per the "Ephemeral caches"
+        section in install_method.md. Shared writable volumes would let a
+        compromised agent in one Alcatraz poison every other Alcatraz on
+        the laptop via a trojaned `python` binary in the mise cache. See
+        memory feedback_workspace_name_markers.md for the parallel
+        anti-leak discipline."""
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             DockerPrison(self.project_dir).start()
         cmd_str = " ".join(mock_run.call_args.args[0])
-        self.assertIn("alcatraz-mise-cache:/home/agent/.local/share/mise", cmd_str)
-        self.assertIn("alcatraz-pip-cache:/home/agent/.cache/pip", cmd_str)
-        self.assertIn("alcatraz-npm-cache:/home/agent/.npm", cmd_str)
+        # No alcatraz-branded volumes (the original leak source).
+        self.assertNotIn("alcatraz-mise-cache", cmd_str)
+        self.assertNotIn("alcatraz-pip-cache", cmd_str)
+        self.assertNotIn("alcatraz-npm-cache", cmd_str)
+        # No mount into any of the three cache paths at all (belt + suspenders
+        # — catches a hypothetical future "rename the volume" regression).
+        self.assertNotIn("/home/agent/.local/share/mise", cmd_str)
+        self.assertNotIn("/home/agent/.cache/pip", cmd_str)
+        self.assertNotIn("/home/agent/.npm", cmd_str)
 
     def test_env_file_wired_when_present(self):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:

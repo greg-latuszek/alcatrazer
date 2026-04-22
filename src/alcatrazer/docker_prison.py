@@ -235,9 +235,19 @@ class DockerPrison(Alcatraz):
         """Run the workspace container in detached mode.
 
         Bind-mounts the workspace dir at /workspace, mounts the host's
-        Claude credentials read-only (when present), attaches named cache
-        volumes, wires in .env, and uses `sleep infinity` as the long-lived
-        CMD so the container stays alive for later `docker exec` attaches.
+        Claude credentials read-only (when present), wires in `.env`, and
+        uses `sleep infinity` as the long-lived CMD so the container stays
+        alive for later `docker exec` attaches.
+
+        **No named cache volumes** — mise / pip / npm caches live in the
+        container's writable overlay layer, per the "Ephemeral caches —
+        no shared Docker volumes" section in install_method.md. Sharing
+        writable volumes across Alcatrazes would let one compromised
+        agent poison every other Alcatraz on the laptop via cache
+        tampering; keeping caches per-container closes that attack
+        surface by construction. Caches clear on full recreate (rebuild
+        / env change / `alcatrazer clear`) and persist across stop+start
+        (resume).
         """
         alcatraz_dir = self.project_dir / ".alcatrazer"
         workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
@@ -264,14 +274,6 @@ class DockerPrison(Alcatraz):
                 "-v",
                 f"{claude_creds}:/home/agent/.claude/.credentials.json:ro",
             ]
-        cmd += [
-            "-v",
-            "alcatraz-mise-cache:/home/agent/.local/share/mise",
-            "-v",
-            "alcatraz-pip-cache:/home/agent/.cache/pip",
-            "-v",
-            "alcatraz-npm-cache:/home/agent/.npm",
-        ]
         if env_file.exists():
             cmd += ["--env-file", str(env_file)]
         cmd += [self.image_tag, "sleep", "infinity"]
