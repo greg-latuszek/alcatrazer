@@ -56,16 +56,26 @@ for the full reasoning behind this architecture.
 
 ---
 
-## CLI: Three Commands
+## CLI: Four Commands
 
 **Design goal:** Minimalism. Developers are tired of learning new tools. Alcatrazer
 should be operable and invisible — as few commands as possible, no Docker vocabulary
-leaking through (no `up`/`down`/`build`/`compose`), no separate init to learn.
+leaking through (no `up`/`down`/`build`/`compose`).
+
+One deliberate exception to "no separate init": **`alcatrazer init` exists**. Rationale
+below in its section — in short, the first-run flow has a credentials gate (Claude
+token in `.env` or host `~/.claude/.credentials.json`) that the user must fill in
+**between** disk setup and container start. Smashing both into a single `start`
+call either starts the container with no AI auth (the agent is dead on arrival) or
+blocks in stdin asking the user to go edit `.env` while `start` is mid-flight. A
+named command per phase maps 1:1 to the two decisions the user actually makes:
+"configure this repo" vs. "run the sandbox".
 
 ### The commands
 
 ```
-alcatrazer start                     the only command for daily work
+alcatrazer init                      one-time: wizards → config + recipe on disk
+alcatrazer start                     daily: build (if needed) + start + run startup
 alcatrazer stop                      stop the container
 alcatrazer upgrade                   check for and install new alcatrazer version
 ```
@@ -79,9 +89,38 @@ alcatrazer start --rebuild           force full rebuild even if nothing changed
 alcatrazer upgrade --dry-run         check for new version without installing
 ```
 
+### `alcatrazer init` — one-time setup
+
+Runs the interactive wizards (promotion identity, languages, OS packages, startup
+commands), writes `coding-environment.toml` + `.alcatrazer/config.toml` +
+`.env.example`, extracts the package source into `.alcatrazer/src/`, generates
+`.alcatrazer/Dockerfile` + `entrypoint.sh`, records the workspace dir name, and
+appends patterns to `.git/info/exclude`. **Stops before `docker build`.** No image
+is produced, no container is started.
+
+At the end it prints a guidance block about AI credentials: if
+`~/.claude/.credentials.json` is not present on the host, it tells the user to
+either run `claude` on the host to authenticate, or populate `ANTHROPIC_API_KEY`
+in a `.env` file at the repo root. This is the user-action gate that justifies
+the split — without it, `alcatrazer start` would silently launch a Claude-less
+container.
+
+`.env.example` handling:
+- No existing `.env.example` in the repo → write a fresh one with commented
+  `ANTHROPIC_API_KEY=` placeholder plus explanation.
+- Existing `.env.example` → append an alcatrazer block bracketed by marker
+  comments (idempotent on re-run; leaves the user's existing content untouched).
+
+Re-running `alcatrazer init` on an already-initialized repo is not a daily
+operation; the user's daily tool is `alcatrazer start`. A future "change the
+coding environment" flow edits `coding-environment.toml` directly and lets
+`start`'s drift detection do the rest (Step 4).
+
 ### `alcatrazer start` — does the right thing
 
-`start` is always safe to run. It detects the current state and does what's needed.
+`start` assumes `alcatrazer init` has already run. It detects the current state
+and does what's needed (build + run on first call, restart / rebuild / no-op
+from there).
 
 **Detection uses two comparisons:**
 1. Generate would-be Dockerfile in memory, compare against existing `.alcatrazer/Dockerfile`
@@ -93,8 +132,12 @@ alcatrazer upgrade --dry-run         check for new version without installing
 alcatrazer start
        │
        ├── no .alcatrazer/ ?
-       │       → first time: interactive questions → generate everything
-       │         → build image → create workspace snapshot → start
+       │       → error: "no alcatrazer setup here — run `alcatrazer init` first."
+       │         (exit 1; no wizard, no magic first-run)
+       │
+       ├── image NOT built yet (first start after init) ?
+       │       → build image → create workspace snapshot → start
+       │         → run startup commands
        │
        ├── container NOT running
        │       │
@@ -171,8 +214,8 @@ A convenience — the user can always do this manually with `sha256sum -c`.
 
 **First time:**
 ```
-$ alcatrazer start
-No alcatrazer setup found. Starting interactive setup...
+$ alcatrazer init
+Starting interactive setup...
 
 What languages does this project use?
 > Python 3.12
@@ -184,7 +227,18 @@ Package manager? [pip] / uv / poetry
 
 Generated: coding-environment.toml
 Generated: .alcatrazer/config.toml
+Written:   .env.example (ANTHROPIC_API_KEY placeholder)
 Written:   .git/info/exclude
+Generated: .alcatrazer/Dockerfile + entrypoint.sh
+
+AI credentials: ~/.claude/.credentials.json not found.
+  Either:
+    (a) run `claude` on your host to authenticate, then `alcatrazer start`; or
+    (b) copy .env.example to .env and fill in ANTHROPIC_API_KEY, then `alcatrazer start`.
+
+$ cp .env.example .env && $EDITOR .env    # user fills in the token
+
+$ alcatrazer start
 Building container image... ████████████████ done (47s)
 Creating workspace snapshot... done
 Starting container...
@@ -688,29 +742,40 @@ Create templates for:
 - `coding-environment.toml` (with placeholder sections)
 - `.alcatrazer/config.toml` (with placeholder identity and daemon defaults)
 
-### Step 3: Implement `alcatrazer start` (first-time flow)
+### Step 3: Implement `alcatrazer init` (first-time disk setup)
 
 When no `.alcatrazer/` exists:
 1. Verify git repo at repo root
 2. Interactive questions: languages, versions, managers, OS packages, promotion identity
 3. Generate `coding-environment.toml` from answers
 4. Generate `.alcatrazer/config.toml` (promotion identity, daemon defaults)
-5. Write `.git/info/exclude` patterns
-6. Extract `src/alcatrazer/` tree into `.alcatrazer/src/alcatrazer/`
-7. Generate Dockerfile from `coding-environment.toml` into `.alcatrazer/`
-8. Run `docker build`
-9. Detect phantom UID, generate agent identity
-10. Create workspace with snapshot (flat, no history, one initial commit)
-11. Start container, run startup commands
-12. Copy `coding-environment.toml` to `.alcatrazer/coding-environment.toml.last`
+5. Write `.env.example` (with `ANTHROPIC_API_KEY` hint when host has no Claude creds)
+6. Write `.git/info/exclude` patterns
+7. Extract `src/alcatrazer/` tree into `.alcatrazer/src/alcatrazer/`
+8. Generate `.alcatrazer/Dockerfile` + `entrypoint.sh` from `coding-environment.toml`
+9. Print AI-credentials guidance block + "run `alcatrazer start` to build and launch"
 
-This is the largest step. Substeps for implementation:
+**Stops before `docker build`.** Build + workspace creation + container start +
+startup commands all move to Step 3.5 under `alcatrazer start` (the first-run
+branch). Rationale: the user must be able to populate `.env` or authenticate
+Claude on the host between disk setup and container start — see
+"`alcatrazer init`" in the CLI section for the full argument.
 
-#### Step 3a: CLI skeleton — `start` command with first-time detection
+Substeps for implementation:
 
-Wire up `alcatrazer start` as the CLI entry point. Detect "first time" by checking
-for `.alcatrazer/` existence. If missing, enter the first-time flow. If present,
-delegate to subsequent-run logic (Step 4). No actual logic yet — just the routing.
+#### Step 3a: CLI skeleton — `init` and `start` commands with state detection
+
+Wire up two argparse subcommands:
+
+- `alcatrazer init` — errors out if `.alcatrazer/` already exists ("already
+  initialized; edit `coding-environment.toml` and run `alcatrazer start` to
+  apply changes"). Otherwise runs the first-time disk setup (Steps 3b–3h).
+- `alcatrazer start` — errors out if `.alcatrazer/` is missing ("no alcatrazer
+  setup here — run `alcatrazer init` first"). Otherwise routes on image
+  presence: no image yet → first-run branch (Step 3.5); image exists → Step 4
+  detection logic.
+
+No actual logic yet — just the two commands, the routing, and the two guard errors.
 
 #### Step 3b: Verify git repo
 
@@ -743,7 +808,16 @@ From the answers collected in 3c and 3d:
   Zero alcatrazer branding in content or comments.
 - Write `.alcatrazer/config.toml` (promotion identity from 3c, daemon defaults,
   pointer to coding-environment file).
-- Write `.env.example` (template for API keys).
+- Write `.env.example` with credential guidance:
+  - Host has no `~/.claude/.credentials.json`: include `# ANTHROPIC_API_KEY=`
+    with a comment explaining it's the fallback when the host is not logged into
+    Claude, and a pointer to the `alcatrazer init` guidance block for context.
+  - Host has `~/.claude/.credentials.json`: still write the placeholder so users
+    who later log out / clear creds have something to fill in.
+  - `.env.example` already exists in the target repo: **append** an alcatrazer
+    block bracketed by marker comments (`# --- alcatrazer begin ---` /
+    `# --- alcatrazer end ---`) so re-running `init` is idempotent (detect the
+    marker, skip or rewrite in place; never duplicate).
 
 #### Step 3f: Write `.git/info/exclude`
 
@@ -865,6 +939,26 @@ would force one path to compromise (silently swallow output, or
 buffer-and-replay it after completion). Separating them keeps each
 primitive simple and honest about what it delivers.
 
+### Step 3.5: Implement `alcatrazer start` (first-run branch, after init)
+
+Substeps 3i / 3j / 3k are what `alcatrazer start` does on its **first call
+after `alcatrazer init`** — image doesn't exist yet, no container, no
+workspace snapshot. They retain their numbering for continuity with earlier
+TDD commits, but conceptually they live under `alcatrazer start`, not
+`alcatrazer init`.
+
+Entry guard: if `.alcatrazer/Dockerfile` is missing, abort with "no recipe
+found — run `alcatrazer init` first". If it exists but the image hasn't been
+built yet, run 3i → 3j → 3k in order. If the image already exists, fall
+through to Step 4's subsequent-run detection.
+
+No `.env` / Claude-creds check at this boundary — the user has already been
+told what to do in init's guidance block. If they ignore it, the container
+starts Claude-less and the agent surfaces its own auth error. We don't
+gate `start` on credential presence because (a) the check isn't free
+(read + parse + stat across two possible locations) and (b) future
+`[ai]` configurations may not require any host-side credentials at all.
+
 #### Step 3i: Docker build
 
 Run `docker build` with the generated Dockerfile. Pass `USER_UID` as build arg
@@ -902,9 +996,10 @@ Copy the current coding-environment file (filename read from
 `.alcatrazer/coding-environment.toml.last`. Step 4 uses this `.last` record
 for change detection.
 
-### Step 4: Implement `alcatrazer start` (subsequent runs)
+### Step 4: Implement `alcatrazer start` (subsequent runs, image already built)
 
-Change detection logic:
+Reached when `.alcatrazer/Dockerfile` exists AND the image has already been
+built (`prison.image_exists() == True`). Change detection logic:
 1. Generate would-be Dockerfile in memory
 2. Compare against `.alcatrazer/Dockerfile` (rebuild if different)
 3. Compare `coding-environment.toml` against `.alcatrazer/coding-environment.toml.last`
