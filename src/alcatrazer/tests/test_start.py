@@ -32,36 +32,73 @@ from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
 
-class StartRoutingTests(unittest.TestCase):
+class CmdStartGuardTests(unittest.TestCase):
+    """cmd_start requires `.alcatrazer/` to exist — init produces it."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-    def test_no_alcatrazer_dir_routes_to_first_time(self):
+    def test_errors_when_no_alcatrazer_dir(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("alcatrazer init", stderr.getvalue())
+
+    def test_does_not_invoke_first_run_or_subsequent_when_missing(self):
         with (
-            patch.object(start, "_first_time_setup", return_value=0) as first,
+            patch.object(start, "_first_run_after_init", return_value=0) as first,
+            patch.object(start, "_subsequent_run", return_value=0) as subsequent,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            start.cmd_start(self.project_dir)
+        first.assert_not_called()
+        subsequent.assert_not_called()
+
+
+class CmdStartRoutingTests(unittest.TestCase):
+    """With `.alcatrazer/` present, cmd_start routes on image_exists:
+    image absent → first-run branch (3.5); image present → subsequent run."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".alcatrazer").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _prison(self, image_exists: bool) -> Mock:
+        p = Mock(spec=Alcatraz)
+        p.image_exists.return_value = image_exists
+        return p
+
+    def test_no_image_routes_to_first_run_after_init(self):
+        prison = self._prison(image_exists=False)
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
         ):
-            rc = start.cmd_start(self.project_dir)
-        first.assert_called_once_with(self.project_dir)
+            rc = start.cmd_start(self.project_dir, prison=prison)
+        first.assert_called_once_with(self.project_dir, prison=prison)
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_alcatrazer_dir_present_routes_to_subsequent(self):
-        (self.project_dir / ".alcatrazer").mkdir()
+    def test_image_present_routes_to_subsequent_run(self):
+        prison = self._prison(image_exists=True)
         with (
-            patch.object(start, "_first_time_setup", return_value=0) as first,
+            patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
         ):
-            rc = start.cmd_start(self.project_dir)
-        subsequent.assert_called_once_with(self.project_dir)
+            rc = start.cmd_start(self.project_dir, prison=prison)
+        subsequent.assert_called_once_with(self.project_dir, prison=prison)
         first.assert_not_called()
         self.assertEqual(rc, 0)
 
     def test_routing_propagates_handler_return_code(self):
-        with patch.object(start, "_first_time_setup", return_value=7):
-            rc = start.cmd_start(self.project_dir)
+        prison = self._prison(image_exists=False)
+        with patch.object(start, "_first_run_after_init", return_value=7):
+            rc = start.cmd_start(self.project_dir, prison=prison)
         self.assertEqual(rc, 7)
 
 
@@ -130,28 +167,24 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
-class FirstTimeGitRepoCheckTests(unittest.TestCase):
-    """Step 3b: first-time setup must refuse to run outside a git repo root."""
+class CmdInitGitRepoCheckTests(unittest.TestCase):
+    """Step 3b: init must refuse to run outside a git repo root."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-    def _run_first_time(self) -> tuple[int, str, str]:
+    def _run_init(self) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            rc = start._first_time_setup(self.project_dir)
+            rc = start.cmd_init(self.project_dir)
         return rc, stdout.getvalue(), stderr.getvalue()
 
     def test_aborts_when_not_a_git_repo(self):
-        rc, _, err = self._run_first_time()
+        rc, _, err = self._run_init()
         self.assertNotEqual(rc, 0)
         self.assertIn(GIT_REPO_ROOT_ERROR, err)
-
-    # The two "proceeds" cases moved to FirstTimeSetupIntegrationTests below,
-    # since running past the git check now executes the full orchestration
-    # and requires downstream helpers to be mocked.
 
 
 class ReadGitIdentityTests(unittest.TestCase):
@@ -1193,10 +1226,10 @@ class SubsequentRunTests(unittest.TestCase):
         )
 
 
-class FirstTimeSetupIntegrationTests(unittest.TestCase):
-    """End-to-end orchestration of _first_time_setup: every Step 3 helper is
-    invoked, data flows between them, errors at any stage propagate per the
-    "Build & Startup Error Handling" contract."""
+class CmdInitIntegrationTests(unittest.TestCase):
+    """End-to-end orchestration of cmd_init (Steps 3b-3h) — wizards + config
+    writers + recipe generation run; build / workspace creation / container
+    start do NOT (they're `alcatrazer start`'s job)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1205,7 +1238,6 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
         self.prison = Mock(spec=Alcatraz)
-        self.prison.exec.return_value = 0
 
         self.mocks: dict[str, Mock] = {}
         to_patch: list[tuple[object, str, object]] = [
@@ -1228,9 +1260,6 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
             (start, "write_git_exclude", None),
             (start, "extract_package_source", None),
             (start, "write_python_symlink", None),
-            (start, "create_workspace", None),
-            (start, "run_startup_commands", 0),
-            (start, "save_coding_environment_snapshot", None),
             (identity, "generate_workspace_dir_name", ".devspace-abcd"),
             (identity, "store_workspace_dir", None),
         ]
@@ -1241,7 +1270,7 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
 
     def _run(self) -> int:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return start._first_time_setup(self.project_dir, prison=self.prison)
+            return start.cmd_init(self.project_dir, prison=self.prison)
 
     def test_happy_path_returns_zero(self):
         self.assertEqual(self._run(), 0)
@@ -1252,13 +1281,28 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
         (self.project_dir / ".git").write_text("gitdir: /some/path/.git\n")
         self.assertEqual(self._run(), 0)
 
-    def test_every_helper_is_called(self):
+    def test_errors_when_alcatrazer_dir_already_exists(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("already", stderr.getvalue().lower())
+        # No wizards should have run
+        self.mocks["ask_promotion_identity"].assert_not_called()
+        self.mocks["ask_coding_environment"].assert_not_called()
+
+    def test_every_init_helper_is_called(self):
         self._run()
         for name, mock in self.mocks.items():
             self.assertGreaterEqual(mock.call_count, 1, f"{name} should have been called")
         self.prison.generate_prison.assert_called_once()
-        self.prison.build.assert_called_once()
-        self.prison.start.assert_called_once()
+
+    def test_build_and_start_are_not_called(self):
+        """Init stops before docker build — alcatrazer start does that."""
+        self._run()
+        self.prison.build.assert_not_called()
+        self.prison.start.assert_not_called()
 
     def test_promotion_identity_flows_into_alcatrazer_config_writer(self):
         self.mocks["ask_promotion_identity"].return_value = (
@@ -1279,21 +1323,88 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
         self._run()
         self.prison.generate_prison.assert_called_once_with(coding_env)
 
-    def test_workspace_name_flows_into_exclude_and_workspace_creation(self):
+    def test_workspace_name_flows_into_exclude(self):
         self.mocks["generate_workspace_dir_name"].return_value = ".devspace-zzzz"
         self._run()
         exclude_call = self.mocks["write_git_exclude"].call_args
         self.assertEqual(exclude_call.args[1], ".devspace-zzzz")
-        workspace_call = self.mocks["create_workspace"].call_args
-        self.assertEqual(workspace_call.args[1], ".devspace-zzzz")
 
-    def test_generate_prison_runs_before_build(self):
+
+class FirstRunAfterInitTests(unittest.TestCase):
+    """Orchestration of _first_run_after_init (Step 3.5): build → workspace
+    snapshot → container start → startup commands → save .last snapshot.
+    Wizards and config writers are NOT re-run — init already produced them."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+            '[promotion]\nname = "x"\nemail = "y"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\n[startup]\ncommands = ["uv sync"]\n'
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.exec.return_value = 0
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "create_workspace", None),
+            (start, "run_startup_commands", 0),
+            (start, "save_coding_environment_snapshot", None),
+            (identity, "load_workspace_dir", ".devspace-abcd"),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return start._first_run_after_init(self.project_dir, prison=self.prison)
+
+    def test_happy_path_returns_zero(self):
+        self.assertEqual(self._run(), 0)
+
+    def test_build_runs_before_workspace_and_start(self):
         parent = Mock()
-        parent.attach_mock(self.prison.generate_prison, "generate_prison")
         parent.attach_mock(self.prison.build, "build")
+        parent.attach_mock(self.mocks["create_workspace"], "create_workspace")
+        parent.attach_mock(self.prison.start, "start")
         self._run()
         names = [c[0] for c in parent.mock_calls]
-        self.assertLess(names.index("generate_prison"), names.index("build"))
+        self.assertLess(names.index("build"), names.index("create_workspace"))
+        self.assertLess(names.index("create_workspace"), names.index("start"))
+
+    def test_does_not_re_run_wizards_or_writers(self):
+        """cmd_init already produced config + Dockerfile; don't touch them."""
+        with (
+            patch.object(start, "ask_promotion_identity") as ask_id,
+            patch.object(start, "ask_coding_environment") as ask_env,
+            patch.object(start, "write_coding_environment_toml") as w_ce,
+            patch.object(start, "write_alcatrazer_config") as w_cfg,
+            patch.object(start, "write_env_example") as w_env,
+            patch.object(start, "extract_package_source") as w_src,
+        ):
+            self._run()
+        ask_id.assert_not_called()
+        ask_env.assert_not_called()
+        w_ce.assert_not_called()
+        w_cfg.assert_not_called()
+        w_env.assert_not_called()
+        w_src.assert_not_called()
+        self.prison.generate_prison.assert_not_called()
+
+    def test_workspace_name_loaded_from_identity(self):
+        self.mocks["load_workspace_dir"].return_value = ".devspace-zzzz"
+        self._run()
+        workspace_call = self.mocks["create_workspace"].call_args
+        self.assertEqual(workspace_call.args[1], ".devspace-zzzz")
 
     def test_startup_failure_returns_nonzero_and_skips_snapshot(self):
         self.mocks["run_startup_commands"].return_value = 7
@@ -1312,7 +1423,7 @@ class FirstTimeSetupIntegrationTests(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
-            rc = start._first_time_setup(self.project_dir, prison=self.prison)
+            rc = start._first_run_after_init(self.project_dir, prison=self.prison)
         self.assertNotEqual(rc, 0)
         err = stderr.getvalue()
         self.assertIn("build", err.lower())
@@ -1381,6 +1492,29 @@ class CliStopTests(unittest.TestCase):
         ):
             cli.main()
         self.assertEqual(cm.exception.code, 1)
+
+
+class CliInitTests(unittest.TestCase):
+    """`alcatrazer init` subcommand — dispatches to `start.cmd_init`."""
+
+    def test_cli_init_command_invokes_cmd_init(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "init"]),
+            patch.object(start, "cmd_init", return_value=0) as mock_init,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        mock_init.assert_called_once()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_cli_init_propagates_nonzero_exit(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "init"]),
+            patch.object(start, "cmd_init", return_value=2),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        self.assertEqual(cm.exception.code, 2)
 
 
 class CmdSelftestTests(unittest.TestCase):
