@@ -398,16 +398,53 @@ def write_alcatrazer_config(
     return target
 
 
-def write_env_example(project_dir: Path) -> Path | None:
-    """Write a generic .env.example at repo root; skip and return None if it exists."""
+_ENV_EXAMPLE_HEADER = (
+    "# Example environment variables for this project.\n"
+    "# Copy to .env and fill in your values.\n"
+    "# .env should stay out of version control; .env.example is committed.\n"
+)
+
+_ENV_EXAMPLE_BEGIN_MARKER = "# --- alcatrazer begin ---"
+_ENV_EXAMPLE_END_MARKER = "# --- alcatrazer end ---"
+
+_ENV_EXAMPLE_ALCATRAZER_BLOCK = f"""{_ENV_EXAMPLE_BEGIN_MARKER}
+# Claude Code authentication. Only needed if you haven't authenticated
+# Claude on your host (~/.claude/.credentials.json). Uncomment and fill in
+# with your Anthropic API key; `alcatrazer start` will pass it through to
+# the workspace container.
+#ANTHROPIC_API_KEY=
+{_ENV_EXAMPLE_END_MARKER}
+"""
+
+
+def write_env_example(project_dir: Path) -> Path:
+    """Write/update `.env.example` at the repo root with an alcatrazer block.
+
+    The block is bracketed by `# --- alcatrazer begin/end ---` markers so
+    it can be rewritten in place without duplicating on re-runs, and so
+    users can keep their own unrelated entries alongside ours.
+
+    Three cases:
+      - No file: write header + block.
+      - File without markers: append the block at the end, leave existing
+        content untouched.
+      - File with markers: replace the block between markers in place.
+    """
     target = project_dir / ".env.example"
-    if target.exists():
-        return None
-    target.write_text(
-        "# Example environment variables for this project.\n"
-        "# Copy to .env and fill in your values.\n"
-        "# .env should stay out of version control; .env.example is committed.\n"
-    )
+    if not target.exists():
+        target.write_text(_ENV_EXAMPLE_HEADER + "\n" + _ENV_EXAMPLE_ALCATRAZER_BLOCK)
+        return target
+
+    existing = target.read_text()
+    if _ENV_EXAMPLE_BEGIN_MARKER in existing and _ENV_EXAMPLE_END_MARKER in existing:
+        begin = existing.index(_ENV_EXAMPLE_BEGIN_MARKER)
+        end = existing.index(_ENV_EXAMPLE_END_MARKER) + len(_ENV_EXAMPLE_END_MARKER)
+        updated = existing[:begin] + _ENV_EXAMPLE_ALCATRAZER_BLOCK.rstrip() + existing[end:]
+        target.write_text(updated)
+        return target
+
+    separator = "" if existing.endswith("\n") else "\n"
+    target.write_text(existing + separator + "\n" + _ENV_EXAMPLE_ALCATRAZER_BLOCK)
     return target
 
 
