@@ -40,37 +40,40 @@ class MakeAlcatrazSelftestTestcaseTests(unittest.TestCase):
 class AlcatrazSecurityInvariantsSurfaceTests(unittest.TestCase):
     """_AlcatrazSecurityInvariants is the single source of truth for the
     security-invariant assertion list. Lock in the surface so subclasses
-    can rely on it."""
+    (SelftestAlcatraz via the factory, TestAlcatrazSmokeCI via smoke
+    inheritance) can rely on it.
+
+    Scope: security invariants only. Tooling and workflow checks live in
+    smoke-only mixins (test_smoke._AlcatrazToolingInvariants /
+    _AlcatrazWorkflowInvariants). `--run-selftest` deliberately runs only
+    this tier — the other tiers either don't belong (tooling is an
+    integration concern, not a security promise) or write state that
+    would pollute the user's live repo (workflow)."""
 
     EXPECTED_ASSERTIONS = frozenset(
         {
+            # 1. User identity
             "test_alcatraz_runs_as_phantom_uid",
             "test_alcatraz_user_is_agent",
+            # 2. Host credential isolation
             "test_no_ssh_directory",
             "test_no_gnupg_directory",
-            "test_global_git_config_no_alcatraz",
-            "test_no_host_signing_key_paths",
-            "test_signing_key_empty",
-            "test_commit_signing_disabled",
+            "test_global_git_config_no_alcatraz_branding",
+            "test_no_host_signing_key_paths_in_global_git_config",
+            "test_global_signing_key_empty_or_unset",
+            "test_global_commit_signing_disabled",
+            # 3. Environment discipline
             "test_no_leaked_secret_env_vars",
-            "test_python_available",
-            "test_node_available",
-            "test_git_available",
-            "test_mise_available",
-            "test_claude_available",
-            "test_mise_manages_python",
-            "test_mise_manages_node",
-            "test_workspace_git_name_matches_identity",
-            "test_workspace_git_email_matches_identity",
-            "test_workspace_git_config_no_alcatraz",
-            "test_commit_identity_matches",
-            "test_commit_identity_no_alcatraz",
-            "test_branching_and_merging_works",
-            "test_python_execution",
-            "test_node_execution",
-            "test_files_owned_by_phantom_uid",
+            # 4. Workspace git identity is the agent (anti-leak)
+            "test_workspace_git_user_name_is_agent",
+            "test_workspace_git_user_email_is_agent",
+            "test_workspace_git_config_no_alcatraz_branding",
+            "test_workspace_initial_commit_authored_by_agent",
+            # 5. Filesystem ownership
+            "test_workspace_directory_owned_by_phantom_uid",
+            # 6. Attack surface
             "test_docker_socket_not_mounted",
-            "test_no_git_remotes",
+            "test_workspace_has_no_git_remotes",
         }
     )
 
