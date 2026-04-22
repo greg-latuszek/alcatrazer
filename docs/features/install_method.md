@@ -802,17 +802,68 @@ The sandboxing backend is a hexagonal port with dependency injection so the
 implementation can change without touching the installer logic:
 
 - **`alcatrazer.alcatraz.Alcatraz`** — abstract base class. Defines the
-  operations the installer needs from any sandboxing backend: `build`,
-  `image_exists`, `start`, `stop`, `is_running`, `exec`, `remove`. The "prison"
-  in the Alcatraz metaphor.
+  operations the installer needs from any sandboxing backend:
+  `generate_prison`, `needs_rebuild`, `build`, `image_exists`, `start`,
+  `stop`, `is_running`, `exec`, `query`, `remove`. The "prison" in the
+  Alcatraz metaphor.
 - **`alcatrazer.docker_prison.DockerPrison(Alcatraz)`** — the only adapter
   implemented for MVP. Shells out to `docker build` / `run` / `start` / `stop` /
   `ps` / `exec` subprocesses.
 
-Installer functions that need sandbox operations (Steps 3i, 3k, Step 4 detection
-logic) accept an `Alcatraz` instance with a `DockerPrison` default, so tests can
-inject a mock and future backends (podman, sysbox, …) can plug in without
-editing callers.
+Installer functions that need sandbox operations (Steps 3i, 3k, Step 4
+detection logic, Step 7 selftest) accept an `Alcatraz` instance with a
+`DockerPrison` default, so tests can inject a mock and future backends
+(podman, sysbox, full VMs, …) can plug in without editing callers.
+
+#### Naming convention for abstract vs concrete layers
+
+Abstract code — the port interface, shared test bases, cross-backend
+helpers — uses **"Alcatraz"** in identifiers, not "container". Rationale:
+"container" is Docker-specific vocabulary, and Docker is only one of
+several sandboxing techniques we might add (podman, sysbox, full VMs).
+A VM-based prison has no container. "Alcatraz" is the generic prison
+metaphor the repo coined, carries intended humor, and stays accurate
+across backends.
+
+Concrete implementation modules (`alcatrazer.docker_prison` today, a
+future `alcatrazer.vm_prison`, etc.) freely use technology-specific
+names where appropriate: `DockerPrison` has a `container_name` attribute,
+for example, and its internals deal with `docker exec`, `docker ps`, etc.
+The abstraction holds at the port — below it, each adapter speaks its
+backend's native vocabulary.
+
+Examples:
+
+- Port / shared bases: `Alcatraz` (ABC), `_AlcatrazSecurityInvariants`
+  (shared test base), `make_alcatraz_selftest_testcase` (factory),
+  `SELFTEST_SCRIPT` — all neutral names.
+- Adapter: `DockerPrison(Alcatraz)` — `container_name`, "container",
+  `docker build`, `docker exec` all acceptable inside the module.
+
+Drift to watch for: the temptation to name things after the current
+implementation (`TestContainer…`, `CONTAINER_SCRIPT`, `run_in_container`)
+because Docker is what we see every day. That naming burns in when a
+second backend arrives.
+
+#### Port methods: `exec` for humans, `query` for programs
+
+The Alcatraz port exposes two distinct execution primitives:
+
+- **`exec(command) -> int`** — runs inside the sandbox, streams output
+  directly to the caller's terminal, returns only the exit code. Used
+  for human-facing work: `[startup]` commands (whose progress the user
+  watches), interactive attaches, long-running tasks where live
+  feedback matters.
+- **`query(command) -> subprocess.CompletedProcess`** — runs inside the
+  sandbox, captures stdout / stderr / exit code, returns the result
+  object. Used by programs that need to *read and decide* — security
+  self-tests, future `show status` / diagnostic commands.
+
+The contracts are genuinely different: `exec`'s job is to surface output
+to a human; `query`'s job is to surface output to code. Conflating them
+would force one path to compromise (silently swallow output, or
+buffer-and-replay it after completion). Separating them keeps each
+primitive simple and honest about what it delivers.
 
 #### Step 3i: Docker build
 
@@ -872,8 +923,96 @@ preserve all state (config, workspace, marks, UID, identity).
 
 ### Step 7: Implement `--run-selftest` and `--verify-checksum`
 
-Bundle existing test suite. `--run-selftest` runs it after start.
-`--verify-checksum` downloads `SHA256SUMS` from GitHub, compares.
+#### Three-tier test organization
+
+The bundled test suite is organized to match the Dockerfile's three-stage
+architecture, so each stage's promises have their own test tier:
+
+| Tier | What it tests | Backed by | Runs in |
+|---|---|---|---|
+| **Security invariants** | `dev-base` layer: phantom UID, host-credential isolation, `/workspace` ownership by phantom UID, signing keys cleared, `commit.gpgsign=false`, docker-socket absence, no git remotes, workspace git identity is the random agent (not host) | `alcatrazer.selftest._AlcatrazSecurityInvariants` | `--run-selftest` (user) + CI smoke |
+| **Tooling availability** | `ai-base` + `dev` layers: Claude CLI present, `python`/`node`/… runtimes present, `mise` manages them | smoke-only mixin | CI smoke |
+| **Workflow invariants** | `dev` layer usage: git branch + merge works, Python/Node can execute code, identity flows through new commits | smoke-only mixin | CI smoke |
+
+Only the **security invariants** tier runs for `--run-selftest`. The
+other two tiers are smoke-test territory — they verify that *tooling we
+happened to install* works, which is an integration concern, not a
+security promise Alcatrazer makes to the user.
+
+#### Non-intrusiveness discipline for selftest
+
+`--run-selftest` runs on the user's live project. It **must never**:
+
+- Write files to `/workspace` (bind-mounted to `.<workspace-dir>/` in
+  the user's host repo — changes persist, and the promotion daemon
+  would later push them to the outer repo under the agent identity).
+- Create commits, branches, or merges in the workspace git repo — same
+  reason: promotion would expose our test pollution to the user's real
+  repo.
+- Mutate any bind-mounted host path.
+
+Selftest assertions are instead **read-only observers**:
+
+- Identity checks read the existing initial commit (`git log -1
+  --format=…`), created by `create_workspace` at install time — no new
+  commits needed.
+- File-ownership checks read `/workspace` directory metadata (owned by
+  the phantom UID after the entrypoint's `chown -R agent:agent`) — no
+  file creation needed.
+- Attack-surface checks use `test -e`, `ls -d`, `stat` — read-only
+  probes only.
+
+Smoke-test workflow checks that genuinely need write state (branch +
+merge proofs, code execution from a file) use `/tmp/` inside the
+container as a fresh scratch area, with proper `setUp` / `tearDown` per
+test. `/tmp/` is writable inside the container but is not bind-mounted
+to the host — it never leaks into the user's repo.
+
+#### Per-test independence (no batch scripts)
+
+Each assertion is a standalone unittest method that issues its own
+`self.prison.query([...])`. Earlier iterations used a single bash
+script gathering all data into delimited sections with test methods
+parsing the capture — that design was an accommodation of the old
+`docker compose run --rm workspace` execution model, where every test
+run paid full container boot cost (~1–3 s) and minimizing calls
+mattered. In the current long-lived-container design with
+`docker exec`, per-call overhead is ~50–150 ms; 20 standalone exec
+calls add ~2 seconds total, which is noise against CI's minutes and
+interactive selftest's already-slow image build.
+
+The per-test design is strictly better in five ways:
+
+1. **Backend-agnostic paths.** Each test specifies what it needs. No
+   embedded `/workspace` assumption at the script level — when a
+   future VMPrison implements `query` over SSH, the test base is
+   untouched.
+2. **unittest lifecycle works.** Each test has real `setUp` and
+   `tearDown`; tests are independent; subsets selectable; parallel
+   execution possible.
+3. **Non-intrusiveness enforced per-test.** Any test that needs write
+   state owns its scratch area, set up and torn down explicitly inside
+   that test.
+4. **One place to read intent.** A test method reads as "do this,
+   check that" — no cross-reference to a bash-script section.
+5. **No hidden coupling.** The old batch had `PYTHON_EXEC` silently
+   depending on a file `COMMIT_TEST` had created. Per-test design
+   makes such dependencies impossible or at least visible.
+
+The port's `query` method is what makes this viable: it captures
+stdout / stderr / exit for programmatic inspection, while `exec` stays
+focused on streaming for humans (see "Port methods: `exec` for humans,
+`query` for programs" above).
+
+#### `--verify-checksum`
+
+Downloads `SHA256SUMS` from the GitHub Releases page for the installed
+version, compares against hashes of the source tree in
+`.alcatrazer/src/alcatrazer/`. **Parked until Step 10** ships real
+SHA256SUMS assets — implementing it against infrastructure that
+doesn't exist yet would mean any "passing" test validates only the
+mock, not the real backend. See `feedback_real_source_testing.md` for
+the principle.
 
 ### Step 8: Write `install.sh` (curl|bash bootstrap)
 
