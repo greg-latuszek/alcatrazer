@@ -590,6 +590,96 @@ class DockerPrisonStopTests(unittest.TestCase):
         self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", "workspace"])
 
 
+class DockerPrisonResumeTests(unittest.TestCase):
+    """resume() maps to `docker start <name>` — distinct from start()
+    (which is `docker run` and always creates a fresh container).
+
+    resume()'s whole point is to bring a stopped Alcatraz back up with its
+    writable overlay layer (and caches) intact; start() would recreate it
+    and lose that state. The new Step 4 lifecycle calls resume() on the
+    "stopped, no recreate needed" branch."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_runs_docker_start_with_container_name(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0),
+        ) as mock_run:
+            DockerPrison(self.project_dir).resume()
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "start", "workspace"])
+
+    def test_raises_prison_start_error_on_failure(self):
+        from alcatrazer.alcatraz import PrisonStartError
+
+        with (
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr="no such container: workspace\n"
+                ),
+            ),
+            self.assertRaises(PrisonStartError) as ctx,
+        ):
+            DockerPrison(self.project_dir).resume()
+        self.assertIn("no such container", ctx.exception.stderr)
+
+
+class DockerPrisonPrisonExistsTests(unittest.TestCase):
+    """prison_exists() — port-level check mapping to the existing private
+    _container_exists in DockerPrison. True if a container matching the
+    configured name exists in ANY state (running or stopped). Used by
+    _subsequent_run to distinguish 'no container, fresh start' from
+    'stopped container, resume candidate'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_true_when_container_name_returned(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="workspace\n", stderr=""
+            ),
+        ):
+            self.assertTrue(DockerPrison(self.project_dir).prison_exists())
+
+    def test_false_when_output_empty(self):
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ):
+            self.assertFalse(DockerPrison(self.project_dir).prison_exists())
+
+    def test_uses_ps_dash_a_so_stopped_containers_count(self):
+        """Unlike is_running (which filters status=running), prison_exists
+        must see stopped containers too — that's exactly the case the
+        resume-from-stopped lifecycle branch depends on."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).prison_exists()
+        args = mock_run.call_args.args[0]
+        self.assertIn("-a", args)
+        # No status=running filter (which would hide stopped containers).
+        cmd_str = " ".join(args)
+        self.assertNotIn("status=running", cmd_str)
+        # Anchored name filter to avoid substring matches.
+        self.assertIn("name=^workspace$", cmd_str)
+
+
 class DockerPrisonRemoveTests(unittest.TestCase):
     """remove() is idempotent: no-op if container absent, else `docker rm -f`."""
 
@@ -600,7 +690,7 @@ class DockerPrisonRemoveTests(unittest.TestCase):
 
     def test_noop_when_container_does_not_exist(self):
         with (
-            patch.object(DockerPrison, "_container_exists", return_value=False),
+            patch.object(DockerPrison, "prison_exists", return_value=False),
             patch.object(docker_prison.subprocess, "run") as mock_run,
         ):
             DockerPrison(self.project_dir).remove()
@@ -608,7 +698,7 @@ class DockerPrisonRemoveTests(unittest.TestCase):
 
     def test_runs_docker_rm_force_when_container_exists(self):
         with (
-            patch.object(DockerPrison, "_container_exists", return_value=True),
+            patch.object(DockerPrison, "prison_exists", return_value=True),
             patch.object(
                 docker_prison.subprocess,
                 "run",

@@ -1133,7 +1133,7 @@ Docker volumes" above) survives every "nothing important changed" restart.
 | `toml_changed` | `coding-environment.toml` content vs `.alcatrazer/coding-environment.toml.last` | `[startup]`-only changes (Dockerfile byte-identical but startup script list differs) |
 | `env_changed` | hash of `.env` vs `.alcatrazer/env.hash.last` (both absent counts as unchanged) | env is baked at `docker run` time, so any change means recreate |
 | `running` | `prison.is_running()` | container state |
-| `exists` | `prison.prison_exists()` | Alcatraz present in any state (running or stopped) — stays backend-neutral at the port; DockerPrison maps this to the existing `_container_exists()` internal helper |
+| `exists` | `prison.prison_exists()` | Alcatraz present in any state (running or stopped) — backend-neutral name at the port; DockerPrison implements it with a `docker ps -a` check (the pre-existing private `_container_exists` got promoted to this name) |
 
 **Lifecycle branches:**
 
@@ -1154,8 +1154,10 @@ port so `DockerPrison` can implement them and future adapters stay honest:
   a fresh container via `docker run`.
 - `prison_exists()` — True if an Alcatraz instance with the configured
   identity exists in any state (running or stopped). Backend-neutral name
-  per the memory's `feedback_alcatraz_naming.md` rule; for `DockerPrison`
-  it wraps the existing private `_container_exists` helper. Needed so
+  per the memory's `feedback_alcatraz_naming.md` rule; `DockerPrison`
+  implements it with a `docker ps -a --filter name=^<name>$` check (the
+  pre-existing private `_container_exists` got promoted to this name,
+  since keeping two identically-shaped helpers would be noise). Needed so
   `_subsequent_run` can distinguish "no Alcatraz, must `start`" from
   "stopped Alcatraz, can `resume`".
 

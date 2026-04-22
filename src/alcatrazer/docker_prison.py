@@ -284,6 +284,27 @@ class DockerPrison(Alcatraz):
                 stderr=result.stderr,
             )
 
+    def resume(self) -> None:
+        """Resume a previously-stopped Alcatraz via `docker start <name>`.
+
+        Distinct from `start()`: resume re-enters the *same* container the
+        user stopped earlier, preserving its writable overlay layer (and
+        thus any caches the workspace has populated). `start()` always
+        creates a fresh container via `docker run` and discards prior
+        writable state.
+        """
+        result = subprocess.run(
+            ["docker", "start", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise PrisonStartError(
+                f"docker start failed (exit {result.returncode})",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
     def stop(self) -> None:
         """Stop the container if running; no-op otherwise."""
         if not self.is_running():
@@ -316,8 +337,15 @@ class DockerPrison(Alcatraz):
         )
         return result.stdout.strip() == self.container_name
 
-    def _container_exists(self) -> bool:
-        """True when a container matching `container_name` exists (any state)."""
+    def prison_exists(self) -> bool:
+        """True when a container matching `container_name` exists (any state).
+
+        Port method — backend-neutral name. Uses `docker ps -a` so stopped
+        containers count too (distinct from `is_running()` which filters
+        status=running). `_subsequent_run` depends on this distinction to
+        tell "no container, must `start`" apart from "stopped container,
+        can `resume`".
+        """
         result = subprocess.run(
             [
                 "docker",
@@ -354,7 +382,7 @@ class DockerPrison(Alcatraz):
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""
-        if not self._container_exists():
+        if not self.prison_exists():
             return
         subprocess.run(
             ["docker", "rm", "-f", self.container_name],

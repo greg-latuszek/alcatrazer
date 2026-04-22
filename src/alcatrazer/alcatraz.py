@@ -79,7 +79,24 @@ class Alcatraz(ABC):
 
     @abstractmethod
     def start(self) -> None:
-        """Start the workspace container in detached mode (build first if needed)."""
+        """Create a fresh Alcatraz instance and start it in detached mode.
+
+        Always produces a new instance — any previous writable state (caches
+        in the container's overlay layer, process-local /tmp, …) is discarded
+        by the caller's earlier `remove()` before this runs. Use `resume()`
+        when you want to preserve that state.
+        """
+
+    @abstractmethod
+    def resume(self) -> None:
+        """Bring a stopped Alcatraz back up with its writable state intact.
+
+        Distinct from `start()`: resume re-enters an *existing* instance
+        (stopped via `stop()`) and preserves its writable overlay layer,
+        including any caches (mise / pip / npm) that live there per the
+        "Ephemeral caches — no shared Docker volumes" rule. Raises
+        `PrisonStartError` if no such instance exists or it fails to come up.
+        """
 
     @abstractmethod
     def stop(self) -> None:
@@ -88,6 +105,15 @@ class Alcatraz(ABC):
     @abstractmethod
     def is_running(self) -> bool:
         """Whether the workspace container is currently running."""
+
+    @abstractmethod
+    def prison_exists(self) -> bool:
+        """Whether an Alcatraz instance with the configured identity exists.
+
+        Covers BOTH running and stopped instances — unlike `is_running()`.
+        The `_subsequent_run` lifecycle uses this to distinguish
+        "no instance, must `start`" from "stopped instance, can `resume`".
+        """
 
     @abstractmethod
     def exec(self, command: list[str]) -> int:
