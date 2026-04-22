@@ -125,6 +125,9 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     coding_env_path = write_coding_environment_toml(project_dir, coding_env)
     write_alcatrazer_config(project_dir, name, email, coding_env_file=coding_env_path.name)
     write_env_example(project_dir, workspace_name)
+    print(f"  {coding_env_path.name}  (commit to git — your team's workspace recipe)")
+    print("  .alcatrazer/config.toml      (per-developer; auto-excluded from git)")
+    print("  .env.example                 (commit to git — placeholders only, no secrets)")
 
     # 3g — extract package source for trust (readable install + bundled tests).
     extract_package_source(project_dir)
@@ -135,7 +138,7 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # 3h — generate prison recipe (backend-specific: Dockerfile + entrypoint.sh
     # for DockerPrison).
     print()
-    print("Generating container recipe...")
+    print("Generating Alcatraz recipe...")
     prison.generate_prison(coding_env)
 
     print()
@@ -176,11 +179,11 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
 
     workspace_name = identity.load_workspace_dir(str(alcatrazer_dir))
 
-    print("Building container image...")
+    print("Building Alcatraz image...")
     try:
         prison.build()
     except PrisonBuildError as e:
-        print("ERROR: container image build failed.", file=sys.stderr)
+        print("ERROR: Alcatraz image build failed.", file=sys.stderr)
         if e.stdout:
             print(e.stdout, file=sys.stderr)
         if e.stderr:
@@ -194,11 +197,11 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     print("Creating workspace snapshot...")
     create_workspace(project_dir, workspace_name)
 
-    print("Starting container...")
+    print("Starting Alcatraz...")
     try:
         prison.start()
     except PrisonStartError as e:
-        print("ERROR: container start failed.", file=sys.stderr)
+        print("ERROR: Alcatraz start failed.", file=sys.stderr)
         if e.stdout:
             print(e.stdout, file=sys.stderr)
         if e.stderr:
@@ -314,8 +317,8 @@ def ask_os_packages() -> list[str]:
 
 
 def ask_startup_commands() -> list[str]:
-    """Commands to run after container start — one per line, empty line ends input."""
-    print("Commands to run after container start (one per line, empty line to finish):")
+    """Commands to run after Alcatraz start — one per line, empty line ends input."""
+    print("Commands to run after Alcatraz start (one per line, empty line to finish):")
     commands: list[str] = []
     while True:
         cmd = input("> ").strip()
@@ -715,11 +718,11 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
         prison = DockerPrison(project_dir)
 
     if not prison.is_running():
-        print("Container is not running.")
+        print("Alcatraz is not running.")
         return 0
 
     prison.stop()
-    print("Container stopped.")
+    print("Alcatraz stopped.")
     return 0
 
 

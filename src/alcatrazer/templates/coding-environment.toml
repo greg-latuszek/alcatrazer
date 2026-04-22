@@ -27,7 +27,7 @@
 # [languages.node]
 # version = "22"
 
-# Commands run after container start, in order. Fail-fast: a non-zero exit
+# Commands run after the workspace starts, in order. Fail-fast: a non-zero exit
 # stops the remaining commands. Use for installing project dependencies from
 # the repo's own manifests, configuring frameworks, arbitrary setup.
 # [startup]

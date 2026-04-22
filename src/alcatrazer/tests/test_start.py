@@ -766,7 +766,7 @@ class WriteGitExcludeTests(unittest.TestCase):
     def test_includes_header_comment_verbatim_from_doc(self):
         start.write_git_exclude(self.project_dir, ".devspace-abcd")
         self.assertIn(
-            "# alcatrazer patterns (written by alcatrazer start)",
+            "# alcatrazer patterns (written by alcatrazer init)",
             self._content(),
         )
 
@@ -1378,6 +1378,15 @@ class CmdInitIntegrationTests(unittest.TestCase):
         self.assertIn(".env", out)
         self.assertIn("alcatrazer start", out)
 
+    def test_tells_user_which_files_to_commit_to_git(self):
+        """User ergonomics: after writing configs, print the list + flag
+        which ones go to version control (coding-environment.toml and
+        .env.example are team-shared; .alcatrazer/config.toml is local)."""
+        _, out = self._run_capturing(host_has_creds=True)
+        self.assertIn("coding-environment.toml", out)
+        self.assertIn(".env.example", out)
+        self.assertIn("commit to git", out)
+
     def test_guidance_when_host_has_claude_creds(self):
         """With host creds, no credential prompt — just tell the user to start."""
         rc, out = self._run_capturing(host_has_creds=True)
@@ -1466,7 +1475,7 @@ class CmdInitIntegrationTests(unittest.TestCase):
 
 class FirstRunAfterInitTests(unittest.TestCase):
     """Orchestration of _first_run_after_init (Step 3.5): build → workspace
-    snapshot → container start → startup commands → save .last snapshot.
+    snapshot → Alcatraz start → startup commands → save .last snapshot.
     Wizards and config writers are NOT re-run — init already produced them."""
 
     def setUp(self):
