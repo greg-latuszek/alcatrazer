@@ -808,16 +808,26 @@ From the answers collected in 3c and 3d:
   Zero alcatrazer branding in content or comments.
 - Write `.alcatrazer/config.toml` (promotion identity from 3c, daemon defaults,
   pointer to coding-environment file).
-- Write `.env.example` with credential guidance:
-  - Host has no `~/.claude/.credentials.json`: include `# ANTHROPIC_API_KEY=`
-    with a comment explaining it's the fallback when the host is not logged into
-    Claude, and a pointer to the `alcatrazer init` guidance block for context.
-  - Host has `~/.claude/.credentials.json`: still write the placeholder so users
-    who later log out / clear creds have something to fill in.
-  - `.env.example` already exists in the target repo: **append** an alcatrazer
-    block bracketed by marker comments (`# --- alcatrazer begin ---` /
-    `# --- alcatrazer end ---`) so re-running `init` is idempotent (detect the
-    marker, skip or rewrite in place; never duplicate).
+- Write `.env.example` with a commented `ANTHROPIC_API_KEY=` placeholder plus
+  a short explanation of when to fill it in. **Anti-leak rule:** `.env.example`
+  is committed to the outer repo AND snapshotted into `/workspace`, so the
+  agent reads its content. The block MUST contain zero `alcatraz` /
+  `alcatrazer` strings, and the prose uses "workspace" rather than
+  "container" (backend-agnostic — a future podman/sysbox/VM backend reuses
+  the same file).
+  - Write order: 3f (workspace-name generation) runs **before** 3e's
+    `.env.example` write, so the write can take `workspace_name` as a
+    direct argument (Python zen: direct over indirect — no re-reading from
+    `.alcatrazer/workspace-dir`).
+  - Markers use the workspace-name tag, not an alcatrazer string:
+    `# --- <workspace-tag> begin ---` / `# --- <workspace-tag> end ---`
+    (leading dot stripped for readability; the hex suffix keeps the marker
+    collision-resistant inside the file). This gives the block a stable,
+    neutral-looking identifier for idempotent in-place rewrites on re-run,
+    without leaking product branding.
+  - `.env.example` already exists in the target repo: append our block
+    below the user's existing content (leave it untouched). On re-run,
+    detect the marker and rewrite in place — never duplicate.
 
 #### Step 3f: Write `.git/info/exclude`
 

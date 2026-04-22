@@ -631,39 +631,74 @@ class WriteAlcatrazerConfigTests(unittest.TestCase):
 
 
 class WriteEnvExampleTests(unittest.TestCase):
-    """Step 3e: .env.example writer — emits an alcatrazer-branded block
-    with an ANTHROPIC_API_KEY placeholder so the user has concrete
-    guidance on what to fill in before running `alcatrazer start`.
+    """Step 3e: .env.example writer — emits a bracketed block with an
+    ANTHROPIC_API_KEY placeholder so the user has concrete guidance on
+    what to fill in before running `alcatrazer start`.
 
-    Idempotency: on repos that already have a .env.example, the writer
-    appends (or replaces in place) a bracketed block — never duplicates."""
+    Anti-leak rule: .env.example IS committed to the outer repo's git
+    AND snapshotted into /workspace, so its content reaches the agent.
+    The block MUST contain zero "alcatraz" / "alcatrazer" branding —
+    markers instead use the generated workspace name (a neutral hex-
+    suffixed tag), and the prose refers to "the workspace" rather than
+    "the container" (also backend-agnostic)."""
 
-    BEGIN_MARKER = "# --- alcatrazer begin ---"
-    END_MARKER = "# --- alcatrazer end ---"
+    WORKSPACE_NAME = ".devspace-7f3a"
+    # Markers drop the leading dot for readability; the workspace name's
+    # hex suffix still makes them collision-resistant inside the file.
+    BEGIN_MARKER = "# --- devspace-7f3a begin ---"
+    END_MARKER = "# --- devspace-7f3a end ---"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
+    def _write(self):
+        return start.write_env_example(self.project_dir, self.WORKSPACE_NAME)
+
     def _read(self) -> str:
         return (self.project_dir / ".env.example").read_text()
 
     def test_writes_env_example_at_repo_root(self):
-        path = start.write_env_example(self.project_dir)
+        path = self._write()
         self.assertEqual(path, self.project_dir / ".env.example")
         self.assertTrue(path.is_file())
 
     def test_includes_anthropic_api_key_placeholder(self):
-        start.write_env_example(self.project_dir)
+        self._write()
         self.assertIn("ANTHROPIC_API_KEY", self._read())
 
     def test_fresh_write_contains_marker_block(self):
-        start.write_env_example(self.project_dir)
+        self._write()
         text = self._read()
         self.assertIn(self.BEGIN_MARKER, text)
         self.assertIn(self.END_MARKER, text)
         self.assertLess(text.index(self.BEGIN_MARKER), text.index(self.END_MARKER))
+
+    def test_zero_alcatraz_branding_in_written_file(self):
+        """Prevents leak: .env.example is committed + snapshotted, so the
+        agent reads whatever we write here. Nothing may say 'alcatraz'."""
+        self._write()
+        self.assertNotIn("alcatraz", self._read().lower())
+
+    def test_marker_uses_workspace_name_not_alcatrazer(self):
+        """Marker must be the workspace name so updates are idempotent
+        without leaking product branding into the committed file."""
+        self._write()
+        text = self._read()
+        # Positive: workspace-name marker is there.
+        self.assertIn("devspace-7f3a", text)
+        # Negative: no alcatraz tokens in any form.
+        lower = text.lower()
+        self.assertNotIn("alcatrazer", lower)
+        self.assertNotIn("alcatraz", lower)
+
+    def test_prose_is_backend_agnostic(self):
+        """No 'container' references — 'workspace' is the neutral term
+        that survives a future podman / sysbox / VM backend."""
+        self._write()
+        self.assertNotIn("container", self._read().lower())
+        self.assertIn("workspace", self._read().lower())
 
     def test_appends_block_when_file_exists_without_markers(self):
         """Target repo may already have its own .env.example; we append
@@ -672,7 +707,7 @@ class WriteEnvExampleTests(unittest.TestCase):
         existing_content = "USER_VAR=1\nANOTHER=two\n"
         existing.write_text(existing_content)
 
-        start.write_env_example(self.project_dir)
+        self._write()
         text = self._read()
         self.assertIn("USER_VAR=1", text)
         self.assertIn("ANOTHER=two", text)
@@ -682,15 +717,14 @@ class WriteEnvExampleTests(unittest.TestCase):
         self.assertLess(text.index("USER_VAR=1"), text.index(self.BEGIN_MARKER))
 
     def test_idempotent_when_markers_already_present(self):
-        """Re-running on a file that already has the alcatrazer block
-        rewrites in place — no duplication, existing non-block content
-        preserved."""
-        start.write_env_example(self.project_dir)  # first pass
+        """Re-running on a file that already has our block rewrites it
+        in place — no duplication, existing non-block content preserved."""
+        self._write()  # first pass
         user_addition = "\n# user added below\nMY_VAR=x\n"
         path = self.project_dir / ".env.example"
         path.write_text(path.read_text() + user_addition)
 
-        start.write_env_example(self.project_dir)  # second pass
+        self._write()  # second pass
         text = self._read()
         # Exactly one block.
         self.assertEqual(text.count(self.BEGIN_MARKER), 1)
@@ -702,7 +736,7 @@ class WriteEnvExampleTests(unittest.TestCase):
 
     def test_returns_path_even_when_file_existed(self):
         (self.project_dir / ".env.example").write_text("EXISTING=1\n")
-        result = start.write_env_example(self.project_dir)
+        result = self._write()
         self.assertEqual(result, self.project_dir / ".env.example")
 
 

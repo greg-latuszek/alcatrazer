@@ -107,17 +107,19 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # 3d — coding environment (languages, OS packages, startup commands).
     coding_env = ask_coding_environment()
 
+    # 3f — workspace dir name + .git/info/exclude patterns. (Pulled ahead
+    # of 3e config writes so `.env.example`'s marker block can embed the
+    # workspace name — see _env_example_markers for why.)
+    workspace_name = identity.generate_workspace_dir_name()
+    identity.store_workspace_dir(str(alcatrazer_dir), workspace_name)
+    write_git_exclude(project_dir, workspace_name)
+
     # 3e — config files.
     print()
     print("Writing configuration...")
     coding_env_path = write_coding_environment_toml(project_dir, coding_env)
     write_alcatrazer_config(project_dir, name, email, coding_env_file=coding_env_path.name)
-    write_env_example(project_dir)
-
-    # 3f — workspace dir name + .git/info/exclude patterns.
-    workspace_name = identity.generate_workspace_dir_name()
-    identity.store_workspace_dir(str(alcatrazer_dir), workspace_name)
-    write_git_exclude(project_dir, workspace_name)
+    write_env_example(project_dir, workspace_name)
 
     # 3g — extract package source for trust (readable install + bundled tests).
     extract_package_source(project_dir)
@@ -424,47 +426,64 @@ _ENV_EXAMPLE_HEADER = (
     "# .env should stay out of version control; .env.example is committed.\n"
 )
 
-_ENV_EXAMPLE_BEGIN_MARKER = "# --- alcatrazer begin ---"
-_ENV_EXAMPLE_END_MARKER = "# --- alcatrazer end ---"
 
-_ENV_EXAMPLE_ALCATRAZER_BLOCK = f"""{_ENV_EXAMPLE_BEGIN_MARKER}
-# Claude Code authentication. Only needed if you haven't authenticated
-# Claude on your host (~/.claude/.credentials.json). Uncomment and fill in
-# with your Anthropic API key; `alcatrazer start` will pass it through to
-# the workspace container.
-#ANTHROPIC_API_KEY=
-{_ENV_EXAMPLE_END_MARKER}
-"""
+def _env_example_markers(workspace_name: str) -> tuple[str, str]:
+    """Build begin/end markers from the workspace name (leading dot stripped).
+
+    Using the workspace name keeps this file free of any "alcatraz"
+    branding — .env.example gets committed to the outer repo AND
+    snapshotted into /workspace, so the agent can read it. The workspace
+    name is a neutral hex-suffixed tag, stable within a single repo,
+    which gives us a collision-resistant identifier for idempotent
+    in-place rewrites on re-run.
+    """
+    tag = workspace_name.lstrip(".")
+    return (f"# --- {tag} begin ---", f"# --- {tag} end ---")
 
 
-def write_env_example(project_dir: Path) -> Path:
-    """Write/update `.env.example` at the repo root with an alcatrazer block.
+def _env_example_block(workspace_name: str) -> str:
+    begin, end = _env_example_markers(workspace_name)
+    return (
+        f"{begin}\n"
+        "# AI API key; picked up when the workspace starts.\n"
+        "# Only needed if you haven't authenticated Claude on your host\n"
+        "# (~/.claude/.credentials.json). Uncomment and fill in.\n"
+        "#ANTHROPIC_API_KEY=\n"
+        f"{end}\n"
+    )
 
-    The block is bracketed by `# --- alcatrazer begin/end ---` markers so
-    it can be rewritten in place without duplicating on re-runs, and so
-    users can keep their own unrelated entries alongside ours.
+
+def write_env_example(project_dir: Path, workspace_name: str) -> Path:
+    """Write/update `.env.example` at the repo root with a credentials block.
+
+    The block is bracketed by markers derived from `workspace_name` so the
+    file contains zero alcatraz / alcatrazer strings. Prose inside the
+    block is backend-agnostic ("workspace", not "container").
 
     Three cases:
       - No file: write header + block.
-      - File without markers: append the block at the end, leave existing
-        content untouched.
-      - File with markers: replace the block between markers in place.
+      - File without our markers: append the block at the end, leave
+        existing content untouched.
+      - File with our markers: replace the block in place (idempotent).
     """
+    begin, end = _env_example_markers(workspace_name)
+    block = _env_example_block(workspace_name)
     target = project_dir / ".env.example"
+
     if not target.exists():
-        target.write_text(_ENV_EXAMPLE_HEADER + "\n" + _ENV_EXAMPLE_ALCATRAZER_BLOCK)
+        target.write_text(_ENV_EXAMPLE_HEADER + "\n" + block)
         return target
 
     existing = target.read_text()
-    if _ENV_EXAMPLE_BEGIN_MARKER in existing and _ENV_EXAMPLE_END_MARKER in existing:
-        begin = existing.index(_ENV_EXAMPLE_BEGIN_MARKER)
-        end = existing.index(_ENV_EXAMPLE_END_MARKER) + len(_ENV_EXAMPLE_END_MARKER)
-        updated = existing[:begin] + _ENV_EXAMPLE_ALCATRAZER_BLOCK.rstrip() + existing[end:]
+    if begin in existing and end in existing:
+        begin_idx = existing.index(begin)
+        end_idx = existing.index(end) + len(end)
+        updated = existing[:begin_idx] + block.rstrip() + existing[end_idx:]
         target.write_text(updated)
         return target
 
     separator = "" if existing.endswith("\n") else "\n"
-    target.write_text(existing + separator + "\n" + _ENV_EXAMPLE_ALCATRAZER_BLOCK)
+    target.write_text(existing + separator + "\n" + block)
     return target
 
 
