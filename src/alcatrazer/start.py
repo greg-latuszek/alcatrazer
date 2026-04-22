@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import unittest
 from pathlib import Path
 
 from alcatrazer import identity, snapshot
@@ -554,6 +555,18 @@ def _load_coding_environment(project_dir: Path) -> dict:
     source = project_dir / config.get("coding_environment_file", "coding-environment.toml")
     with open(source, "rb") as f:
         return tomllib.load(f)
+
+
+def cmd_selftest(project_dir: Path) -> int:
+    """Run `--run-selftest`: execute the bundled security invariants against
+    the Alcatraz just started at `project_dir`. Returns 0 on success or
+    non-zero on failure (count of failures is shown by the test runner)."""
+    from alcatrazer import selftest
+
+    TestCase = selftest.make_alcatraz_selftest_testcase(project_dir)
+    suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
 
 
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:

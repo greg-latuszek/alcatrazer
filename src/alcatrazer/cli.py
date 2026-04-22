@@ -48,9 +48,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    subparsers.add_parser(
+    start_parser = subparsers.add_parser(
         "start",
         help="Set up (first run) or start the container",
+    )
+    start_parser.add_argument(
+        "--run-selftest",
+        action="store_true",
+        help=(
+            "After start succeeds, run the bundled security self-tests "
+            "(phantom UID, credential isolation, docker socket absence, …) "
+            "against the running Alcatraz."
+        ),
     )
     subparsers.add_parser(
         "stop",
@@ -81,7 +90,10 @@ def main():
         return
 
     if args.command == "start":
-        sys.exit(start_module.cmd_start(Path.cwd()))
+        rc = start_module.cmd_start(Path.cwd())
+        if rc == 0 and args.run_selftest:
+            rc = start_module.cmd_selftest(Path.cwd())
+        sys.exit(rc)
     elif args.command == "stop":
         sys.exit(start_module.cmd_stop(Path.cwd()))
     elif args.command == "test":
