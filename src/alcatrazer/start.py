@@ -98,6 +98,11 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
         prison = DockerPrison(project_dir)
 
+    # `.alcatrazer/` is cmd_init's own directory — create it explicitly
+    # up front rather than relying on a downstream writer's mkdir side
+    # effect. Keeps step ordering safe to reshuffle.
+    alcatrazer_dir.mkdir(parents=True, exist_ok=True)
+
     print("Starting interactive setup...")
     print()
 

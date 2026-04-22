@@ -1440,6 +1440,29 @@ class CmdInitIntegrationTests(unittest.TestCase):
         exclude_call = self.mocks["write_git_exclude"].call_args
         self.assertEqual(exclude_call.args[1], ".devspace-zzzz")
 
+    def test_creates_alcatrazer_directory_up_front(self):
+        """Regression guard: cmd_init owns `.alcatrazer/` and must mkdir
+        it explicitly before any step that writes into it. Previously the
+        directory was created implicitly by write_alcatrazer_config's
+        mkdir side-effect; the 3f-before-3e reorder (workspace-name
+        markers) moved store_workspace_dir ahead of that, which smoke
+        caught as FileNotFoundError on `.alcatrazer/workspace-dir`.
+
+        This test runs store_workspace_dir for real (no mock) so the
+        directory-missing failure would surface in unit tests, not only
+        in CI smoke."""
+        real_store_called = []
+
+        def real_store(alcatraz_dir_str: str, name: str) -> None:
+            real_store_called.append((alcatraz_dir_str, name))
+            Path(alcatraz_dir_str).joinpath("workspace-dir").write_text(f"{name}\n")
+
+        with patch.object(identity, "store_workspace_dir", side_effect=real_store):
+            rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.project_dir / ".alcatrazer").is_dir())
+        self.assertEqual(len(real_store_called), 1)
+
 
 class FirstRunAfterInitTests(unittest.TestCase):
     """Orchestration of _first_run_after_init (Step 3.5): build → workspace
