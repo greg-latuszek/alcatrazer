@@ -628,7 +628,7 @@ def extract_package_source(
     return dest
 
 
-_GIT_EXCLUDE_HEADER = "# alcatrazer patterns (written by alcatrazer start)"
+_GIT_EXCLUDE_HEADER = "# alcatrazer patterns (written by alcatrazer init)"
 
 
 def write_git_exclude(project_dir: Path, workspace_name: str) -> Path:
