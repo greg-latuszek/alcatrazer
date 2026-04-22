@@ -57,6 +57,17 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     return _subsequent_run(project_dir, prison=prison)
 
 
+def _host_has_claude_creds() -> bool:
+    """True if the host has Claude Code creds at ~/.claude/.credentials.json.
+
+    When present, `DockerPrison.start` mounts the file read-only into the
+    container — no `.env` auth needed. When absent, the user needs to
+    populate `ANTHROPIC_API_KEY` in `.env` before `alcatrazer start`.
+    Factored out so tests can patch it without touching the real HOME.
+    """
+    return (Path.home() / ".claude" / ".credentials.json").exists()
+
+
 def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer init` — one-time disk setup (Steps 3b-3h).
 
@@ -121,7 +132,16 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     prison.generate_prison(coding_env)
 
     print()
-    print("Next: run `alcatrazer start` to build the image and launch the workspace.")
+    if _host_has_claude_creds():
+        print("Claude credentials found on host — they will be mounted into the workspace.")
+        print("Next: run `alcatrazer start` to build the image and launch the workspace.")
+    else:
+        print("Claude credentials not found at ~/.claude/.credentials.json.")
+        print("Before running `alcatrazer start`, either:")
+        print("  (a) run `claude` on your host to authenticate, or")
+        print("  (b) copy .env.example to .env and fill in ANTHROPIC_API_KEY.")
+        print()
+        print("Then run `alcatrazer start` to build the image and launch the workspace.")
     return 0
 
 

@@ -1323,8 +1323,34 @@ class CmdInitIntegrationTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return start.cmd_init(self.project_dir, prison=self.prison)
 
+    def _run_capturing(self, host_has_creds: bool) -> tuple[int, str]:
+        stdout = io.StringIO()
+        with (
+            patch.object(start, "_host_has_claude_creds", return_value=host_has_creds),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue()
+
     def test_happy_path_returns_zero(self):
         self.assertEqual(self._run(), 0)
+
+    def test_guidance_when_host_has_no_claude_creds(self):
+        """Without host creds, user must populate ANTHROPIC_API_KEY in .env."""
+        rc, out = self._run_capturing(host_has_creds=False)
+        self.assertEqual(rc, 0)
+        self.assertIn("ANTHROPIC_API_KEY", out)
+        self.assertIn(".env", out)
+        self.assertIn("alcatrazer start", out)
+
+    def test_guidance_when_host_has_claude_creds(self):
+        """With host creds, no credential prompt — just tell the user to start."""
+        rc, out = self._run_capturing(host_has_creds=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("alcatrazer start", out)
+        # No prompting to populate .env when the mount will cover auth.
+        self.assertNotIn("ANTHROPIC_API_KEY", out)
 
     def test_proceeds_when_git_is_file_worktree(self):
         """.git as a file (git worktrees / submodules) counts as a valid repo."""
