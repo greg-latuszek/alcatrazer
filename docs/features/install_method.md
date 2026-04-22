@@ -1076,9 +1076,10 @@ agent identity, no remote, `commit.gpgsign false`.
 Start the container via `DockerPrison.start()` (raw `docker run -d` — no
 docker-compose, see "Hexagonal sandboxing architecture" above). The container
 runs detached with the workspace bind-mounted at `/workspace`, Claude
-credentials mounted read-only, named cache volumes attached (`mise-cache`,
-`pip-cache`, `npm-cache`), `.env` wired in, and `sleep infinity` as the
+credentials mounted read-only, `.env` wired in, and `sleep infinity` as the
 long-lived CMD so the container stays alive for later `docker exec` attaches.
+**No named cache volumes** — mise / pip / npm caches live in the container's
+writable overlay layer, per the "Ephemeral caches" section above.
 
 Run `[startup]` commands in order via `DockerPrison.exec()`, wrapping each
 toml entry as `bash -c <command>` and running as the `agent` user. Fail-fast:
@@ -1095,13 +1096,71 @@ for change detection.
 ### Step 4: Implement `alcatrazer start` (subsequent runs, image already built)
 
 Reached when `.alcatrazer/Dockerfile` exists AND the image has already been
-built (`prison.image_exists() == True`). Change detection logic:
-1. Generate would-be Dockerfile in memory
-2. Compare against `.alcatrazer/Dockerfile` (rebuild if different)
-3. Compare `coding-environment.toml` against `.alcatrazer/coding-environment.toml.last`
-   (restart if different, no rebuild)
-4. Start/restart container, run startup commands
-5. Update `.alcatrazer/coding-environment.toml.last`
+built (`prison.image_exists() == True`). `_subsequent_run` branches on
+detected change signals; the guiding principle is **only recreate the
+container when a change actually invalidates it**, so the container's
+writable layer (and thus its caches — see "Ephemeral caches — no shared
+Docker volumes" above) survives every "nothing important changed" restart.
+
+**Change-detection signals:**
+
+| Signal | Source | Triggers |
+|---|---|---|
+| `rebuild` | `prison.needs_rebuild(coding_env)` — would-be recipe vs on-disk Dockerfile | new image required |
+| `toml_changed` | `coding-environment.toml` content vs `.alcatrazer/coding-environment.toml.last` | `[startup]`-only changes (Dockerfile byte-identical but startup script list differs) |
+| `env_changed` | hash of `.env` vs `.alcatrazer/env.hash.last` (both absent counts as unchanged) | env is baked at `docker run` time, so any change means recreate |
+| `running` | `prison.is_running()` | container state |
+| `exists` | `prison.container_exists()` | container present in any state (running or stopped) |
+
+**Lifecycle branches:**
+
+| Case | Detected | Action |
+|---|---|---|
+| Fast path | `running && !rebuild && !toml_changed && !env_changed` | no-op; print "Already running, environment up to date." |
+| Full recreate | `rebuild \|\| env_changed` | stop (if running) + remove + (rebuild: generate_prison + build) + start (fresh `docker run`, writable layer cleared — correct: the runtime version / OS packages / env that shaped the cache have changed) |
+| Resume stopped | `exists && !running && !rebuild && !env_changed` | `prison.resume()` (maps to `docker start`) — writable layer intact, caches preserved |
+| Startup-only change on a running container | `running && toml_changed && !rebuild && !env_changed` | keep container, re-run `[startup]` via `exec` |
+| Fresh start (rare) | `!exists` | `prison.start()` — user manually `docker rm`'d; equivalent to first-run-after-init |
+
+**New Alcatraz port additions (Step 4a):** two methods land on the abstract
+port so `DockerPrison` can implement them and future adapters stay honest:
+
+- `resume()` — start an existing stopped container, preserving its writable
+  layer. For `DockerPrison`: `docker start <container_name>`. Raises
+  `PrisonStartError` on failure. Distinct from `start()` which always creates
+  a fresh container via `docker run`.
+- `container_exists()` — True if a container with the configured name exists
+  in any state. Promote the existing private `DockerPrison._container_exists`
+  to the port. Needed so `_subsequent_run` can distinguish "no container,
+  must `start`" from "stopped container, can `resume`".
+
+`ALCATRAZ_OPERATIONS` surface test in `test_alcatraz.py` grows by two.
+
+**Volume drop (Step 4b):** remove the three `-v alcatraz-*-cache:...` args
+from `DockerPrison.start`'s `docker run` command. Existing installs' orphan
+volumes (`alcatraz-mise-cache` etc.) become dead weight in the user's Docker
+daemon — `alcatrazer` does not auto-clean them (it can't reliably identify
+which were its own). Release notes should call out
+`docker volume rm alcatraz-mise-cache alcatraz-pip-cache alcatraz-npm-cache`
+as a one-shot cleanup for early adopters.
+
+**`.env` change detection (Step 4c):** two small helpers in `start.py`:
+- `env_file_changed(project_dir) -> bool` — SHA256 `.env` (if present),
+  compare against the first line of `.alcatrazer/env.hash.last`. Absent
+  `.env` + absent `.hash.last` = unchanged. Absent `.env` + present `.hash.last`
+  = changed (user removed the file; recreate to drop the env vars).
+- `save_env_snapshot(project_dir)` — write the current hash to `.hash.last`
+  on successful run. Symmetric to `save_coding_environment_snapshot`.
+
+**Lifecycle rewrite (Step 4d):** `_subsequent_run` grows the new branches
+above. `SubsequentRunTests` grows cases for: resume-from-stopped,
+env-changed-triggers-recreate, startup-only-change-without-recreate (new —
+container stays, `exec` runs the new commands against existing caches),
+container-missing-falls-back-to-start.
+
+Substeps land in TDD order: 4a (port surface — smallest, unblocks the rest),
+4b (volume drop — standalone), 4c (env-change helpers — standalone), 4d
+(lifecycle rewrite — depends on all three prior).
 
 ### Step 5: Implement `alcatrazer stop`
 
