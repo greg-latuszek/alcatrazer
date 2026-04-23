@@ -1940,12 +1940,31 @@ class FirstRunAfterInitTests(unittest.TestCase):
 
 
 class CmdStopTests(unittest.TestCase):
-    """Step 5: `alcatrazer stop` — idempotent container stop."""
+    """Step 5 + 5.7f: `alcatrazer stop` — freeze the Alcatraz, then
+    tell the sync daemon to finalize. Ordering is non-negotiable:
+    docker down FIRST (so agents can't commit any more), then daemon
+    shutdown (so the final sync sees a frozen inner repo)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
+
+        # Patch daemon-lifecycle helpers — cmd_stop always calls them;
+        # tests control the outcome via the return value.
+        from alcatrazer.daemon_lifecycle import ShutdownResult
+
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
 
     def _run(self, prison=None):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -1956,9 +1975,14 @@ class CmdStopTests(unittest.TestCase):
     def test_returns_error_when_no_alcatrazer_setup(self):
         rc, _, err = self._run()
         self.assertEqual(rc, 1)
-        self.assertIn("alcatrazer", err.lower())
+        self.assertIn("alcatrazer init", err)
+        # Daemon shutdown must not be attempted — there's no setup yet.
+        self.mock_shutdown.assert_not_called()
 
-    def test_noop_when_container_not_running(self):
+    def test_noop_when_container_not_running_but_still_shuts_down_daemon(self):
+        """An idle `alcatrazer stop` still calls daemon shutdown — a
+        lingering daemon process should be reaped and state.json's
+        flag cleared."""
         (self.project_dir / ".alcatrazer").mkdir()
         prison = Mock(spec=Alcatraz)
         prison.is_running.return_value = False
@@ -1966,6 +1990,7 @@ class CmdStopTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         prison.stop.assert_not_called()
         self.assertIn("not running", out.lower())
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
 
     def test_stops_running_container(self):
         (self.project_dir / ".alcatrazer").mkdir()
@@ -1975,6 +2000,55 @@ class CmdStopTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         prison.stop.assert_called_once()
         self.assertIn("stopped", out.lower())
+
+    def test_docker_stop_happens_before_daemon_shutdown(self):
+        """The non-negotiable ordering rule: docker stop FIRST so
+        agents can't commit while the daemon is doing its final sync."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(prison.stop, "prison_stop")
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+
+        self._run(prison=prison)
+
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("prison_stop"), names.index("shutdown_daemon"))
+
+    def test_conflict_outcome_returns_nonzero(self):
+        """Conflict during final sync — exit non-zero so the user knows
+        to check their repository. Container remains stopped; daemon
+        gone; unsynced commits safe in the Alcatraz workspace."""
+        self.mock_shutdown.return_value = self.ShutdownResult(
+            outcome="conflict", synced_count=1, conflict_branches=["feat/x"]
+        )
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison=prison)
+        self.assertEqual(rc, 1)
+
+    def test_failed_outcome_returns_nonzero(self):
+        self.mock_shutdown.return_value = self.ShutdownResult(
+            outcome="failed", synced_count=0, conflict_branches=[]
+        )
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison=prison)
+        self.assertEqual(rc, 1)
+
+    def test_timeout_outcome_returns_nonzero(self):
+        self.mock_shutdown.return_value = self.ShutdownResult(
+            outcome="timeout", synced_count=0, conflict_branches=[]
+        )
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison=prison)
+        self.assertEqual(rc, 1)
 
 
 class CliStopTests(unittest.TestCase):

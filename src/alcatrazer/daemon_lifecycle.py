@@ -367,3 +367,28 @@ def shutdown_sync_daemon(
         synced_count=synced_count,
         conflict_branches=conflict_branches,
     )
+
+
+def print_shutdown_result(result: ShutdownResult) -> None:
+    """User-facing output for the sync-daemon shutdown block.
+    Called by cmd_stop / cmd_clear after `shutdown_sync_daemon`
+    returns — picks a message per the `outcome` field.
+
+    `no_daemon` is silent — no sync daemon was running, so there's
+    nothing to tell the user. Every other outcome emits a
+    `Sync daemon stopped.` line as a closing marker."""
+    if result.outcome == "no_daemon":
+        return
+    if result.outcome == "synced":
+        print(f"Sync daemon: synced {result.synced_count} commit(s) before exit.")
+    elif result.outcome == "conflict":
+        branches = ", ".join(result.conflict_branches)
+        print(f"Sync daemon: synced {result.synced_count} commit(s); CONFLICT on {branches}.")
+        print("  Unsynced commits remain in the Alcatraz workspace.")
+        print("  Resolve in your repository, then run `alcatrazer start`")
+        print("  to resume syncing (paused branches auto-resolve).")
+    elif result.outcome == "failed":
+        print("Sync daemon: final sync FAILED. See .alcatrazer/promotion-daemon.log for details.")
+    elif result.outcome == "timeout":
+        print("Sync daemon: did not shut down within the timeout — SIGKILL sent.")
+    print("Sync daemon stopped.")

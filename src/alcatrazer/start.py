@@ -30,7 +30,11 @@ from pathlib import Path
 
 from alcatrazer import identity, snapshot
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
-from alcatrazer.daemon_lifecycle import launch_daemon_and_print
+from alcatrazer.daemon_lifecycle import (
+    launch_daemon_and_print,
+    print_shutdown_result,
+    shutdown_sync_daemon,
+)
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 
@@ -891,15 +895,26 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
 
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
-    """`alcatrazer stop` — idempotent container stop.
+    """`alcatrazer stop` — freeze the Alcatraz + shut down the sync daemon.
 
-    Requires an existing alcatrazer setup (`.alcatrazer/`). Returns 0 on
-    success or when the container is already stopped; 1 when there is no
-    setup to stop.
+    Ordering (non-negotiable, see Step 5.7 in install_method.md):
+    docker stop FIRST, then daemon shutdown. Any other order reopens a
+    race: an agent commit between the daemon's last poll and our
+    SIGTERM would get synced just before docker stop — and any commit
+    that landed AFTER the final sync but before `docker stop` would
+    stay in the Alcatraz workspace unsynced. Stopping docker first
+    means "no more commits possible" when the daemon finalizes.
+
+    Returns:
+      0 — everything went as planned.
+      1 — no `.alcatrazer/` setup (user hasn't run `alcatrazer init`).
+      1 — daemon final sync had a conflict, failed, or timed out
+          (Alcatraz is still stopped, daemon is gone; user resolves in
+          their repository, then `alcatrazer start` resumes).
     """
     if not (project_dir / ".alcatrazer").exists():
         print(
-            "No alcatrazer setup in this repository — run `alcatrazer start` first.",
+            "No alcatrazer setup in this repository — run `alcatrazer init` first.",
             file=sys.stderr,
         )
         return 1
@@ -909,12 +924,23 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
         prison = DockerPrison(project_dir)
 
-    if not prison.is_running():
+    # Step 1 — docker down first (agents frozen).
+    if prison.is_running():
+        prison.stop()
+        print("Alcatraz stopped.")
+    else:
         print("Alcatraz is not running.")
-        return 0
 
-    prison.stop()
-    print("Alcatraz stopped.")
+    # Step 2 — daemon shutdown against the now-frozen inner repo. Always
+    # call this, even if the Alcatraz was already stopped: a lingering
+    # daemon against a stopped container is still worth reaping, and
+    # shutdown_sync_daemon also cleans up the state.json flag from any
+    # prior cycle.
+    result = shutdown_sync_daemon(project_dir)
+    print_shutdown_result(result)
+
+    if result.outcome in ("conflict", "failed", "timeout"):
+        return 1
     return 0
 
 
