@@ -857,19 +857,32 @@ def cmd_selftest(project_dir: Path) -> int:
 
 
 def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
-    """`alcatrazer clear` — throw away the Alcatraz (Step 5.5).
+    """`alcatrazer clear` — throw away the Alcatraz runtime, preserve
+    the workspace.
 
     Removes the container so its writable overlay layer and any caches
-    living there are discarded. Leaves the image, leaves `.alcatrazer/`
-    config, leaves user repo-root files (`coding-environment.toml`,
-    `.env`, `.env.example`, workspace directory). Next `alcatrazer
-    start` hits the "fresh start" branch of the Step 4 lifecycle table
-    and recreates the container from the existing image — no rebuild
-    needed, caches populated fresh.
+    living there are discarded. Preserves:
+    - the image (so `alcatrazer start` doesn't need to rebuild),
+    - `.alcatrazer/` config,
+    - the Alcatraz workspace (`project_dir/<workspace-name>/`) on the
+      host filesystem — this is where agent work lives, and it's safe
+      to keep because commits that synced already live in your
+      repository too, and any unsynced commits are preserved here for
+      next-start recovery,
+    - user repo-root files (`coding-environment.toml`, `.env`,
+      `.env.example`).
+
+    Ordering (Step 5.7 non-negotiable rule, same as cmd_stop):
+    1. `docker stop` — agents frozen.
+    2. `shutdown_sync_daemon` — daemon runs final sync against the
+       frozen inner repo, exits. Any commits it can't sync stay in
+       the workspace via the paused-branches machinery.
+    3. `docker rm` — container gone.
 
     Idempotent: missing Alcatraz is reported as "nothing to clear" and
-    returns 0. Uses only existing port methods (`stop` + `remove`); no
-    new abstractions.
+    returns 0. Final sync conflict / failure / timeout still proceeds
+    with docker rm (unsynced commits live in the preserved workspace)
+    but returns non-zero so the user is aware.
     """
     if not (project_dir / ".alcatrazer").exists():
         print(
@@ -883,14 +896,26 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
         prison = DockerPrison(project_dir)
 
-    if not prison.exists():
-        print("Nothing to clear — Alcatraz not present.")
-        return 0
-
+    # Step 1 — docker down first.
     if prison.is_running():
         prison.stop()
-    prison.remove()
-    print("Alcatraz cleared.")
+
+    # Step 2 — daemon final sync + exit. Called even when the Alcatraz
+    # is already gone so a lingering daemon against a user-removed
+    # container (rare but possible) is reaped cleanly and state.json's
+    # flag is closed.
+    result = shutdown_sync_daemon(project_dir)
+    print_shutdown_result(result)
+
+    # Step 3 — discard the container.
+    if prison.exists():
+        prison.remove()
+        print("Alcatraz cleared — container removed, Alcatraz workspace preserved.")
+    else:
+        print("Nothing to clear — Alcatraz not present.")
+
+    if result.outcome in ("conflict", "failed", "timeout"):
+        return 1
     return 0
 
 

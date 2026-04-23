@@ -2075,22 +2075,31 @@ class CliStopTests(unittest.TestCase):
 
 
 class CmdClearTests(unittest.TestCase):
-    """Step 5.5: `alcatrazer clear` — throw away the Alcatraz so the
-    next start recreates it fresh. Distinct from `stop` which only
-    freezes (writable layer preserved).
-
-    Semantics locked in here:
-      - Missing .alcatrazer/ → error "run init first" (exit 1).
-      - Alcatraz absent → no-op exit 0 with friendly message.
-      - Alcatraz present → stop (if needed) + remove via existing port
-        methods; no new abstractions.
-      - NEVER touches the image, .alcatrazer/ config, or user repo-
-        root files (coding-environment.toml, .env, .env.example)."""
+    """Step 5.5 + 5.7g: `alcatrazer clear` — throw away the Alcatraz
+    runtime, preserve the workspace. Same docker-first-then-daemon
+    ordering as cmd_stop; `docker rm` at the end; inner-repo dir
+    explicitly NOT removed."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
+
+        # Patch daemon-lifecycle helpers — cmd_clear always calls them;
+        # tests control the outcome via the return value.
+        from alcatrazer.daemon_lifecycle import ShutdownResult
+
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
 
     def _run(self, prison=None):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -2102,15 +2111,20 @@ class CmdClearTests(unittest.TestCase):
         rc, _, err = self._run()
         self.assertEqual(rc, 1)
         self.assertIn("alcatrazer init", err)
+        self.mock_shutdown.assert_not_called()
 
-    def test_noop_when_alcatraz_absent(self):
+    def test_noop_when_alcatraz_absent_still_reaps_daemon(self):
+        """No container to remove, but a lingering daemon might still
+        exist (user did `docker rm` manually) — shut it down regardless."""
         (self.project_dir / ".alcatrazer").mkdir()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = False
+        prison.is_running.return_value = False
         rc, out, _ = self._run(prison=prison)
         self.assertEqual(rc, 0)
         prison.stop.assert_not_called()
         prison.remove.assert_not_called()
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
         self.assertIn("nothing to clear", out.lower())
 
     def test_removes_running_alcatraz(self):
@@ -2120,11 +2134,10 @@ class CmdClearTests(unittest.TestCase):
         prison.is_running.return_value = True
         rc, out, _ = self._run(prison=prison)
         self.assertEqual(rc, 0)
-        # Stop first (so remove doesn't need -f to kill a live process),
-        # then remove.
         prison.stop.assert_called_once()
         prison.remove.assert_called_once()
         self.assertIn("cleared", out.lower())
+        self.assertIn("workspace preserved", out.lower())
 
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
@@ -2139,20 +2152,49 @@ class CmdClearTests(unittest.TestCase):
         prison.remove.assert_called_once()
 
     def test_does_not_touch_image_or_config(self):
-        """Clear is strictly the container — image survives, so the next
-        start doesn't need to rebuild. No new abstractions added to the
-        port; we call only stop() + remove()."""
+        """Clear is strictly the container — image survives, no
+        rebuild / recipe regeneration."""
         (self.project_dir / ".alcatrazer").mkdir()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
         self._run(prison=prison)
-        # No image teardown primitives exist on the port — the absence
-        # of a call to any hypothetical rmi / image-delete is structurally
-        # guaranteed. Just verify generate_prison and build aren't called
-        # (the two recipe/image-touching ops that DO exist).
         prison.generate_prison.assert_not_called()
         prison.build.assert_not_called()
+
+    def test_ordering_docker_stop_then_daemon_then_docker_rm(self):
+        """The three-step dance: docker down first, daemon finalizes,
+        then discard container."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(prison.stop, "prison_stop")
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+        parent.attach_mock(prison.remove, "prison_remove")
+
+        self._run(prison=prison)
+
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("prison_stop"), names.index("shutdown_daemon"))
+        self.assertLess(names.index("shutdown_daemon"), names.index("prison_remove"))
+
+    def test_conflict_outcome_returns_nonzero_but_still_removes_container(self):
+        """A conflict during final sync means unsynced commits remain in
+        the Alcatraz workspace (which we preserve), so it's safe to
+        proceed with docker rm. Exit non-zero so the user is informed."""
+        self.mock_shutdown.return_value = self.ShutdownResult(
+            outcome="conflict", synced_count=1, conflict_branches=["feat/x"]
+        )
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison=prison)
+        self.assertEqual(rc, 1)
+        prison.remove.assert_called_once()
 
 
 class CliClearTests(unittest.TestCase):
