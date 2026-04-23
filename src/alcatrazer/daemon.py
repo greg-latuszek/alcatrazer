@@ -117,9 +117,31 @@ def remove_pid(pid_file: Path) -> None:
     pid_file.unlink(missing_ok=True)
 
 
-def main():
+def _default_project_dir() -> Path:
+    """Best-effort default for `--project-dir` when nothing is passed.
+
+    Dev checkout (`PYTHONPATH=src python -m alcatrazer.daemon`): __file__
+    is `<repo>/src/alcatrazer/daemon.py`, so three parents up is the repo
+    root.
+    Installed layout (`<repo>/.alcatrazer/src/alcatrazer/daemon.py`):
+    four parents up. Detect by whether `.alcatrazer` is in the path.
+
+    Callers wired through `alcatrazer` CLI will always pass --project-dir
+    explicitly (future lifecycle wiring phase). This default is only a
+    fallback for `mise run start-promotion` during development.
+    """
     script_dir = Path(__file__).resolve().parent
-    default_project_dir = script_dir.parent
+    parts = script_dir.parts
+    if ".alcatrazer" in parts:
+        # Walk up until we exit the .alcatrazer/ tree.
+        idx = len(parts) - 1 - parts[::-1].index(".alcatrazer")
+        return Path(*parts[:idx])
+    # Dev layout: src/alcatrazer → src → repo root.
+    return script_dir.parent.parent
+
+
+def main():
+    default_project_dir = _default_project_dir()
 
     parser = argparse.ArgumentParser(description="Alcatrazer promotion daemon")
     parser.add_argument("--alcatraz-dir", type=Path, default=None)

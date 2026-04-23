@@ -441,12 +441,24 @@ def _promote_single_branch(
     subprocess.run(import_cmd, input=stream, text=True, check=True)
 
 
-def main():
+def _default_project_dir() -> Path:
+    """Same rationale as `daemon._default_project_dir` — detect whether
+    we're running from the installed layout (under `.alcatrazer/src/`)
+    or a dev checkout (under `src/`), and walk up accordingly.
+    """
     script_dir = Path(__file__).resolve().parent
-    project_dir = script_dir.parent
+    parts = script_dir.parts
+    if ".alcatrazer" in parts:
+        idx = len(parts) - 1 - parts[::-1].index(".alcatrazer")
+        return Path(*parts[:idx])
+    return script_dir.parent.parent
+
+
+def main():
+    project_dir = _default_project_dir()
     # Per-developer config lives under .alcatrazer/ (install_method.md config
-    # split). See note in daemon.main — the public coding-environment.toml
-    # has a different schema.
+    # split). The public coding-environment.toml at the repo root has a
+    # different schema.
     toml_file = project_dir / ".alcatrazer" / "config.toml"
 
     parser = argparse.ArgumentParser(description="Promote alcatraz commits to outer repo")

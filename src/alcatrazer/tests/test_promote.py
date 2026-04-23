@@ -87,7 +87,12 @@ class TestResolveIdentity(unittest.TestCase):
         os.makedirs(self.target)
         subprocess.run(["git", "init", self.target], capture_output=True, check=True)
         git(self.target, "config", "commit.gpgsign", "false")
-        self.toml_file = Path(self.tmpdir) / "alcatrazer.toml"
+        # Local fixture path — `resolve_identity` accepts any path, doesn't
+        # care where it lives. Mirrors the real post-refactor location
+        # (.alcatrazer/config.toml) for consistency with production callers.
+        alcatraz_dir = Path(self.tmpdir) / ".alcatrazer"
+        alcatraz_dir.mkdir()
+        self.toml_file = alcatraz_dir / "config.toml"
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
