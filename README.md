@@ -393,7 +393,7 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
 
 1. `alcatrazer start` — first-time wizard + install, or a no-op/rebuild on
    subsequent runs depending on what changed in `coding-environment.toml`.
-2. `docker exec -it workspace /bin/bash` — attach a shell as the agent user.
+2. `docker exec -u agent -it workspace /bin/bash` — attach a shell as the agent user.
 3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon
    (separate terminal).
 4. Agents inside the container write code, run tests, and commit
