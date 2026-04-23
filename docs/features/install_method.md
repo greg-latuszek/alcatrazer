@@ -1356,6 +1356,21 @@ Thin bash script: resolve Python 3.11+ (four-tier), create temp venv,
 
 Generate checksums at tagged commit, upload as release asset.
 
+### Step 11 (post-v1): Filesystem + Infocenter abstractions
+
+Not scheduled for v0.1.0. Layout-knowledge duplication between the command
+stack and the promotion daemon caused drift during the install_method.md
+refactor; the long-term fix is two layers (`alcatrazer.paths` +
+`alcatrazer.infocenter`) so callers never concatenate `.alcatrazer/...`
+strings inline.
+
+Deferral rationale, scope estimate, preconditions for coming back to it,
+and shape sketches live in
+[refactor_for_infocenter.md](refactor_for_infocenter.md). Do **not** open
+that doc until (a) Step 6a–6e has landed, (b) the daemon has been wired
+into the `start` / `stop` / `clear` lifecycle, (c) v0.1.0 is on PyPI, and
+(d) at least one real pain point points at the duplication.
+
 ---
 
 ## Current State
