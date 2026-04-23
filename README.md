@@ -164,6 +164,65 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 - Write to host-owned files even if container escape occurs (phantom UID has no host permissions)
 - Delete or modify files outside the mounted workspace
 
+## Branch handling
+
+Alcatrazer **always reads from and writes to the default branch** of
+your outer repository — `main`, or `master` if that's your convention.
+It never follows the branch you happen to have checked out at the
+moment `alcatrazer init` / `alcatrazer start` runs.
+
+Concretely, when the outer repo is on a feature branch `abc`:
+
+```
+outer  abc   (checked out, ignored)
+outer  main  (detected) ──── snapshot ────▶  workspace  main  ("Initial commit")
+                                                           │
+                                                           │  agents code, commit,
+                                                           │  branch, merge
+                                                           ▼
+                                             workspace  main + new commits
+                                                           │
+                                                           │  daemon promotes
+                                                           ▼
+                                             outer  main  (new commits appended
+                                                           under your identity)
+```
+
+So `outer/abc` is **neither read nor modified**:
+
+- The snapshot source is the default branch — your `abc` work never
+  enters the workspace, and agents start from `main`'s tree.
+- The promotion target is the same branch name the agent committed
+  on inside the workspace. Agents start on `main` (the workspace's
+  default branch), so their commits land on outer `main`. The daemon
+  never fast-forwards, rebases, or merges across branches — it only
+  updates each ref to the imported commits.
+
+If you run `alcatrazer start` while checked out on a non-default
+branch, you'll see a note like:
+
+> Note: you are currently on branch 'abc' in this repository.
+>       Alcatrazer always snapshots from the default branch ('main')
+>       and promotes agent commits back to 'main', regardless of
+>       what you have checked out. Your 'abc' branch will be neither
+>       read nor modified.
+
+This is intentional — see `docs/design_principles.md` § "Main Branch
+Only". The rule keeps the mental model simple: *agents always start
+from main, and their output always lands on main.* No accidental
+cross-branch contamination, no loop between your feature branch and
+the agent's. If you want agents to iterate on a feature, cut the
+branch **inside the workspace** (during the agent session) and the
+daemon will promote it out under the same name.
+
+### What if the user wants to work on `abc`?
+
+Merge `abc` into `main` (or rebase it onto `main` and fast-forward)
+before running `alcatrazer start`, so the snapshot picks up your work.
+Then let the agents branch off `main` inside the workspace and merge
+back there — those merges promote out unchanged, and you can fold
+them into whatever branch you like on the outer side afterwards.
+
 ## Getting Started
 
 ### 1. Install the CLI
