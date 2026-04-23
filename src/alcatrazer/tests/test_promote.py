@@ -329,6 +329,57 @@ class TestDryRun(PromotionTestBase):
         self.assertEqual(count_before, count_after)
 
 
+class TestBinaryBlobPromotion(PromotionTestBase):
+    """Promote a repo whose history contains a non-UTF-8 blob.
+
+    Regression guard for a bug where `subprocess.run(..., text=True)` on
+    `git fast-export` raised `UnicodeDecodeError` the moment the stream
+    hit a byte outside UTF-8 (e.g. `0xff` in a PNG / compressed blob),
+    leaving the marks files desynced and the daemon unable to recover.
+    See docs/features/install_method.md → "Manual tests and
+    troubleshooting" for the field incident that motivated this test.
+    """
+
+    # Bytes that are invalid as UTF-8 — 0xff is the exact byte that
+    # tripped the production daemon; 0xfe / 0x80 cover the other common
+    # shapes (BOM-ish, stray continuation byte).
+    BINARY_PAYLOAD = b"\xff\xd8\xff\xe0\x00\x10JFIF\xfe\x80\x81\x82\x83\x84\x85\x86\x87"
+
+    def setUp(self):
+        super().setUp()
+        blob_path = self.source / "logo.bin"
+        blob_path.write_bytes(self.BINARY_PAYLOAD * 64)
+        git(str(self.source), "add", "logo.bin")
+        git(str(self.source), "commit", "-m", "add binary blob to history")
+
+    def test_promote_succeeds_with_binary_blob_in_history(self):
+        self.do_promote()
+
+    def test_binary_blob_round_trips_byte_for_byte(self):
+        self.do_promote()
+        src_bytes = subprocess.run(
+            ["git", "-C", str(self.source), "show", "main:logo.bin"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        tgt_bytes = subprocess.run(
+            ["git", "-C", str(self.target), "show", "main:logo.bin"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(src_bytes, tgt_bytes)
+
+    def test_incremental_promote_after_binary_blob(self):
+        """Second poll must not wedge on mark desync — the bug's tail."""
+        self.do_promote()
+        (self.source / "followup.txt").write_text("after the blob\n")
+        git(str(self.source), "add", "followup.txt")
+        git(str(self.source), "commit", "-m", "text commit after blob")
+        self.do_promote()
+        msgs = git(str(self.target), "log", "--all", "--format=%s").splitlines()
+        self.assertIn("text commit after blob", msgs)
+
+
 class TestNamespacePromotion(PromotionTestBase):
     """Tests for promoting into a namespace (alcatraz-tree mode)."""
 
