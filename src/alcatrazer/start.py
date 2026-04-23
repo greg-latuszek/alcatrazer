@@ -910,7 +910,7 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # Step 3 — discard the container.
     if prison.exists():
         prison.remove()
-        print("Alcatraz cleared — container removed, Alcatraz workspace preserved.")
+        print("Alcatraz cleared — Alcatraz workspace preserved on the host.")
     else:
         print("Nothing to clear — Alcatraz not present.")
 

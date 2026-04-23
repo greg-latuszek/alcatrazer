@@ -2138,6 +2138,9 @@ class CmdClearTests(unittest.TestCase):
         prison.remove.assert_called_once()
         self.assertIn("cleared", out.lower())
         self.assertIn("workspace preserved", out.lower())
+        # Abstract-layer naming rule (feedback_alcatraz_naming.md):
+        # CLI-visible output must not leak Docker-specific vocabulary.
+        self.assertNotIn("container", out.lower())
 
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
