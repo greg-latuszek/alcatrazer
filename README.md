@@ -56,63 +56,80 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 Alcatrazer is a secure development environment for AI-powered coding agents. It isolates agent work inside Docker containers, protecting your host machine from accidental or intentional credential leakage, while letting agents do their job: write code, commit, branch, merge, and talk to LLMs.
 
-It is designed as a reusable template — clone it, run the initialization script, and start experimenting with any agentic framework (os-eco, Claude Code, custom agent swarms, etc.) in any language.
+It is designed to drop into any existing git repo — install the CLI, run `alcatrazer init`, then `alcatrazer start`, and start experimenting with any agentic framework (Claude Code, os-eco, custom agent swarms, etc.) in any language you've declared in `coding-environment.toml`.
 
 ## Repository Structure
 
-This project uses a nested git architecture — a git repo inside a git repo:
+Alcatrazer ships as a single Python package. Once installed into a
+target repo it creates a nested git architecture — a workspace repo
+inside your repo:
 
 ```
-your_repo/                          <-- outer repo (host user's identity, has GitHub remote)
-├── .git/                           <-- outer git
-├── .gitignore                      <-- ignores .alcatrazer/, .<workspace>/, .env
-├── alcatrazer.toml                 <-- tool configuration (version controlled)
-├── .env.example                    <-- template for API keys
+your_repo/                              <-- outer repo (your identity, has GitHub remote)
+├── .git/                               <-- outer git
+├── coding-environment.toml             <-- agent-visible recipe (committed, zero branding)
+├── .env.example                        <-- committed template for API keys
+├── .env                                <-- gitignored, real secrets
 ├── README.md
-├── container/                      <-- Docker infrastructure
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── entrypoint.sh
-├── src/                            <-- tool source code
-│   ├── initialize_alcatraz.sh      <-- bash: creates inner repo + finds phantom UID + resolves Python
-│   ├── resolve_python.sh           <-- bash: four-tier Python 3.11+ detection
-│   ├── snapshot.py                 <-- Python: snapshots outer repo into workspace
-│   ├── promote.py                  <-- Python: promotes commits from inner to outer repo
-│   ├── daemon.py                   <-- Python: auto-promotion daemon
-│   ├── inspect.py                  <-- Python: live log viewer
-│   └── alcatrazer/                 <-- Python package
-│       ├── __init__.py
-│       └── identity.py             <-- random agent identity + workspace dir name generation
-├── tests/                          <-- Python unittest test suite
-│   ├── test_snapshot.py
-│   ├── test_promote.py
-│   ├── test_identity.py
-│   ├── test_initialize.py
-│   ├── test_watch_alcatraz.py
-│   ├── test_python_resolution.py
-│   ├── seed_alcatraz.sh            <-- helper: seeds a repo with realistic branch history
-│   └── smoke_test.sh               <-- Docker integration test
-├── .alcatrazer/                    <-- gitignored, tool state only (never mounted into Docker)
-│   ├── python -> /usr/bin/python3  <-- symlink to resolved Python 3.11+
-│   ├── uid                         <-- phantom UID
-│   ├── agent-identity              <-- randomly generated name + email for agent commits
-│   ├── workspace-dir               <-- name of the workspace directory
-│   ├── promote-export-marks        <-- incremental promotion state
+├── .alcatrazer/                        <-- gitignored via .git/info/exclude; tool state + installed source
+│   ├── src/alcatrazer/                 <-- extracted package source (readable install, bundled tests)
+│   ├── python -> /usr/bin/python3      <-- symlink to the Python that was used to install
+│   ├── config.toml                     <-- per-developer config (identity, daemon settings)
+│   ├── uid                             <-- phantom UID
+│   ├── agent-identity                  <-- random agent name + email
+│   ├── workspace-dir                   <-- pointer to the workspace directory name
+│   ├── state.json                      <-- daemon-shutdown intent and similar runtime state
+│   ├── promote-export-marks            <-- incremental fast-export/import state
 │   ├── promote-import-marks
-│   ├── promoted-tips.json          <-- branch tips after last promotion (conflict detection)
-│   ├── paused-branches.json        <-- branches paused due to conflicts
-│   ├── promotion-daemon.pid        <-- daemon PID (single-instance guard)
-│   └── promotion-daemon.log        <-- daemon activity log
-└── .<workspace>/                   <-- gitignored, randomly named (e.g., .devspace-7f3a/)
-    ├── .git/                       <-- inner git (random agent identity, no remote)
+│   ├── promoted-tips.json              <-- branch tips after last promotion (conflict detection)
+│   ├── paused-branches.json            <-- branches paused due to conflicts
+│   ├── promotion-daemon.pid            <-- daemon PID (single-instance guard)
+│   └── promotion-daemon.log            <-- daemon activity log
+└── .<workspace>-<random>/              <-- gitignored, randomly named (e.g., .devspace-7f3a/)
+    ├── .git/                           <-- inner git (random agent identity, no remote)
     └── ... agent work ...
 ```
 
-- The **outer repo** is the host-side control plane. It holds infrastructure (Dockerfiles, scripts, docs) and receives promoted agent work. It has the host user's real identity and a GitHub remote for pushing.
-- The **inner repo** (`.<workspace>/`) is the agent workspace, in a randomly named directory separate from `.alcatrazer/`. It has a randomly generated throwaway identity, no remote, and no access to host credentials. This directory is the only thing mounted into Docker — its generic name prevents leaking "alcatrazer" via Docker's `/proc/self/mountinfo`.
-- **Tool state** (UID, marks, logs, daemon PID, agent identity) lives in `.alcatrazer/` — never mounted into Docker, invisible to agents.
-- **Bootstrap scripts** (`initialize_alcatraz.sh`, `resolve_python.sh`) are bash — they run before Python exists. Everything else is Python (stdlib only, no pip).
-- `alcatrazer.toml` captures configuration decisions and is version controlled.
+The package itself (inside the wheel, and extracted into
+`.alcatrazer/src/alcatrazer/`):
+
+```
+alcatrazer/
+├── cli.py                              <-- entry point: init / start / stop / clear / test
+├── start.py                            <-- cmd_init / cmd_start / cmd_stop / cmd_clear / cmd_selftest
+├── alcatraz.py                         <-- Alcatraz port (backend-agnostic interface)
+├── docker_prison.py                    <-- Docker adapter of the Alcatraz port
+├── snapshot.py                         <-- flat snapshot from outer repo into the workspace
+├── promote.py                          <-- fast-export / fast-import promotion (bytes-safe)
+├── daemon.py                           <-- auto-promotion daemon (polls from the host side)
+├── daemon_lifecycle.py                 <-- launch / shutdown wiring for start / stop / clear
+├── identity.py                         <-- random agent identity + workspace dir generation
+├── languages.py                        <-- declared runtimes → Dockerfile fragments
+├── selftest.py                         <-- bundled security self-tests (phantom UID, etc.)
+├── state.py                            <-- tiny JSON state store under .alcatrazer/
+├── inspect.py                          <-- live log viewer for the daemon
+├── container/entrypoint.sh             <-- container entrypoint (chown, drop via gosu)
+├── scripts/                            <-- bash bootstrap (runs before Python exists)
+├── templates/                          <-- coding-environment.toml + .env.example templates
+├── tests/                              <-- unit + non-Docker integration tests
+└── integration_tests/                  <-- Docker smoke tests (requires a real daemon)
+```
+
+- The **outer repo** is the host-side control plane: it receives
+  promoted agent work, has your real identity, and owns the GitHub
+  remote.
+- The **inner repo** (`.<workspace>-<random>/`) is the agent workspace.
+  Randomly named (e.g. `.devspace-7f3a/`, `.sandbox-2c91/`). This directory is the only
+  thing mounted into Docker — the generic name prevents leaking
+  "alcatrazer" via `/proc/self/mountinfo`.
+- **Tool state and installed source** live in `.alcatrazer/` — never
+  mounted into Docker, invisible to agents.
+- **Bootstrap bash** (`scripts/`) exists to get Python running on the
+  host. Everything else is Python, stdlib only, no third-party
+  dependencies.
+- **Ignore patterns** for `.alcatrazer/` and the workspace directory
+  are written to `.git/info/exclude`, not `.gitignore` — so the
+  exclusions themselves don't enter the agent's workspace snapshot.
 
 ## Security Model
 
@@ -120,7 +137,7 @@ your_repo/                          <-- outer repo (host user's identity, has Gi
 
 The container runs as a **phantom UID** — a user ID that does not exist on the host machine. This provides defense in depth: even if an agent escapes the container, the process cannot write to any host files because no host user matches that UID.
 
-The phantom UID is determined automatically by `initialize_alcatraz.sh`, which scans the host for the first unused UID starting from 1001 and stores it in `.alcatrazer/uid` for reuse across container rebuilds.
+The phantom UID is determined automatically during `alcatrazer init` — a bash helper scans the host for the first unused UID starting from 1001 and stores it in `.alcatrazer/uid` for reuse across container rebuilds.
 
 ### What we protect against
 
@@ -149,89 +166,119 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ## Getting Started
 
-### 1. Start Alcatrazer
+### 1. Install the CLI
 
-From the root of any git repository you want to protect:
+Alcatrazer is a Python 3.11+ package. Any of these work — all three
+paths land on the same package:
+
+```bash
+pipx run alcatrazer init      # one-shot, pipx manages a temp venv
+uvx alcatrazer init           # same, via uv
+# or, for a persistent install:
+pipx install alcatrazer
+```
+
+> **Status note:** the package is not on PyPI yet (see the CAUTION
+> banner above). Until then, build from source with `mise run build`
+> and install the wheel from `dist/`.
+
+### 2. Initialize Alcatrazer in your repo
+
+From the root of the git repository you want to protect:
+
+```bash
+alcatrazer init
+```
+
+One-time interactive setup. It asks a few questions (promotion
+identity, languages, OS packages, startup commands) and writes:
+
+- `coding-environment.toml` — committed, zero branding, the recipe
+- `.alcatrazer/config.toml` — per-developer (identity, daemon settings)
+- `.env.example` — committed; `.env` stays gitignored
+- A random agent identity, phantom UID, and workspace directory name
+- The extracted package source under `.alcatrazer/src/alcatrazer/` and
+  a Python symlink at `.alcatrazer/python` (used by the daemon)
+
+`init` also generates the Alcatraz recipe (Dockerfile + entrypoint)
+for the Docker backend.
+
+### 3. Start the workspace
 
 ```bash
 alcatrazer start
 ```
 
-On the first run, `alcatrazer start` asks a few interactive questions
-(promotion identity, languages, OS packages, startup commands), writes
-configuration files, generates the Dockerfile, builds the image, sets up
-the inner workspace with a random agent identity, and starts the container.
-Subsequent runs detect what (if anything) changed in your
-`coding-environment.toml` and rebuild or restart only as needed.
+On the first run this builds the Docker image, creates the workspace
+(flat snapshot of your current branch — no history), starts the
+container, runs the `[startup]` commands from `coding-environment.toml`,
+and **launches the promotion daemon in the background**. Subsequent
+runs detect what changed and rebuild or restart only as needed.
 
-For the full per-step breakdown see
-[docs/features/install_method.md](docs/features/install_method.md).
+The daemon polls the workspace's `.git/` every few seconds and
+promotes new agent commits out to the outer repo under your identity —
+you don't need to start it separately.
 
-### 2. LLM Authentication
+### 4. LLM authentication
 
-**Primary method (recommended):** your existing Claude OAuth credentials (`~/.claude/.credentials.json`) are mounted read-only into the container. If you've already authenticated Claude Code CLI on your host, no additional setup is needed.
+**Recommended:** your existing Claude OAuth credentials at
+`~/.claude/.credentials.json` are mounted read-only into the
+container. If you've authenticated Claude Code on your host, nothing
+else is needed.
 
-**Alternative:** if you prefer API key auth (separate billing, pay-per-use), edit `.env`:
+**Alternative:** use an API key — copy `.env.example` to `.env` and
+set:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 3. Attach to the container
+### 5. Attach to the container
 
-`alcatrazer start` leaves the container detached. Open a shell inside it via:
+`alcatrazer start` leaves the container running detached. Open a shell
+inside it as the `agent` user:
 
 ```bash
-docker exec -it workspace /bin/bash
+docker exec -it -u agent -w /workspace workspace bash
 ```
 
-You are now inside the container as the non-root `agent` user. All tools
-you requested in `coding-environment.toml` are available: Python / Node /
-Rust / Go (from `[languages.*]`), any `[os]` packages, plus the always-on
-security baseline (git, mise, Claude Code CLI, gosu).
+All tools declared in `coding-environment.toml` are available
+(Python / Node / Rust / Go plus any `[os]` packages), along with the
+always-on security baseline: git, mise, Claude Code CLI, gosu.
 
-### 4. Start the promotion daemon
+### 6. Watch promotion (optional)
 
 In a separate terminal:
 
 ```bash
-.alcatrazer/python -m alcatrazer.daemon
-```
-
-The daemon watches the workspace directory for new commits and
-automatically promotes them to the outer repo with your identity (from
-`.alcatrazer/config.toml`). Agent work appears in your repo in near
-real-time.
-
-To watch promotion activity:
-
-```bash
+tail -f .alcatrazer/promotion-daemon.log
+# or the bundled live viewer:
 .alcatrazer/python -m alcatrazer.inspect
 ```
 
-### Stopping
+### Stop and clear
 
 ```bash
-alcatrazer stop
+alcatrazer stop     # stop container + daemon; writable layer + workspace preserved
+alcatrazer clear    # throw away the container + daemon; image kept; next `start` rebuilds fresh
 ```
 
-Idempotent — no-op when nothing is running.
+Both are idempotent and both do a final-sync of any pending commits
+before shutting the daemon down. `clear` explicitly **does not**
+delete the inner workspace directory — your agent work survives across
+`clear` / `start` cycles.
 
-### Resetting
-
-There is no `alcatrazer reset` command yet. To start over: stop the
-container, then remove `.alcatrazer/` and the randomly-named workspace
-directory. Because files inside the workspace are owned by the phantom
-UID, use a disposable container to do the cleanup:
+### Verify the installation
 
 ```bash
-alcatrazer stop
-docker run --rm -v "$(pwd)":/w alpine sh -c 'rm -rf /w/.alcatrazer /w/.devspace-*'
+alcatrazer test                # bundled unit + non-Docker integration tests
+alcatrazer test --smoke        # also run Docker smoke tests (requires Docker)
+alcatrazer start --run-selftest
+                               # after start, run the bundled security
+                               # self-tests against the running Alcatraz
+                               # (phantom UID, credential isolation,
+                               #  no docker socket, …)
 ```
-
-(Adjust the `.devspace-*` glob to whatever workspace name `alcatrazer
-start` chose — stored in `.alcatrazer/workspace-dir`.) Then run
-`alcatrazer start` again.
 
 ## Configuration
 
@@ -280,28 +327,40 @@ max_log_size = 512              # log rotation threshold (KB)
 
 ### `.git/info/exclude` — per-repo gitignore, not committed
 
-`alcatrazer start` appends `.alcatrazer/` and the workspace directory
-here instead of the working-tree `.gitignore` — so the ignore patterns
-themselves don't enter the agent snapshot.
+`alcatrazer init` appends `.alcatrazer/` and the workspace directory
+name here instead of the working-tree `.gitignore` — so the ignore
+patterns themselves don't enter the agent snapshot.
 
 See [docs/features/install_method.md](docs/features/install_method.md) for
 the full rationale.
 
 ## Promoting Agent Work
 
-The promotion script (`alcatrazer.promote`) uses `git fast-export` and `git fast-import` to transfer commits from the inner repo to the outer repo. This approach:
+Promotion uses `git fast-export` and `git fast-import` to transfer
+commits from the inner (workspace) repo to the outer repo. The
+pipeline is byte-safe — binary blobs in history (images, archives,
+compiled artifacts) round-trip unchanged. It:
 
-- Preserves full branch and merge topology (branches, merge commits, parent chains)
-- Rewrites author/committer from the agent's random identity to the host user's identity
-- Supports incremental runs — only new commits since the last promotion are transferred
+- Preserves full branch and merge topology (branches, merge commits,
+  parent chains)
+- Rewrites author/committer from the agent's random identity to the
+  host user's identity
+- Is incremental — only new commits since the last promotion are
+  transferred
 - Is unidirectional: inner repo to outer repo only
 
-### Manual promotion
+The **promotion daemon** is launched automatically by `alcatrazer
+start` and stopped automatically by `alcatrazer stop` / `alcatrazer
+clear`. Both shutdowns run a final-sync before tearing the daemon
+down, so no commit is lost in a graceful teardown.
 
-If you prefer to promote manually instead of using the daemon:
+### Manual promotion (optional)
+
+For a one-shot push or debugging you can run the promoter directly
+against the installed layout:
 
 ```bash
-# Replace <workspace> with your workspace directory name (from .alcatrazer/workspace-dir)
+# <workspace> is the workspace directory name (see .alcatrazer/workspace-dir)
 .alcatrazer/python -m alcatrazer.promote --source <workspace> --target .
 
 # Preview what would be promoted:
@@ -310,7 +369,8 @@ If you prefer to promote manually instead of using the daemon:
 
 ### Promotion Modes
 
-The daemon supports two modes, configured via `mode` in `alcatrazer.toml`:
+The daemon supports two modes, configured via `mode` in
+`.alcatrazer/config.toml` under `[promotion-daemon]`:
 
 **`mirror` (default)** — Agent branches promote to the same branch names in the outer repo (`main` → `main`). Seamless sync for projects where agents do most of the coding. If the human also commits to the outer repo on a promoted branch, the daemon detects the divergence and creates a conflict branch (see below).
 
@@ -354,27 +414,40 @@ branches = ["main", "feature/*"]    # branch names and glob patterns
 ### Base image and tools
 
 - **Ubuntu 24.04** base image
-- **mise** for runtime version management (agents can configure `mise.toml` per-project)
-- **Python 3.13** (default, configurable via mise)
-- **Node.js 22 LTS** (default, configurable via mise)
-- **Bun** (latest, for tools like os-eco)
-- **Git, Tmux, Ripgrep** for development and agent orchestration
-- **gosu** for secure privilege dropping in entrypoint
+- Always-on baseline: **git**, **mise** (version manager), **Claude
+  Code CLI**, **gosu** (for privilege drop in the entrypoint)
+- Language runtimes come from `[languages.*]` in
+  `coding-environment.toml` — they are installed via mise, with the
+  exact version the user declared (no hidden defaults). Supported:
+  `python`, `node`, `rust`, `go`.
+- OS packages come from `[os].packages` (installed with `apt-get`).
+
+Inside the container agents can use `mise` to layer additional
+runtimes on top; those stay local to the writable layer.
 
 ### Entrypoint behavior
 
-The container starts as root to fix ownership of the mounted workspace, then drops to the non-root `agent` user via gosu. On first run (or when cache volumes are empty), the entrypoint also runs `mise install` to ensure tools are available.
+The container starts as root to fix ownership of the mounted
+workspace and the mise directory, then drops to the non-root `agent`
+user via gosu. On each start the entrypoint runs `mise install` so
+any newly-declared tools materialize before the `[startup]` commands
+run.
 
-### Persistent caches
+### Ephemeral caches, no shared Docker volumes
 
-Named Docker volumes are used to persist package caches across container restarts:
+All package caches (mise, pip, npm, etc.) live **inside the container's
+writable overlay layer** — there are no named Docker volumes shared
+between Alcatrazes.
 
-- `mise-cache` — mise tool installations (Python, Node, Bun binaries)
-- `pip-cache` — Python package downloads
-- `npm-cache` — Node.js package downloads
-- `bun-cache` — Bun package downloads
-
-This avoids re-downloading tools and packages on every `docker compose run`.
+**Why:** sharing writable caches across Alcatrazes would let one
+compromised agent poison every other Alcatraz on the laptop via cache
+tampering. Keeping caches per-container closes that attack surface,
+at the cost of re-downloading packages on `clear` + `start`. A
+`stop` + `start` cycle preserves the writable layer, so caches
+survive a normal restart. See
+[docs/features/install_method.md](docs/features/install_method.md)
+§ "Ephemeral caches — no shared Docker volumes" for the full
+rationale.
 
 ## Docker Container Rules
 
@@ -391,23 +464,56 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
 
 ## Workflow
 
-1. `alcatrazer start` — first-time wizard + install, or a no-op/rebuild on
-   subsequent runs depending on what changed in `coding-environment.toml`.
-2. `docker exec -u agent -it workspace /bin/bash` — attach a shell as the agent user.
-3. `.alcatrazer/python -m alcatrazer.daemon` — start the promotion daemon
-   (separate terminal).
-4. Agents inside the container write code, run tests, and commit
-   incrementally. They may use branches, delegate to sub-agents, and merge.
-5. The daemon automatically promotes agent commits to the outer repo with
-   your identity. Watch activity with `.alcatrazer/python -m alcatrazer.inspect`.
-6. Human reviews promoted work in the outer repo: `git log --graph --oneline --all`.
-7. Human pushes the promoted commits to GitHub from the outer repo.
-8. `alcatrazer stop` when done for the day.
+1. `alcatrazer init` — one-time interactive setup (per repo).
+2. `alcatrazer start` — build the image if needed, snapshot your main
+   branch into the workspace, start the container, run `[startup]`
+   commands, and launch the promotion daemon.
+3. `docker exec -it -u agent -w /workspace workspace bash` — attach a
+   shell as the agent user.
+4. Agents inside the container write code, run tests, commit
+   incrementally. They may use branches, delegate to sub-agents, and
+   merge.
+5. The daemon automatically promotes agent commits out to the outer
+   repo under your identity. Watch activity with
+   `tail -f .alcatrazer/promotion-daemon.log` or
+   `.alcatrazer/python -m alcatrazer.inspect`.
+6. You review the promoted work in the outer repo:
+   `git log --graph --oneline --all`.
+7. You push the promoted commits to GitHub from the outer repo.
+8. `alcatrazer stop` when done for the day — or `alcatrazer clear` to
+   throw away the container entirely (your workspace directory survives).
 
 ## Running Tests
 
+The bundled test suite is the user-facing verification surface —
+invoke it via the CLI:
+
 ```bash
-.alcatrazer/python -m unittest discover -s src/alcatrazer/tests -v
+alcatrazer test            # unit + non-Docker integration tests
+alcatrazer test --smoke    # also run Docker smoke tests (requires Docker)
 ```
 
-The test suite covers identity generation (name/email pools, workspace dir naming, collision avoidance), initialization (repo root guard, identity wiring, workspace separation), snapshot (branch detection, extraction, .gitignore filtering, exclusions, CLI, reset warnings), promotion (identity rewrite, incremental, dry-run, topology), daemon (PID guard, config, signals, conflict detection/resolution, branch filtering, modes), Python resolution (four-tier fallback), and the inspection tool. All tests use Python's `unittest` framework with real git repos for integration tests and mocking for unit tests.
+For development on the tool itself (checkout of this repo):
+
+```bash
+mise run test              # full non-Docker suite
+mise run test-fast         # unit tests only, skip slow integration
+mise run test-smoke        # Docker smoke tests (needs an initialized Alcatraz)
+mise run lint              # ruff check
+mise run format            # ruff format + ruff check --fix
+mise run build             # build the wheel into dist/
+```
+
+The suite covers identity generation (name/email pools, workspace-dir
+naming, collision avoidance), init/start/stop/clear command flows,
+snapshot (branch detection, extraction, `.gitignore` filtering,
+exclusions), promotion (identity rewrite, byte-safe binary blobs,
+incremental, dry-run, topology preservation, namespace mode), daemon
+lifecycle (PID guard, config, signals, conflict detection/resolution,
+branch filtering, final-sync on shutdown), language manifest
+generation, Dockerfile templating, the `Alcatraz` port contract and
+its `DockerPrison` adapter, and the bundled security self-tests
+(phantom UID, credential isolation, no docker socket, workspace
+ownership, no git remotes). All tests use Python's `unittest`
+framework with real git repos for integration tests and mocking for
+unit tests.
