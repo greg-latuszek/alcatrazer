@@ -82,6 +82,25 @@ def detect_default_branch(repo: str) -> str | None:
     return None
 
 
+def current_branch(repo: str) -> str | None:
+    """Return the currently checked-out branch name, or None when that
+    concept doesn't apply (detached HEAD, or a freshly-init'd repo with
+    no commits yet). Used only to warn the user when they've asked us
+    to snapshot a repo whose HEAD isn't on the default branch.
+    """
+    result = _git(repo, "symbolic-ref", "--short", "HEAD")
+    if result.returncode != 0:
+        return None
+    name = result.stdout.strip()
+    # `git symbolic-ref --short HEAD` succeeds on a brand-new repo
+    # (HEAD points at refs/heads/<init.defaultBranch> even before any
+    # commits exist); filter those out by checking for commits.
+    head = _git(repo, "rev-parse", "HEAD")
+    if head.returncode != 0:
+        return None
+    return name or None
+
+
 def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
     """Extract files from repo's branch into workspace via git archive.
 
@@ -142,9 +161,35 @@ def snapshot_workspace(outer_repo: str, workspace: str) -> None:
     """
     require_git_repo(outer_repo)
     branch = detect_default_branch(outer_repo)
+    _warn_if_on_non_default_branch(outer_repo, branch)
     extract_snapshot(outer_repo, branch, workspace)
     filter_gitignore(workspace)
     create_initial_commit(workspace)
+
+
+def _warn_if_on_non_default_branch(outer_repo: str, default: str | None) -> None:
+    """Print a user-facing warning when the outer repo's current branch
+    isn't the one we're about to snapshot. Silent for detached HEAD or
+    when the user IS on the default branch — otherwise users learn to
+    ignore the message.
+
+    This is advisory only: the "Main Branch Only" design rule stands
+    (see docs/design_principles.md) and the snapshot still proceeds
+    from the default branch regardless.
+    """
+    if default is None:
+        return
+    head = current_branch(outer_repo)
+    if head is None or head == default:
+        return
+    print(
+        f"Note: you are currently on branch '{head}' in this repository.\n"
+        f"      Alcatrazer always snapshots from the default branch "
+        f"('{default}') and promotes agent commits back to '{default}',\n"
+        f"      regardless of what you have checked out. Your '{head}' "
+        f"branch will be neither read nor modified.\n"
+        f"      See README.md → 'Branch handling' for why."
+    )
 
 
 def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
