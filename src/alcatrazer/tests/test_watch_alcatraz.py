@@ -2,7 +2,7 @@
 Unit tests for watch_alcatraz.py — the promotion daemon.
 
 Tests the Python daemon's core logic:
-- Config loading from alcatrazer.toml via tomllib
+- Config loading from .alcatrazer/config.toml via tomllib
 - PID guard (create, detect running, detect stale, cleanup)
 - Workspace existence check
 - Signal handling (SIGTERM graceful shutdown)
@@ -40,11 +40,14 @@ PYTHON = python_bin()
 
 
 class TestConfigLoading(unittest.TestCase):
-    """Test that the daemon reads config from alcatrazer.toml correctly."""
+    """Daemon reads per-developer config from `.alcatrazer/config.toml`
+    (the post-install_method.md layout — `[promotion-daemon]` and
+    `[promotion]` live under alcatraz_dir, not alongside the public
+    `coding-environment.toml` at the repo root)."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
 
     def tearDown(self):
@@ -61,10 +64,14 @@ class TestConfigLoading(unittest.TestCase):
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_toml(self, content):
-        toml_path = os.path.join(self.tmpdir, "alcatrazer.toml")
+    def _write_config(self, content):
+        """Write the daemon config at the post-refactor location."""
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         with open(toml_path, "w") as f:
             f.write(content)
+
+    def _log_path(self):
+        return os.path.join(self.alcatraz_dir, "promotion-daemon.log")
 
     def _start_daemon(self, extra_args=None):
         """Start daemon and return the Popen object."""
@@ -86,9 +93,32 @@ class TestConfigLoading(unittest.TestCase):
         time.sleep(0.5)  # Let it start
         return proc
 
+    def test_reads_interval_value_into_startup_log(self):
+        """Strong assertion (previous tests only checked `didn't crash`):
+        the interval actually reaches the daemon's logging — so if the
+        daemon reads the wrong file and silently falls back to defaults,
+        this test fails."""
+        self._write_config("[promotion-daemon]\ninterval = 42\n")
+        proc = self._start_daemon()
+        try:
+            # Poll the log briefly — it's written once the daemon settles.
+            log_file = self._log_path()
+            deadline = time.time() + 3
+            content = ""
+            while time.time() < deadline:
+                if os.path.exists(log_file):
+                    content = Path(log_file).read_text()
+                    if "Daemon started" in content:
+                        break
+                time.sleep(0.1)
+            self.assertIn("interval=42s", content, f"Log did not show interval=42: {content!r}")
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
     def test_reads_interval_from_toml(self):
-        """Daemon should read the interval value from alcatrazer.toml."""
-        self._write_toml("[promotion-daemon]\ninterval = 42\n")
+        """Daemon should read the interval value from .alcatrazer/config.toml."""
+        self._write_config("[promotion-daemon]\ninterval = 42\n")
         proc = self._start_daemon()
         try:
             # Daemon is running — we can't directly inspect its internal state,
@@ -100,7 +130,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_all_config_keys(self):
         """Daemon should parse all [promotion-daemon] config keys without error."""
-        self._write_toml(
+        self._write_config(
             "[promotion-daemon]\n"
             "interval = 3\n"
             'branches = "main"\n'
@@ -115,9 +145,9 @@ class TestConfigLoading(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
-    def test_handles_missing_toml(self):
-        """Daemon should use defaults when alcatrazer.toml is missing."""
-        # Don't write any toml file
+    def test_handles_missing_config(self):
+        """Daemon should use defaults when .alcatrazer/config.toml is missing."""
+        # Don't write any config file
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
@@ -127,7 +157,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_handles_missing_daemon_section(self):
         """Daemon should use defaults when [promotion-daemon] section is missing."""
-        self._write_toml('[promotion]\nname = "Test"\n')
+        self._write_config('[promotion]\nname = "Test"\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
@@ -137,7 +167,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_branch_list_config(self):
         """Daemon should handle branches as a TOML list."""
-        self._write_toml('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
+        self._write_config('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should handle branch list")
@@ -151,7 +181,7 @@ class TestWorkspaceCheck(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -185,10 +215,10 @@ class TestPidGuard(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
-        # Write minimal toml
-        with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
+        # Write minimal config at the post-refactor location.
+        with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
         self.pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
 
@@ -290,9 +320,9 @@ class TestSignalHandling(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
-        with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
+        with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
 
     def tearDown(self):
@@ -397,8 +427,8 @@ class TestDaemonPromotion(unittest.TestCase):
         # Seed the workspace with commits
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
-        # Write alcatrazer.toml with promotion identity and fast polling
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        # Write .alcatrazer/config.toml with promotion identity and fast polling
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -531,7 +561,7 @@ class TestLogRotation(unittest.TestCase):
     def test_log_rotates_when_exceeding_max_size(self):
         """Log file should rotate when it exceeds max_log_size KB."""
         # Set max_log_size to 1 KB so rotation triggers quickly
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -613,7 +643,7 @@ class TestBranchFiltering(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_toml(self, branches_value):
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -715,7 +745,7 @@ class _ConflictTestBase(unittest.TestCase):
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
         # Write toml
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
@@ -855,7 +885,7 @@ class TestConflictDetection(_ConflictTestBase):
         git(self.workspace, "commit", "-m", "new work on feature branch")
 
         # Configure to promote all branches
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
@@ -965,7 +995,7 @@ class TestInspectPromotion(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -1026,7 +1056,7 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         git(self.workspace, "config", "commit.gpgsign", "false")
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'

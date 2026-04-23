@@ -47,7 +47,7 @@ DEFAULTS = {
 
 
 def load_config(toml_path: Path) -> dict:
-    """Load [promotion-daemon] config from alcatrazer.toml, with defaults."""
+    """Load [promotion-daemon] config from .alcatrazer/config.toml, with defaults."""
     config = dict(DEFAULTS)
     if toml_path.exists():
         with open(toml_path, "rb") as f:
@@ -113,7 +113,10 @@ def main():
     project_dir = args.project_dir.resolve()
     alcatraz_dir = (args.alcatraz_dir or project_dir / ".alcatrazer").resolve()
     pid_file = alcatraz_dir / "promotion-daemon.pid"
-    toml_file = project_dir / "alcatrazer.toml"
+    # Per-developer config lives under .alcatrazer/ (install_method.md config
+    # split). The public coding-environment.toml at the repo root has a
+    # different schema — no [promotion] / [promotion-daemon] sections.
+    toml_file = alcatraz_dir / "config.toml"
 
     # --- Startup checks ---
     check_workspace(alcatraz_dir)

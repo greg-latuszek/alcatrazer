@@ -8,7 +8,7 @@ commits are transferred on subsequent runs.
 
 Author identity priority (lowest to highest):
   1. git config (local first, then global — same as git does)
-  2. alcatrazer.toml [promotion] section
+  2. .alcatrazer/config.toml [promotion] section
   3. --author-name / --author-email CLI flags
 
 Usage:
@@ -93,7 +93,7 @@ def resolve_identity(
     name = git(target_repo, "config", "user.name")
     email = git(target_repo, "config", "user.email")
 
-    # Layer 2: alcatrazer.toml [promotion] section
+    # Layer 2: .alcatrazer/config.toml [promotion] section
     if toml_file.exists():
         with open(toml_file, "rb") as f:
             data = tomllib.load(f)
@@ -112,7 +112,7 @@ def resolve_identity(
     if not name or not email:
         print(
             "ERROR: Could not determine promotion identity.\n"
-            "Set it in alcatrazer.toml [promotion], git config, "
+            "Set it in .alcatrazer/config.toml [promotion], git config, "
             "or --author-name/--author-email flags.",
             file=sys.stderr,
         )
@@ -444,7 +444,10 @@ def _promote_single_branch(
 def main():
     script_dir = Path(__file__).resolve().parent
     project_dir = script_dir.parent
-    toml_file = project_dir / "alcatrazer.toml"
+    # Per-developer config lives under .alcatrazer/ (install_method.md config
+    # split). See note in daemon.main — the public coding-environment.toml
+    # has a different schema.
+    toml_file = project_dir / ".alcatrazer" / "config.toml"
 
     parser = argparse.ArgumentParser(description="Promote alcatraz commits to outer repo")
     parser.add_argument("--source", required=True, type=Path)
