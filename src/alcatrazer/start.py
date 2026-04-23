@@ -215,6 +215,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     rc = run_startup_commands(prison, startup_commands)
     if rc == 0:
         save_coding_environment_snapshot(project_dir)
+        save_env_snapshot(project_dir)
         print()
         print("Ready.")
     return rc
@@ -878,18 +879,28 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
 
 def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
-    """Detect state and bring the workspace container into sync with the
-    current coding-environment.toml.
+    """Bring the Alcatraz into sync with the current config, recreating
+    it ONLY when a change actually invalidates the writable layer.
 
-    Branches on three signals:
-      - prison.needs_rebuild(data) — would-be recipe vs on-disk
-      - prison.is_running()        — container state
-      - coding_environment_changed(project_dir) — toml vs .last snapshot
+    Five-case lifecycle (see install_method.md "Ephemeral caches" + Step 4):
 
-    Fast path: running + nothing changed → "already up to date".
-    Otherwise: stop (if running), remove, build (if rebuild), start,
-    run [startup] commands. `.last` refresh only on startup success so
-    a retry sees the same drift.
+      1. Fast path     — running + no changes → no-op.
+      2. Full recreate — rebuild OR env_changed → stop/remove/(build)/start.
+         Writable layer + caches cleared, but that's correct: the image or
+         baked env that shaped the cache changed, so stale cache would be
+         wrong anyway.
+      3. Resume stopped — exists + !running + no recreate signals →
+         `docker start`, preserves the writable overlay layer (and its
+         mise/pip/npm caches). The cache-preservation branch.
+      4. Startup-only on running — running + toml_changed + no recreate
+         signals → keep container, re-run `[startup]` via `exec`. Zero
+         disruption, zero cache loss.
+      5. Fresh start — !exists → user externally `docker rm`'d. Falls
+         through to a plain `start()` (no stop/remove needed — nothing
+         to stop). Equivalent to first-run-after-init.
+
+    `.last` snapshots (coding-env + env hash) refresh only on startup
+    success so a retry sees the same drift signals.
     """
     if prison is None:
         from alcatrazer.docker_prison import DockerPrison
@@ -900,26 +911,68 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     commands = coding_env.get("startup", {}).get("commands", [])
 
     rebuild = prison.needs_rebuild(coding_env)
-    running = prison.is_running()
     toml_changed = coding_environment_changed(project_dir)
+    env_changed = env_file_changed(project_dir)
+    running = prison.is_running()
+    exists = prison.exists()
 
-    if not rebuild and not toml_changed and running:
+    # Case 1: fast path.
+    if running and not rebuild and not toml_changed and not env_changed:
         print("Already running, environment up to date.")
         return 0
 
-    if rebuild:
-        print("coding-environment.toml changed — rebuilding image.")
-        prison.generate_prison(coding_env)
+    # Case 2: full recreate (rebuild or env_changed).
+    if rebuild or env_changed:
+        if rebuild:
+            print("coding-environment.toml changed — rebuilding image.")
+            prison.generate_prison(coding_env)
+        else:
+            print(".env changed — recreating the Alcatraz.")
+        if running:
+            prison.stop()
+        if exists:
+            prison.remove()
+        if rebuild:
+            prison.build()
+        try:
+            prison.start()
+        except PrisonStartError as e:
+            print("ERROR: Alcatraz start failed.", file=sys.stderr)
+            if e.stdout:
+                print(e.stdout, file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+            return 1
+    # Case 5: fresh start (container gone).
+    elif not exists:
+        print("Starting Alcatraz...")
+        try:
+            prison.start()
+        except PrisonStartError as e:
+            print("ERROR: Alcatraz start failed.", file=sys.stderr)
+            if e.stdout:
+                print(e.stdout, file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+            return 1
+    # Case 3: resume stopped.
+    elif not running:
+        print("Resuming Alcatraz...")
+        try:
+            prison.resume()
+        except PrisonStartError as e:
+            print("ERROR: Alcatraz resume failed.", file=sys.stderr)
+            if e.stdout:
+                print(e.stdout, file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+            return 1
+    # Case 4: running + toml_changed (startup-only change) — fall through
+    # with the container still up; we'll just re-run startup commands
+    # against it below.
 
-    if running:
-        prison.stop()
-    prison.remove()
-
-    if rebuild:
-        prison.build()
-
-    prison.start()
     rc = run_startup_commands(prison, commands)
     if rc == 0:
         save_coding_environment_snapshot(project_dir)
+        save_env_snapshot(project_dir)
     return rc

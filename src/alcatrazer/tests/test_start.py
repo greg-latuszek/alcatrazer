@@ -1400,8 +1400,21 @@ class SaveEnvSnapshotTests(unittest.TestCase):
 
 
 class SubsequentRunTests(unittest.TestCase):
-    """Step 4: _subsequent_run detection logic — branches on needs_rebuild,
-    is_running, and coding_environment_changed."""
+    """Step 4: _subsequent_run branches on five signals per the lifecycle
+    table in install_method.md:
+
+      - rebuild       — needs_rebuild (would-be recipe vs on-disk)
+      - toml_changed  — coding-environment.toml vs .last
+      - env_changed   — .env hash vs env.hash.last
+      - running       — is_running
+      - exists        — exists (running OR stopped)
+
+    Five cases:
+      1. Fast path: running && no changes                    → no-op
+      2. Full recreate: rebuild || env_changed               → stop/rm/build?/start
+      3. Resume stopped: exists && !running && !rebuild      → resume (caches kept)
+      4. Startup-only on running: running && toml_changed    → exec (no stop/rm)
+      5. Fresh start: !exists                                → start (user rm'd)"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1417,10 +1430,11 @@ class SubsequentRunTests(unittest.TestCase):
             '[languages.python]\nversion = "3.12"\n[startup]\ncommands = ["uv sync"]\n'
         )
 
-    def _prison(self, running=False, rebuild=False, exec_rc=0):
+    def _prison(self, running=False, rebuild=False, exec_rc=0, exists=True):
         p = Mock(spec=Alcatraz)
         p.is_running.return_value = running
         p.needs_rebuild.return_value = rebuild
+        p.exists.return_value = exists
         p.exec.return_value = exec_rc
         return p
 
@@ -1431,28 +1445,37 @@ class SubsequentRunTests(unittest.TestCase):
             content += "\n# drift\n"
         (self.alcatraz_dir / "coding-environment.toml.last").write_text(content)
 
-    def _run(self, prison) -> tuple[int, str, str]:
+    def _run(self, prison, env_changed=False) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+            patch.object(start, "env_file_changed", return_value=env_changed),
+        ):
             rc = start._subsequent_run(self.project_dir, prison=prison)
         return rc, stdout.getvalue(), stderr.getvalue()
 
+    # --- Case 1: fast path ------------------------------------------------
+
     def test_fast_path_when_running_and_nothing_changed(self):
         self._seed_last(match=True)
-        prison = self._prison(running=True, rebuild=False)
+        prison = self._prison(running=True, rebuild=False, exists=True)
         rc, out, _ = self._run(prison)
         self.assertEqual(rc, 0)
         prison.generate_prison.assert_not_called()
         prison.build.assert_not_called()
         prison.start.assert_not_called()
+        prison.resume.assert_not_called()
         prison.stop.assert_not_called()
         prison.remove.assert_not_called()
         prison.exec.assert_not_called()
         self.assertIn("up to date", out.lower())
 
+    # --- Case 2: full recreate (rebuild or env_changed) -------------------
+
     def test_full_rebuild_when_dockerfile_would_differ_and_running(self):
         self._seed_last(match=True)
-        prison = self._prison(running=True, rebuild=True)
+        prison = self._prison(running=True, rebuild=True, exists=True)
         rc, _, _ = self._run(prison)
         self.assertEqual(rc, 0)
         prison.generate_prison.assert_called_once()
@@ -1460,61 +1483,135 @@ class SubsequentRunTests(unittest.TestCase):
         prison.remove.assert_called_once()
         prison.build.assert_called_once()
         prison.start.assert_called_once()
+        prison.resume.assert_not_called()
         prison.exec.assert_called()
 
     def test_rebuild_when_stopped_skips_stop(self):
         self._seed_last(match=True)
-        prison = self._prison(running=False, rebuild=True)
+        prison = self._prison(running=False, rebuild=True, exists=True)
         self._run(prison)
         prison.stop.assert_not_called()
         prison.remove.assert_called_once()
         prison.build.assert_called_once()
         prison.start.assert_called_once()
+        prison.resume.assert_not_called()
 
-    def test_restart_when_only_toml_changed(self):
-        self._seed_last(match=False)
-        prison = self._prison(running=True, rebuild=False)
-        rc, _, _ = self._run(prison)
+    def test_env_change_forces_full_recreate_without_rebuild(self):
+        """`.env` changes must recreate the container (env is baked at
+        `docker run` time), but must NOT rebuild the image — the recipe
+        didn't change."""
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=False, exists=True)
+        rc, out, _ = self._run(prison, env_changed=True)
         self.assertEqual(rc, 0)
-        # Not a rebuild: no generate_prison, no build
-        prison.generate_prison.assert_not_called()
-        prison.build.assert_not_called()
-        # But must cycle the container to re-run startup
+        # Recreate: stop + remove + start.
         prison.stop.assert_called_once()
         prison.remove.assert_called_once()
         prison.start.assert_called_once()
+        # NOT a rebuild.
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
         prison.exec.assert_called()
+        self.assertIn(".env", out.lower())
 
-    def test_start_when_stopped_and_unchanged(self):
+    # --- Case 3: resume stopped (writable layer preserved) ----------------
+
+    def test_resumes_when_stopped_and_no_changes(self):
+        """The key cache-preserving branch: stopped container with no
+        drift → `docker start`, not `docker run`. Writable overlay
+        (and mise/pip/npm caches) stay intact."""
         self._seed_last(match=True)
-        prison = self._prison(running=False, rebuild=False)
-        rc, _, _ = self._run(prison)
+        prison = self._prison(running=False, rebuild=False, exists=True)
+        rc, out, _ = self._run(prison)
         self.assertEqual(rc, 0)
+        prison.resume.assert_called_once()
+        # Critical: start (fresh docker run) MUST NOT fire — it would
+        # discard the writable layer we're trying to preserve.
+        prison.start.assert_not_called()
         prison.generate_prison.assert_not_called()
         prison.build.assert_not_called()
         prison.stop.assert_not_called()
-        prison.start.assert_called_once()
+        prison.remove.assert_not_called()
+        prison.exec.assert_called()  # startup commands re-run inside the resumed instance
+        self.assertIn("resuming", out.lower())
 
-    def test_snapshot_updated_on_success(self):
+    # --- Case 4: startup-only change on a running container ---------------
+
+    def test_startup_only_change_on_running_keeps_container(self):
+        """`[startup]` toml tweak on a healthy running Alcatraz — no need
+        to stop, recreate, or rebuild. Just re-run the new commands
+        live via exec."""
+        self._seed_last(match=False)  # drift → toml_changed
+        prison = self._prison(running=True, rebuild=False, exists=True)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        # NO disruption: no stop, no remove, no recreate.
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        prison.start.assert_not_called()
+        prison.resume.assert_not_called()
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+        # But DO re-exec the new startup commands.
+        prison.exec.assert_called()
+
+    # --- Case 5: fresh start (user externally removed the container) ------
+
+    def test_fresh_start_when_container_absent(self):
+        """User ran `docker rm workspace` behind our back. Start from
+        scratch — no stop/remove (nothing to stop), no rebuild (recipe
+        unchanged)."""
+        self._seed_last(match=True)
+        prison = self._prison(running=False, rebuild=False, exists=False)
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+        prison.resume.assert_not_called()
+        prison.start.assert_called_once()
+        prison.exec.assert_called()
+
+    # --- Snapshot refreshes (both coding-env and env.hash.last) -----------
+
+    def test_coding_env_snapshot_updated_on_success(self):
         self._seed_last(match=False)  # initially drifted
-        prison = self._prison(running=True, rebuild=False)
+        prison = self._prison(running=True, rebuild=False, exists=True)
         self._run(prison)
         self.assertEqual(
             (self.alcatraz_dir / "coding-environment.toml.last").read_text(),
             (self.project_dir / "coding-environment.toml").read_text(),
         )
 
-    def test_startup_failure_returns_nonzero_and_skips_snapshot_save(self):
+    def test_env_snapshot_saved_on_success(self):
+        """Successful run must refresh env.hash.last so the next
+        _subsequent_run doesn't misdetect the same .env as "changed"."""
+        self._seed_last(match=True)
+        (self.project_dir / ".env").write_text("FOO=1\n")
+        prison = self._prison(running=True, rebuild=False, exists=True)
+        self._run(prison, env_changed=True)  # force recreate so we exercise save path
+        last_path = self.alcatraz_dir / "env.hash.last"
+        self.assertTrue(last_path.exists())
+        import hashlib as _h
+
+        expected = _h.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
+        self.assertEqual(last_path.read_text().strip(), expected)
+
+    def test_startup_failure_skips_both_snapshot_saves(self):
         self._seed_last(match=False)
-        original_last = (self.alcatraz_dir / "coding-environment.toml.last").read_text()
-        prison = self._prison(running=True, rebuild=False, exec_rc=7)
-        rc, _, _ = self._run(prison)
+        original_coding_last = (self.alcatraz_dir / "coding-environment.toml.last").read_text()
+        (self.project_dir / ".env").write_text("FOO=1\n")
+        prison = self._prison(running=True, rebuild=False, exec_rc=7, exists=True)
+        rc, _, _ = self._run(prison, env_changed=True)
         self.assertEqual(rc, 7)
-        # .last must not be refreshed when startup failed
+        # Neither snapshot should be refreshed when startup fails — a
+        # retry must see the same drift signals.
         self.assertEqual(
             (self.alcatraz_dir / "coding-environment.toml.last").read_text(),
-            original_last,
+            original_coding_last,
         )
+        self.assertFalse((self.alcatraz_dir / "env.hash.last").exists())
 
 
 class CmdInitIntegrationTests(unittest.TestCase):
@@ -1706,6 +1803,7 @@ class FirstRunAfterInitTests(unittest.TestCase):
             (start, "create_workspace", None),
             (start, "run_startup_commands", 0),
             (start, "save_coding_environment_snapshot", None),
+            (start, "save_env_snapshot", None),
             (identity, "load_workspace_dir", ".devspace-abcd"),
         ]
         for mod, name, rv in to_patch:
@@ -1760,6 +1858,13 @@ class FirstRunAfterInitTests(unittest.TestCase):
         rc = self._run()
         self.assertEqual(rc, 7)
         self.mocks["save_coding_environment_snapshot"].assert_not_called()
+        self.mocks["save_env_snapshot"].assert_not_called()
+
+    def test_env_snapshot_saved_on_happy_path(self):
+        """First run primes env.hash.last so the next _subsequent_run
+        doesn't misdetect the same .env as changed."""
+        self._run()
+        self.mocks["save_env_snapshot"].assert_called_once_with(self.project_dir)
 
     def test_build_failure_reports_and_returns_nonzero(self):
         self.prison.build.side_effect = PrisonBuildError(
@@ -1780,6 +1885,7 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.prison.start.assert_not_called()
         self.mocks["run_startup_commands"].assert_not_called()
         self.mocks["save_coding_environment_snapshot"].assert_not_called()
+        self.mocks["save_env_snapshot"].assert_not_called()
 
 
 class CmdStopTests(unittest.TestCase):
