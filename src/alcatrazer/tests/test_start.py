@@ -1949,6 +1949,110 @@ class CliStopTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
 
 
+class CmdClearTests(unittest.TestCase):
+    """Step 5.5: `alcatrazer clear` — throw away the Alcatraz so the
+    next start recreates it fresh. Distinct from `stop` which only
+    freezes (writable layer preserved).
+
+    Semantics locked in here:
+      - Missing .alcatrazer/ → error "run init first" (exit 1).
+      - Alcatraz absent → no-op exit 0 with friendly message.
+      - Alcatraz present → stop (if needed) + remove via existing port
+        methods; no new abstractions.
+      - NEVER touches the image, .alcatrazer/ config, or user repo-
+        root files (coding-environment.toml, .env, .env.example)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, prison=None):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_error_when_no_alcatrazer_setup(self):
+        rc, _, err = self._run()
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer init", err)
+
+    def test_noop_when_alcatraz_absent(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = False
+        rc, out, _ = self._run(prison=prison)
+        self.assertEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        self.assertIn("nothing to clear", out.lower())
+
+    def test_removes_running_alcatraz(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+        rc, out, _ = self._run(prison=prison)
+        self.assertEqual(rc, 0)
+        # Stop first (so remove doesn't need -f to kill a live process),
+        # then remove.
+        prison.stop.assert_called_once()
+        prison.remove.assert_called_once()
+        self.assertIn("cleared", out.lower())
+
+    def test_removes_stopped_alcatraz_without_calling_stop(self):
+        """A stopped Alcatraz still exists and still has writable state
+        to discard — remove, but don't bother calling stop on it."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = False
+        rc, _, _ = self._run(prison=prison)
+        self.assertEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_called_once()
+
+    def test_does_not_touch_image_or_config(self):
+        """Clear is strictly the container — image survives, so the next
+        start doesn't need to rebuild. No new abstractions added to the
+        port; we call only stop() + remove()."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+        self._run(prison=prison)
+        # No image teardown primitives exist on the port — the absence
+        # of a call to any hypothetical rmi / image-delete is structurally
+        # guaranteed. Just verify generate_prison and build aren't called
+        # (the two recipe/image-touching ops that DO exist).
+        prison.generate_prison.assert_not_called()
+        prison.build.assert_not_called()
+
+
+class CliClearTests(unittest.TestCase):
+    """Step 5.5: `alcatrazer clear` CLI wiring."""
+
+    def test_cli_clear_command_invokes_cmd_clear(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "clear"]),
+            patch.object(start, "cmd_clear", return_value=0) as mock_clear,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        mock_clear.assert_called_once()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_cli_clear_propagates_nonzero_exit(self):
+        with (
+            patch.object(sys, "argv", ["alcatrazer", "clear"]),
+            patch.object(start, "cmd_clear", return_value=1),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            cli.main()
+        self.assertEqual(cm.exception.code, 1)
+
+
 class CliInitTests(unittest.TestCase):
     """`alcatrazer init` subcommand — dispatches to `start.cmd_init`."""
 

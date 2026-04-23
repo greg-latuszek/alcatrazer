@@ -850,6 +850,44 @@ def cmd_selftest(project_dir: Path) -> int:
     return 0 if result.wasSuccessful() else 1
 
 
+def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """`alcatrazer clear` — throw away the Alcatraz (Step 5.5).
+
+    Removes the container so its writable overlay layer and any caches
+    living there are discarded. Leaves the image, leaves `.alcatrazer/`
+    config, leaves user repo-root files (`coding-environment.toml`,
+    `.env`, `.env.example`, workspace directory). Next `alcatrazer
+    start` hits the "fresh start" branch of the Step 4 lifecycle table
+    and recreates the container from the existing image — no rebuild
+    needed, caches populated fresh.
+
+    Idempotent: missing Alcatraz is reported as "nothing to clear" and
+    returns 0. Uses only existing port methods (`stop` + `remove`); no
+    new abstractions.
+    """
+    if not (project_dir / ".alcatrazer").exists():
+        print(
+            "No alcatrazer setup in this repository — run `alcatrazer init` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+
+    if not prison.exists():
+        print("Nothing to clear — Alcatraz not present.")
+        return 0
+
+    if prison.is_running():
+        prison.stop()
+    prison.remove()
+    print("Alcatraz cleared.")
+    return 0
+
+
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer stop` — idempotent container stop.
 
