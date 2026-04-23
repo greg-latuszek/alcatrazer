@@ -42,9 +42,23 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer start` — build (if needed) and run the workspace container.
 
     Requires `cmd_init` to have run already (produces `.alcatrazer/`). Routes
-    on image presence:
-      - No image yet → `_first_run_after_init` (build + workspace + start).
-      - Image exists → `_subsequent_run` (drift detection + rebuild/restart).
+    on "is first-run setup still needed?" — answered by TWO signals, because
+    image and workspace have independent lifetimes:
+
+    - **Image.** Persists across `alcatrazer clear` (we only remove the
+      container). But a user running `docker image prune`, or a fresh CI
+      checkout, can see the image go away.
+    - **Workspace.** Persists across both stop and clear (host-side dir).
+      But a user running `rm -rf .devspace-xxx` removes it.
+
+    If EITHER is missing we hit the first-run branch so the missing piece
+    gets (re-)created. `_first_run_after_init` is itself idempotent: it
+    skips `prison.build()` when the image is already present.
+
+    Previous routing (image-only) failed in the "stale image + no
+    workspace" case — e.g., prior test run left the image behind and the
+    current tempdir has no workspace → subsequent_run got entered with no
+    inner repo, daemon failed to find workspace-dir/.git.
     """
     if not (project_dir / ".alcatrazer").exists():
         print(
@@ -58,7 +72,12 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
         prison = DockerPrison(project_dir)
 
-    if not prison.image_exists():
+    alcatraz_dir = project_dir / ".alcatrazer"
+    workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+    workspace_ready = (
+        workspace_name is not None and (project_dir / workspace_name / ".git").is_dir()
+    )
+    if not prison.image_exists() or not workspace_ready:
         return _first_run_after_init(project_dir, prison=prison)
     return _subsequent_run(project_dir, prison=prison)
 
@@ -185,20 +204,28 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
 
     workspace_name = identity.load_workspace_dir(str(alcatrazer_dir))
 
-    print("Building Alcatraz image...")
-    try:
-        prison.build()
-    except PrisonBuildError as e:
-        print("ERROR: Alcatraz image build failed.", file=sys.stderr)
-        if e.stdout:
-            print(e.stdout, file=sys.stderr)
-        if e.stderr:
-            print(e.stderr, file=sys.stderr)
-        print(
-            "→ Check [os] packages and [languages.*] in coding-environment.toml.",
-            file=sys.stderr,
-        )
-        return 1
+    # Skip build when the image is already there — `cmd_start` may route
+    # here just because the WORKSPACE is missing (user ran
+    # `rm -rf .devspace-xxx`, or a fresh project-dir shares a docker
+    # daemon with a prior install). Idempotent build semantics make
+    # that path cheap.
+    if not prison.image_exists():
+        print("Building Alcatraz image...")
+        try:
+            prison.build()
+        except PrisonBuildError as e:
+            print("ERROR: Alcatraz image build failed.", file=sys.stderr)
+            if e.stdout:
+                print(e.stdout, file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+            print(
+                "→ Check [os] packages and [languages.*] in coding-environment.toml.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print("Alcatraz image already present — skipping build.")
 
     print("Creating workspace snapshot...")
     create_workspace(project_dir, workspace_name)

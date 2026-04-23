@@ -59,21 +59,36 @@ class CmdStartGuardTests(unittest.TestCase):
 
 
 class CmdStartRoutingTests(unittest.TestCase):
-    """With `.alcatrazer/` present, cmd_start routes on image_exists:
-    image absent → first-run branch (3.5); image present → subsequent run."""
+    """cmd_start routes to first-run when EITHER the image OR the
+    Alcatraz workspace is missing. Image and workspace have independent
+    lifetimes (clear preserves both, image prune removes image only,
+    `rm -rf .devspace-xxx` removes workspace only), so routing on just
+    one signal misses legitimate recovery scenarios."""
+
+    WORKSPACE_NAME = ".devspace-routing"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
-        (self.project_dir / ".alcatrazer").mkdir()
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
         self.addCleanup(self.tmp.cleanup)
+
+    def _make_workspace_ready(self) -> None:
+        """Create the bind-mount target + an inner `.git` so the
+        workspace-readiness check passes."""
+        workspace = self.project_dir / self.WORKSPACE_NAME
+        (workspace / ".git").mkdir(parents=True)
 
     def _prison(self, image_exists: bool) -> Mock:
         p = Mock(spec=Alcatraz)
         p.image_exists.return_value = image_exists
         return p
 
-    def test_no_image_routes_to_first_run_after_init(self):
+    def test_no_image_routes_to_first_run(self):
+        """Primary first-run trigger: image needs building."""
+        self._make_workspace_ready()
         prison = self._prison(image_exists=False)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
@@ -84,7 +99,41 @@ class CmdStartRoutingTests(unittest.TestCase):
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_image_present_routes_to_subsequent_run(self):
+    def test_missing_workspace_routes_to_first_run_even_when_image_exists(self):
+        """Self-heal: user deleted `.devspace-xxx/` manually (or a stale
+        image from a prior install is left over against a fresh
+        project_dir). Image exists but workspace doesn't — go to
+        first-run so workspace gets recreated. Without this branch the
+        daemon would launch against a non-existent workspace and fail."""
+        # Workspace dir NOT created → workspace_ready = False.
+        prison = self._prison(image_exists=True)
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0) as first,
+            patch.object(start, "_subsequent_run", return_value=0) as subsequent,
+        ):
+            rc = start.cmd_start(self.project_dir, prison=prison)
+        first.assert_called_once_with(self.project_dir, prison=prison)
+        subsequent.assert_not_called()
+        self.assertEqual(rc, 0)
+
+    def test_missing_workspace_pointer_routes_to_first_run(self):
+        """Pointer file itself missing — even weirder state, but same
+        recovery path applies."""
+        (self.alcatraz_dir / "workspace-dir").unlink()
+        prison = self._prison(image_exists=True)
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0) as first,
+            patch.object(start, "_subsequent_run", return_value=0) as subsequent,
+        ):
+            rc = start.cmd_start(self.project_dir, prison=prison)
+        first.assert_called_once_with(self.project_dir, prison=prison)
+        subsequent.assert_not_called()
+        self.assertEqual(rc, 0)
+
+    def test_image_and_workspace_both_present_routes_to_subsequent_run(self):
+        """Normal steady-state path — drift detection in subsequent_run
+        decides what (if anything) needs doing."""
+        self._make_workspace_ready()
         prison = self._prison(image_exists=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
@@ -96,6 +145,7 @@ class CmdStartRoutingTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     def test_routing_propagates_handler_return_code(self):
+        self._make_workspace_ready()
         prison = self._prison(image_exists=False)
         with patch.object(start, "_first_run_after_init", return_value=7):
             rc = start.cmd_start(self.project_dir, prison=prison)
@@ -1835,6 +1885,9 @@ class FirstRunAfterInitTests(unittest.TestCase):
 
         self.prison = Mock(spec=Alcatraz)
         self.prison.exec.return_value = 0
+        # Default: image doesn't exist yet — first_run builds it. Tests
+        # that exercise the "image already present" branch override.
+        self.prison.image_exists.return_value = False
 
         self.mocks: dict[str, Mock] = {}
         to_patch: list[tuple[object, str, object]] = [
@@ -1916,6 +1969,23 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.mocks["run_startup_commands"].return_value = 7
         self._run()
         self.mocks["launch_daemon_and_print"].assert_not_called()
+
+    def test_build_skipped_when_image_already_exists(self):
+        """_first_run_after_init is called from two routing paths now
+        (no image OR no workspace). When only the workspace is missing,
+        rebuilding the image is wasted work — skip it."""
+        self.prison.image_exists.return_value = True
+        self._run()
+        self.prison.build.assert_not_called()
+        # Workspace still gets created + container still starts.
+        self.mocks["create_workspace"].assert_called_once()
+        self.prison.start.assert_called_once()
+
+    def test_build_runs_when_image_missing(self):
+        """Sanity-lock the original path: no image → build once."""
+        self.prison.image_exists.return_value = False
+        self._run()
+        self.prison.build.assert_called_once()
 
     def test_build_failure_reports_and_returns_nonzero(self):
         self.prison.build.side_effect = PrisonBuildError(

@@ -30,8 +30,11 @@ Requires Docker; skipped from the default `alcatrazer test`. Run with
 """
 
 import contextlib
+import os
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -340,6 +343,222 @@ class TestAlcatrazSmokeCI(
         _nuke_phantom_uid_files(cls.project_dir)
         with contextlib.suppress(Exception):
             cls._tmp.cleanup()
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestAlcatrazSmokeLifecycle(unittest.TestCase):
+    """Step 5.7h — end-to-end sync-daemon lifecycle smoke.
+
+    Single test method by design: the phases are stateful (each
+    depends on the prior phase's effect on docker / daemon / inner
+    repo), and on failure the line number tells you exactly which
+    phase broke the chain. Splitting into independent test methods
+    would mean each one reconstructs the preceding phase, slow and
+    noisy.
+
+    Phases:
+      1. `cmd_start` (first run) — docker up, workspace snapshotted,
+         daemon launched.
+      2. Commit inside the Alcatraz workspace via `docker exec` —
+         verify it propagates to the outer repo within a few daemon
+         polls (end-to-end sync works).
+      3. `cmd_stop` — daemon finalizes, docker stopped, writable
+         layer AND Alcatraz workspace preserved on host.
+      4. `cmd_start` (resume) — container resumed, daemon relaunched
+         (daemon process doesn't survive stop; writable layer does).
+      5. `cmd_clear` — daemon finalizes, docker rm'd, Alcatraz
+         workspace STILL present on host (the design guarantee from
+         install_method.md "Sync daemon — background promotion").
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.project_dir = Path(cls._tmp.name)
+        _seed_project(cls.project_dir)
+
+        # Drive init only — start is exercised inside the test method so
+        # each phase's effect is observable in sequence.
+        with (
+            patch.object(
+                start_mod,
+                "ask_promotion_identity",
+                return_value=("Ghost Agent", "ghost@example.com"),
+            ),
+            patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
+        ):
+            rc = start_mod.cmd_init(cls.project_dir)
+        if rc != 0:
+            raise RuntimeError(f"cmd_init failed (rc={rc})")
+
+        cls.alcatraz_dir = cls.project_dir / ".alcatrazer"
+
+        # Speed up daemon polling for the sync-latency assertion
+        # (default is 5s; 1s keeps the test under ~15s total).
+        config_path = cls.alcatraz_dir / "config.toml"
+        config_path.write_text(config_path.read_text().replace("interval = 5", "interval = 1"))
+
+        cls.workspace_name = (cls.alcatraz_dir / "workspace-dir").read_text().strip()
+        cls.workspace = cls.project_dir / cls.workspace_name
+        cls.prison = DockerPrison(cls.project_dir)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Defense-in-depth: the test's final phase (clear) should have
+        # killed the daemon already, but a mid-test failure could leak
+        # it. Reap any straggler before the container teardown.
+        pid_file = cls.alcatraz_dir / "promotion-daemon.pid"
+        if pid_file.exists():
+            with contextlib.suppress(ProcessLookupError, ValueError, OSError):
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.5)
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
+        with contextlib.suppress(Exception):
+            cls.prison.stop()
+        with contextlib.suppress(Exception):
+            cls.prison.remove()
+        _nuke_phantom_uid_files(cls.project_dir)
+        with contextlib.suppress(Exception):
+            cls._tmp.cleanup()
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _daemon_pid(self) -> int | None:
+        pid_file = self.alcatraz_dir / "promotion-daemon.pid"
+        if not pid_file.exists():
+            return None
+        try:
+            return int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            return None
+
+    def _daemon_alive(self) -> bool:
+        """True if the daemon's PID file points at a live process.
+
+        Handles the test-process-is-parent-of-daemon case by reaping
+        any zombie we encounter (same logic as daemon_lifecycle's
+        _wait_for_exit — in production the daemon is init-owned and
+        this branch never fires)."""
+        pid = self._daemon_pid()
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        try:
+            reaped, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
+                return False
+        except ChildProcessError:
+            pass
+        return True
+
+    def _outer_log_subjects(self) -> list[str]:
+        r = subprocess.run(
+            ["git", "-C", str(self.project_dir), "log", "--all", "--format=%s"],
+            capture_output=True,
+            text=True,
+        )
+        return r.stdout.strip().splitlines() if r.returncode == 0 else []
+
+    def _commit_in_alcatraz_workspace(self, msg: str, filename: str) -> None:
+        """Commit via `docker exec` as the agent user — matches how an
+        AI agent inside the sandbox would create commits, so the test
+        exercises the real promotion path."""
+        r = self.prison.query(
+            [
+                "bash",
+                "-c",
+                f"cd /workspace && echo {msg!r} > {filename} && "
+                f"git add {filename} && git commit -qm {msg!r}",
+            ]
+        )
+        self.assertEqual(r.returncode, 0, f"Commit inside Alcatraz failed: {r.stderr}")
+
+    def _wait_for_outer_commit(self, msg: str, timeout: float = 15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msg in self._outer_log_subjects():
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _wait_for_daemon_gone(self, timeout: float = 15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self._daemon_alive():
+                return True
+            time.sleep(0.2)
+        return False
+
+    # ── The lifecycle ──────────────────────────────────────────────────
+
+    def test_full_lifecycle(self):
+        # Phase 1 — first start: docker up, workspace snapshotted,
+        # daemon spawned alongside.
+        rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_start (first run) should succeed")
+        self.assertTrue(self.prison.is_running(), "Alcatraz should be running after start")
+        self.assertTrue(self._daemon_alive(), "Sync daemon should be running after start")
+        self.assertTrue(self.workspace.is_dir(), "Alcatraz workspace dir should exist")
+        self.assertTrue((self.workspace / ".git").is_dir(), "Inner git repo should exist")
+
+        # Phase 2 — commit inside the Alcatraz workspace and verify
+        # the daemon promotes it to the outer repo (the whole point
+        # of having a daemon).
+        self._commit_in_alcatraz_workspace("lifecycle smoke: phase 2 commit", "phase2.txt")
+        self.assertTrue(
+            self._wait_for_outer_commit("lifecycle smoke: phase 2 commit"),
+            "Commit made inside the Alcatraz workspace did not reach the outer "
+            "repo within the timeout — daemon sync pipeline is broken",
+        )
+
+        # Phase 3 — stop. Daemon finalizes (final sync against the
+        # now-frozen inner repo), container stops, inner repo STAYS
+        # on the host.
+        rc = start_mod.cmd_stop(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_stop should succeed")
+        self.assertTrue(
+            self._wait_for_daemon_gone(),
+            "Sync daemon should exit cleanly after stop",
+        )
+        self.assertFalse(self.prison.is_running(), "Alcatraz should be stopped")
+        self.assertTrue(
+            self.workspace.is_dir(),
+            "Alcatraz workspace must survive stop (host-side preservation)",
+        )
+        self.assertTrue((self.workspace / ".git").is_dir())
+
+        # Phase 4 — resume. Container comes back with writable layer
+        # intact; daemon is relaunched (it didn't survive stop).
+        rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_start (resume) should succeed")
+        self.assertTrue(self.prison.is_running(), "Alcatraz should be running after resume")
+        self.assertTrue(self._daemon_alive(), "Sync daemon should be running again after resume")
+
+        # Phase 5 — clear. Daemon finalizes, container is removed
+        # entirely, Alcatraz workspace STILL present on host.
+        rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_clear should succeed")
+        self.assertTrue(
+            self._wait_for_daemon_gone(),
+            "Sync daemon should exit cleanly after clear",
+        )
+        self.assertFalse(self.prison.exists(), "Alcatraz should be gone after clear")
+        # THE design guarantee: clear throws the runtime away, keeps
+        # the work. See install_method.md "Sync daemon — background
+        # promotion".
+        self.assertTrue(
+            self.workspace.is_dir(),
+            "Alcatraz workspace MUST survive clear (host-side preservation invariant)",
+        )
+        self.assertTrue(
+            (self.workspace / ".git").is_dir(),
+            "Inner git repo MUST survive clear",
+        )
 
 
 if __name__ == "__main__":
