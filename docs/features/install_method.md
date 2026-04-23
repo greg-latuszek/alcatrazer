@@ -306,6 +306,36 @@ lives in the daemon's promote path. Having the CLI run a separate final
 sync would duplicate that code — same class of bug that caused the
 Steps 6a–e daemon drift. Instead, the CLI signals and tails the log.
 
+**Graceful vs. unexpected shutdown — `.alcatrazer/state.json`.** SIGTERM
+alone can't tell the daemon whether its shutdown was triggered by
+`alcatrazer stop` / `clear` (expected — docker is stopped, final sync
+is safe) or by something unrelated (user `kill <pid>`, laptop suspend,
+systemd shutdown, OOM). The CLI signals its intent via a single field
+in `.alcatrazer/state.json`:
+
+```json
+{ "schema_version": 1, "daemon_shutdown": "requested" }
+```
+
+`cmd_stop` / `cmd_clear` write `"requested"` before sending SIGTERM and
+update to `"done"` after observing the daemon exit. The daemon reads
+the field once in its shutdown path and picks its log prefix:
+
+- `"requested"` → `Final sync (graceful shutdown): N commits synced`
+- anything else (absent, `"done"` from a previous cycle, corrupt file,
+  unknown value) → `Final sync (unexpected shutdown): N commits synced`
+
+**Behavior does not differ between the two cases** — the daemon always
+attempts a final sync either way; only the log line differs. Same
+eventual-consistency guarantee holds (any commit missed by a racy
+unexpected-shutdown final sync is caught on the daemon's first poll
+after the next `alcatrazer start`).
+
+This is also the seed of the future **filesystem + infocenter**
+abstraction (see `refactor_for_infocenter.md`). `state.json` is the
+file that composite queries will migrate into over time; today it
+carries exactly one cooperation flag, deliberately scoped small.
+
 ### `alcatrazer upgrade` — self-update
 
 Checks PyPI for a newer version of alcatrazer and installs it into `.alcatrazer/`.
@@ -1366,19 +1396,52 @@ in the CLI section's lifecycle table.
 
 **Substeps:**
 
-**5.7a — Daemon final-sync on shutdown.**
-In `daemon.py`'s main-loop `finally` block (currently just logs
-"Daemon stopped" + removes PID file), add one more promote cycle
-BEFORE the cleanup. The daemon is already SIGTERM-aware via
-`shutdown_event = threading.Event()`; by the time the `finally` runs,
-the event is set and the container is already stopped (the CLI
-enforced that before signaling). Final sync logs either
-`Final sync: N commits synced` or `CONFLICT on branch X` — enough for
-the CLI to tail and surface. Unit tests: drive the daemon's main-loop
-function with a mock promote; assert final sync is attempted exactly
-once on SIGTERM and the outcome is logged.
+**5.7a — `alcatrazer.state` module (shared CLI ↔ daemon cooperation file).**
+Small new module backing `.alcatrazer/state.json`. Two functions:
 
-**5.7b — CLI helper: `launch_sync_daemon(project_dir) -> DaemonLaunchInfo`.**
+- `load_state(alcatraz_dir: Path) -> dict` — best-effort read. Returns
+  `{}` on missing file, unreadable file, or corrupt JSON. Callers that
+  expect specific fields handle their absence defensively.
+- `update_state(alcatraz_dir: Path, **fields) -> None` — read existing
+  state (best-effort), merge `fields`, atomic-write (tmp file + rename)
+  so the file is never half-written on process crash. Always stamps
+  `schema_version: 1` so readers can migrate in future.
+
+Unit tests in `test_state.py`: empty-dict on missing / corrupt; create
+file when missing; preserve existing unrelated fields on update;
+atomic-write doesn't clobber on simulated mid-write crash
+(`update_state` followed by patched os.rename that raises — state file
+remains the old content, not truncated).
+
+This module is explicitly the seed of the future infocenter abstraction
+(see `refactor_for_infocenter.md`) — scope is deliberately limited to
+read/merge/write today; composite queries come later.
+
+**5.7b — Daemon final-sync on shutdown (reads state.json).**
+In `daemon.py`'s main-loop `finally` block (currently just logs
+"Daemon stopped" + removes PID file), two changes:
+
+1. Before the final sync, read state via `state.load_state(alcatraz_dir)`
+   and select a log prefix: `daemon_shutdown == "requested"` →
+   `Final sync (graceful shutdown): …`; anything else →
+   `Final sync (unexpected shutdown): …`. Behavior does not branch;
+   only the log text does.
+2. Run one promote cycle. Log outcome (`N commits synced` or
+   `CONFLICT on branch X`).
+
+The daemon is already SIGTERM-aware via `shutdown_event =
+threading.Event()`; by the time the `finally` runs, the event is set.
+If `cmd_stop` / `cmd_clear` followed the contract, docker is already
+stopped when we reach here. If a user `kill`-ed the daemon directly,
+docker may still be running — the final sync is best-effort either way
+(eventual consistency restored on next start).
+
+Unit tests: drive daemon's main-loop function with a mock promote;
+assert final sync is attempted exactly once on SIGTERM, log prefix
+flips based on state.json contents (four cases: "requested", "done",
+absent, corrupt).
+
+**5.7c — CLI helper: `launch_sync_daemon(project_dir) -> DaemonLaunchInfo`.**
 Lives in `alcatrazer.start` (or a small `alcatrazer.daemon_lifecycle`
 module if it grows). Spawns `python -m alcatrazer.daemon --project-dir
 <X>` detached, waits up to ~2 seconds for `.alcatrazer/promotion-daemon.pid`
@@ -1391,19 +1454,30 @@ Unit tests: tempdir + mocked subprocess.Popen; assert spawn once on
 absent-PID case, zero spawns on alive-PID case, one spawn on
 stale-PID case.
 
-**5.7c — CLI helper: `shutdown_sync_daemon(project_dir) -> ShutdownResult`.**
-Reads the PID file, sends `SIGTERM`, polls until the process exits
-(10s default timeout, with `SIGKILL` fallback on timeout as a safety
-valve). After exit, reads the last ~20 lines of
-`.alcatrazer/promotion-daemon.log`, parses out the final-sync outcome
-(regex over the strings the daemon produces in 5.7a), returns
-`ShutdownResult(outcome, synced_count, conflict_branches)` for the
-CLI to print. If no daemon was running (no PID file or stale PID),
-returns a "no-op" outcome — not an error. Unit tests: fake PID file
-+ fake log file + patched os.kill; cover success, conflict-on-final-sync,
-no-daemon-present, timeout-fallback.
+**5.7d — CLI helper: `shutdown_sync_daemon(project_dir) -> ShutdownResult`.**
+Four-step protocol:
 
-**5.7d — `cmd_start` wires daemon launch.**
+1. `state.update_state(alcatraz_dir, daemon_shutdown="requested")` —
+   write the intent flag BEFORE signaling, so the daemon sees it in
+   its shutdown handler (5.7b).
+2. Read `.alcatrazer/promotion-daemon.pid`, send `SIGTERM`, poll until
+   the process exits (10s default timeout, with `SIGKILL` fallback on
+   timeout as a safety valve).
+3. Read the last ~20 lines of `.alcatrazer/promotion-daemon.log`, parse
+   the final-sync outcome (regex over the strings the daemon logged in
+   5.7b), build `ShutdownResult(outcome, synced_count, conflict_branches)`.
+4. `state.update_state(alcatraz_dir, daemon_shutdown="done")` — close
+   the cooperation cycle. Done even if no daemon was running, so the
+   flag doesn't linger as `"requested"` from a prior crashed cycle.
+
+If no daemon was running (no PID file or stale PID), return a "no-op"
+outcome — not an error.
+
+Unit tests: fake PID file + fake log file + patched os.kill; cover
+success, conflict-on-final-sync, no-daemon-present, timeout-fallback,
+and the state-flag transitions in all four cases.
+
+**5.7e — `cmd_start` wires daemon launch.**
 At the end of the happy path (right before `print("Ready.")` in
 `_first_run_after_init`, or after `_subsequent_run` returns 0 via the
 resume/fresh-start branches), call `launch_sync_daemon(project_dir)`
@@ -1414,20 +1488,20 @@ and `SubsequentRunTests` with mocked launch helper; assert the helper
 is called and its info surfaced; assert no crash when daemon launch
 fails (launch error → warning, don't fail `start`).
 
-**5.7e — `cmd_stop` wires daemon shutdown.**
+**5.7f — `cmd_stop` wires daemon shutdown.**
 Reorder inside `cmd_stop`: `prison.stop()` FIRST (the non-negotiable
 ordering rule), THEN `shutdown_sync_daemon(project_dir)`. Print the
 `ShutdownResult` — "Synced N commits" or conflict info. If conflict:
 exit non-zero (container stays stopped, daemon stays dead, user
 resolves in their repository). Extend `CmdStopTests`.
 
-**5.7f — `cmd_clear` wires daemon shutdown.**
+**5.7g — `cmd_clear` wires daemon shutdown.**
 Same ordering as stop: `prison.stop()` → `shutdown_sync_daemon` →
 `prison.remove()`. Inner repo directory is explicitly NOT removed
 (preservation invariant from the "Sync daemon" section). Extend
 `CmdClearTests`.
 
-**5.7g — Smoke-test lifecycle coverage.**
+**5.7h — Smoke-test lifecycle coverage.**
 Extend `test_smoke.py` with an end-to-end case: `init` → `start` →
 verify daemon PID file exists and process is alive → commit inside
 the Alcatraz workspace via `docker exec` → wait one poll cycle →
