@@ -16,14 +16,17 @@ command handlers stay focused on orchestration and the daemon-process
 mechanics have a single home that tests can exercise in isolation.
 """
 
+import contextlib
 import os
+import re
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from alcatrazer import daemon
+from alcatrazer import daemon, state
 
 
 @dataclass(frozen=True)
@@ -148,3 +151,179 @@ def launch_sync_daemon(
         time.sleep(0.05)
 
     raise DaemonLaunchError(f"Sync daemon failed to start within {timeout}s; see {log_file}")
+
+
+# ── Shutdown ───────────────────────────────────────────────────────────
+
+# Regexes against the daemon's own log strings (see alcatrazer.daemon's
+# run_cycle + finally block). Tightly coupled; if the daemon's log format
+# changes, both must update in lockstep.
+_SYNCED_RE = re.compile(r"Final sync \([^)]+\): (\d+) commit\(s\) synced")
+_CONFLICT_RE = re.compile(r"CONFLICT on branch (\S+)")
+_FAILED_RE = re.compile(r"Final sync \([^)]+\) failed:")
+
+
+@dataclass(frozen=True)
+class ShutdownResult:
+    """What `shutdown_sync_daemon` reports to the CLI for the user-facing
+    shutdown block.
+
+    `outcome` values:
+    - `"no_daemon"` — no PID file / no live daemon when called.
+    - `"synced"` — daemon exited cleanly, final sync completed (possibly
+      synced zero commits — still "synced").
+    - `"conflict"` — daemon exited but a conflict was logged during the
+      shutdown cycle. `conflict_branches` lists them.
+    - `"failed"` — daemon logged a final-sync failure (exception).
+    - `"timeout"` — SIGTERM didn't stop the daemon within the timeout;
+      SIGKILL was sent. Log parsing still attempted, but the outcome
+      flag signals to the CLI that forcible termination happened.
+    """
+
+    outcome: str
+    synced_count: int
+    conflict_branches: list[str]
+
+
+def _parse_shutdown_log(text: str) -> tuple[int, list[str], bool]:
+    """Extract (synced_count, conflict_branches, had_failure) from a log
+    tail. Takes the last `Final sync` line for synced count; collects
+    distinct CONFLICT branches across the whole tail."""
+    synced = 0
+    for match in _SYNCED_RE.finditer(text):
+        synced = int(match.group(1))  # keep the last match
+    conflicts: list[str] = []
+    seen: set[str] = set()
+    for match in _CONFLICT_RE.finditer(text):
+        branch = match.group(1)
+        if branch not in seen:
+            seen.add(branch)
+            conflicts.append(branch)
+    failed = bool(_FAILED_RE.search(text))
+    return synced, conflicts, failed
+
+
+def _pid_from_file(pid_file: Path) -> int | None:
+    """Read and parse the daemon's PID file, returning None on any error.
+
+    Does NOT check liveness; caller decides how to handle a still-present
+    file (for shutdown, we SIGTERM and wait; for launch, we check via
+    `os.kill(pid, 0)`)."""
+    if not pid_file.exists():
+        return None
+    try:
+        return int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _wait_for_exit(pid: int, timeout: float) -> bool:
+    """Poll until process `pid` is gone, up to `timeout` seconds.
+
+    Handles two parent-child scenarios:
+    - Production: the CLI process spawned the daemon, then exited; the
+      daemon is re-parented to init. `os.kill(pid, 0)` returns
+      `ProcessLookupError` cleanly when the daemon exits.
+    - Test / same-process: the CLI-under-test IS the daemon's direct
+      parent, so an exited daemon becomes a zombie and
+      `os.kill(pid, 0)` keeps returning success until it's reaped.
+      `os.waitpid(pid, os.WNOHANG)` reaps any zombie that's ours and
+      raises `ChildProcessError` when the pid isn't our child (which
+      is the production case).
+
+    Returns True if the process exited (by either mechanism), False if
+    still alive at deadline (caller falls back to SIGKILL).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        # Reap a zombie if this process was the spawner (common in tests).
+        try:
+            reaped, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
+                return True
+        except ChildProcessError:
+            # Not our child — normal in production (daemon re-parented
+            # to init after the spawning CLI exited).
+            pass
+        time.sleep(0.1)
+    return False
+
+
+def shutdown_sync_daemon(
+    project_dir: Path,
+    *,
+    timeout: float = 10.0,
+) -> ShutdownResult:
+    """Cooperative daemon shutdown — four-step protocol per plan Step 5.7d:
+
+    1. Flip `.alcatrazer/state.json` `daemon_shutdown` to `"requested"`
+       so the daemon's shutdown handler sees graceful intent.
+    2. Read PID, send SIGTERM, poll until exit (SIGKILL on timeout).
+    3. Tail the daemon log, parse the final-sync outcome.
+    4. Flip state.json to `"done"` — closes the cooperation cycle so a
+       future `kill <daemon-pid>` from outside the CLI produces an
+       "unexpected" log prefix rather than carrying a stale "requested".
+
+    Steps 1 and 4 happen even when no daemon is running — a stale
+    `"requested"` from a crashed prior cycle gets cleaned up.
+    """
+    alcatraz_dir = (project_dir / ".alcatrazer").resolve()
+    pid_file = alcatraz_dir / "promotion-daemon.pid"
+    log_file = alcatraz_dir / "promotion-daemon.log"
+
+    # Step 1 — flip intent before signaling.
+    state.update_state(alcatraz_dir, daemon_shutdown="requested")
+
+    pid = _pid_from_file(pid_file)
+    if pid is None:
+        state.update_state(alcatraz_dir, daemon_shutdown="done")
+        return ShutdownResult(outcome="no_daemon", synced_count=0, conflict_branches=[])
+
+    # Step 2 — signal and wait.
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # Race: process died between our PID read and signal. Treat as
+        # "no daemon" — the work we were going to ask for is already
+        # not happening.
+        state.update_state(alcatraz_dir, daemon_shutdown="done")
+        return ShutdownResult(outcome="no_daemon", synced_count=0, conflict_branches=[])
+
+    exited_cleanly = _wait_for_exit(pid, timeout)
+    timed_out = False
+    if not exited_cleanly:
+        # Safety valve — a wedged daemon shouldn't block the CLI.
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        _wait_for_exit(pid, timeout=5.0)
+        timed_out = True
+
+    # Step 3 — parse log tail.
+    log_text = ""
+    with contextlib.suppress(OSError):
+        log_text = log_file.read_text()
+    # Keep the last ~4KB — plenty for the shutdown section, bounded so
+    # a years-old log doesn't balloon.
+    log_tail = log_text[-4096:] if len(log_text) > 4096 else log_text
+    synced_count, conflict_branches, had_failure = _parse_shutdown_log(log_tail)
+
+    # Step 4 — close the cycle.
+    state.update_state(alcatraz_dir, daemon_shutdown="done")
+
+    if timed_out:
+        outcome = "timeout"
+    elif had_failure:
+        outcome = "failed"
+    elif conflict_branches:
+        outcome = "conflict"
+    else:
+        outcome = "synced"
+    return ShutdownResult(
+        outcome=outcome,
+        synced_count=synced_count,
+        conflict_branches=conflict_branches,
+    )

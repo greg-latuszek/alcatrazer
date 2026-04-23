@@ -16,7 +16,8 @@ import time
 import unittest
 from pathlib import Path
 
-from alcatrazer.daemon_lifecycle import launch_sync_daemon
+from alcatrazer import daemon_lifecycle, state
+from alcatrazer.daemon_lifecycle import launch_sync_daemon, shutdown_sync_daemon
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -129,6 +130,155 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         self.assertEqual(info.pid_file, self.alcatraz_dir / "promotion-daemon.pid")
         self.assertEqual(info.log_file, self.alcatraz_dir / "promotion-daemon.log")
         self.assertEqual(info.config_file, self.alcatraz_dir / "config.toml")
+
+
+class ParseShutdownLogTests(unittest.TestCase):
+    """Pure-function parser — extract synced_count / conflict branches /
+    failure flag from the daemon's log tail. Unit-tested without a real
+    daemon so we can cover edge cases the integration path rarely hits."""
+
+    def test_parses_synced_count_from_graceful_line(self):
+        log = (
+            "2026-04-23 09:00:00 Daemon started (PID 1, interval=1s)\n"
+            "2026-04-23 09:00:05 Final sync (graceful shutdown): 3 commit(s) synced\n"
+            "2026-04-23 09:00:05 Daemon stopped\n"
+        )
+        synced, conflicts, failed = daemon_lifecycle._parse_shutdown_log(log)
+        self.assertEqual(synced, 3)
+        self.assertEqual(conflicts, [])
+        self.assertFalse(failed)
+
+    def test_parses_synced_count_from_unexpected_line(self):
+        """Unexpected-shutdown log line has the same shape as graceful,
+        just different prefix text. Parser must accept both."""
+        log = "2026-04-23 09:00:05 Final sync (unexpected shutdown): 7 commit(s) synced\n"
+        synced, _, _ = daemon_lifecycle._parse_shutdown_log(log)
+        self.assertEqual(synced, 7)
+
+    def test_detects_conflict_branches(self):
+        log = (
+            "2026-04-23 09:00:01 CONFLICT on branch feat/a — promoted state saved "
+            "to conflict/resolve-* branch. Resolve manually.\n"
+            "2026-04-23 09:00:02 CONFLICT on branch feat/b — promoted state saved "
+            "to conflict/resolve-* branch. Resolve manually.\n"
+            "2026-04-23 09:00:05 Final sync (graceful shutdown): 1 commit(s) synced\n"
+        )
+        synced, conflicts, failed = daemon_lifecycle._parse_shutdown_log(log)
+        self.assertEqual(synced, 1)
+        self.assertEqual(set(conflicts), {"feat/a", "feat/b"})
+        self.assertFalse(failed)
+
+    def test_detects_final_sync_failure(self):
+        log = (
+            "2026-04-23 09:00:05 Final sync (unexpected shutdown) failed: "
+            "git fast-import exited nonzero\n"
+        )
+        synced, _, failed = daemon_lifecycle._parse_shutdown_log(log)
+        self.assertEqual(synced, 0)
+        self.assertTrue(failed)
+
+    def test_empty_log_returns_zero_no_conflicts_no_failure(self):
+        synced, conflicts, failed = daemon_lifecycle._parse_shutdown_log("")
+        self.assertEqual(synced, 0)
+        self.assertEqual(conflicts, [])
+        self.assertFalse(failed)
+
+    def test_duplicate_conflict_lines_deduped(self):
+        """Daemon may log the same conflict across multiple polls if a
+        branch stays conflicted — parser collapses to distinct names."""
+        log = (
+            "CONFLICT on branch feat/a — ...\n"
+            "CONFLICT on branch feat/a — ...\n"
+            "CONFLICT on branch feat/a — ...\n"
+        )
+        _, conflicts, _ = daemon_lifecycle._parse_shutdown_log(log)
+        self.assertEqual(conflicts, ["feat/a"])
+
+
+class ShutdownSyncDaemonTests(unittest.TestCase):
+    """shutdown_sync_daemon protocol: state=requested → SIGTERM → wait
+    → parse log → state=done. Integration-ish because the helper's job
+    is the signal/wait dance — mocking signals would test the mock."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        workspace_name = ".devspace-shutdown"
+        (self.alcatraz_dir / "workspace-dir").write_text(workspace_name + "\n")
+        self.workspace = self.project_dir / workspace_name
+        self.workspace.mkdir()
+        subprocess.run(["git", "init", str(self.workspace)], capture_output=True, check=True)
+        _git(self.workspace, "config", "user.name", "Alcatraz Agent")
+        _git(self.workspace, "config", "user.email", "alcatraz@localhost")
+        _git(self.workspace, "config", "commit.gpgsign", "false")
+        subprocess.run(["git", "init", str(self.project_dir)], capture_output=True, check=True)
+        _git(self.project_dir, "config", "user.name", "Test User")
+        _git(self.project_dir, "config", "user.email", "test@example.com")
+        _git(self.project_dir, "config", "commit.gpgsign", "false")
+        (self.project_dir / "seed.txt").write_text("outer seed\n")
+        _git(self.project_dir, "add", "seed.txt")
+        _git(self.project_dir, "commit", "-m", "init outer")
+        (self.alcatraz_dir / "config.toml").write_text(
+            '[promotion]\nname = "Test User"\nemail = "test@example.com"\n'
+            "[promotion-daemon]\ninterval = 1\n"
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+    def tearDown(self):
+        pid_file = self.alcatraz_dir / "promotion-daemon.pid"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                time.sleep(0.5)
+            except (ProcessLookupError, ValueError, OSError):
+                pass
+
+    def test_no_op_outcome_when_no_daemon_running(self):
+        """No PID file → nothing to shut down. Return cleanly."""
+        result = shutdown_sync_daemon(self.project_dir)
+        self.assertEqual(result.outcome, "no_daemon")
+        self.assertEqual(result.synced_count, 0)
+
+    def test_state_flipped_to_done_even_when_no_daemon(self):
+        """Even with no daemon running, flip state to `done` so a
+        lingering `requested` from a prior crashed cycle doesn't stay
+        forever and confuse the NEXT daemon about its shutdown cause."""
+        state.update_state(self.alcatraz_dir, daemon_shutdown="requested")
+        shutdown_sync_daemon(self.project_dir)
+        self.assertEqual(
+            state.load_state(self.alcatraz_dir).get("daemon_shutdown"),
+            "done",
+        )
+
+    def test_terminates_running_daemon_and_flips_state(self):
+        """End-to-end: start a real daemon, shut it down, verify
+        process is gone, PID file is gone, state.json reads `done`."""
+        info = launch_sync_daemon(self.project_dir)
+        pid = info.pid
+        result = shutdown_sync_daemon(self.project_dir)
+        self.assertEqual(result.outcome, "synced")
+        # Process gone.
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        # PID file cleaned up by daemon's own shutdown path.
+        self.assertFalse((self.alcatraz_dir / "promotion-daemon.pid").exists())
+        # State flag closed.
+        self.assertEqual(
+            state.load_state(self.alcatraz_dir).get("daemon_shutdown"),
+            "done",
+        )
+
+    def test_daemon_logs_graceful_prefix_because_cli_set_requested(self):
+        """Verifies the CLI ↔ daemon cooperation handshake: when the
+        CLI helper writes `requested`, the daemon's shutdown path sees
+        it (via `state.load_state`) and logs the graceful prefix."""
+        launch_sync_daemon(self.project_dir)
+        shutdown_sync_daemon(self.project_dir)
+        log = (self.alcatraz_dir / "promotion-daemon.log").read_text()
+        self.assertIn("Final sync (graceful shutdown)", log, log)
 
 
 if __name__ == "__main__":
