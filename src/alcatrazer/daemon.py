@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 
 # Import sibling modules
-from alcatrazer import identity
+from alcatrazer import identity, state
 from alcatrazer import promote as promote_mod
 
 # --- Default config ---
@@ -203,60 +203,89 @@ def main():
         mode,
     )
 
+    # Shared between main-loop polls and the final-sync on shutdown —
+    # extracted so the shutdown path doesn't duplicate branch-paused /
+    # conflict-handling / marks-update logic.
+    def run_cycle() -> list[str]:
+        """Run one promote cycle. Returns the list of newly-promoted
+        branch names (empty on alcatraz-tree mode or no-op poll). Logs
+        conflicts as WARNING. Errors bubble up for the caller to log."""
+        if mode == "mirror":
+            if paused_branches:
+                resolved = promote_mod.check_resolved_conflicts(
+                    target_repo,
+                    marks_dir,
+                    paused_branches,
+                )
+                for branch in resolved:
+                    paused_branches.discard(branch)
+                    log.info("Conflict resolved on branch %s — resuming promotion", branch)
+                if resolved:
+                    promote_mod.save_paused_branches(marks_dir, paused_branches)
+
+            results = promote_mod.promote_with_conflict_handling(
+                source_repo,
+                target_repo,
+                marks_dir,
+                name,
+                email,
+                branches=branches,
+                paused_branches=paused_branches,
+            )
+            for branch, status in results.items():
+                if status == "conflict":
+                    log.warning(
+                        "CONFLICT on branch %s — promoted state "
+                        "saved to conflict/resolve-* branch. "
+                        "Resolve manually.",
+                        branch,
+                    )
+            return [b for b, s in results.items() if s == "promoted"]
+        if mode == "alcatraz-tree":
+            promote_mod.promote(
+                source_repo,
+                target_repo,
+                marks_dir,
+                name,
+                email,
+                branches=branches,
+                namespace="alcatraz",
+            )
+            return []
+        return []
+
     # --- Main polling loop ---
     try:
         while not shutdown_event.is_set():
             if shutdown_event.wait(timeout=interval):
                 break
             try:
-                if mode == "mirror":
-                    # Check if any paused branches have been resolved
-                    if paused_branches:
-                        resolved = promote_mod.check_resolved_conflicts(
-                            target_repo,
-                            marks_dir,
-                            paused_branches,
-                        )
-                        for branch in resolved:
-                            paused_branches.discard(branch)
-                            log.info("Conflict resolved on branch %s — resuming promotion", branch)
-                        if resolved:
-                            promote_mod.save_paused_branches(marks_dir, paused_branches)
-
-                    results = promote_mod.promote_with_conflict_handling(
-                        source_repo,
-                        target_repo,
-                        marks_dir,
-                        name,
-                        email,
-                        branches=branches,
-                        paused_branches=paused_branches,
-                    )
-                    for branch, status in results.items():
-                        if status == "conflict":
-                            log.warning(
-                                "CONFLICT on branch %s — promoted state "
-                                "saved to conflict/resolve-* branch. "
-                                "Resolve manually.",
-                                branch,
-                            )
-                    promoted = [b for b, s in results.items() if s == "promoted"]
-                    if promoted:
-                        log.info("Promotion cycle complete: %s", ", ".join(promoted))
+                promoted = run_cycle()
+                if mode == "mirror" and promoted:
+                    log.info("Promotion cycle complete: %s", ", ".join(promoted))
                 elif mode == "alcatraz-tree":
-                    promote_mod.promote(
-                        source_repo,
-                        target_repo,
-                        marks_dir,
-                        name,
-                        email,
-                        branches=branches,
-                        namespace="alcatraz",
-                    )
                     log.info("Promotion cycle complete (alcatraz-tree)")
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:
+        # Final sync — closes the race where an agent commit happened
+        # between the last poll and SIGTERM. Docker is down by contract
+        # (alcatrazer stop/clear order: docker first, then daemon
+        # signal) so this is safe in the graceful case; in the
+        # unexpected case it's best-effort and the marks-file eventual-
+        # consistency guarantee catches any miss on the next start.
+        # Only the log prefix branches on intent — behavior does not.
+        shutdown_intent = state.load_state(alcatraz_dir).get("daemon_shutdown")
+        prefix = "graceful shutdown" if shutdown_intent == "requested" else "unexpected shutdown"
+        try:
+            promoted = run_cycle()
+            if mode == "mirror":
+                log.info("Final sync (%s): %d commit(s) synced", prefix, len(promoted))
+            else:
+                log.info("Final sync (%s): alcatraz-tree cycle complete", prefix)
+        except Exception as exc:
+            log.error("Final sync (%s) failed: %s", prefix, exc)
+
         log.info("Daemon stopped")
         remove_pid(pid_file)
 

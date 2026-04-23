@@ -561,6 +561,99 @@ class TestDaemonPromotion(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
+    def _read_log(self) -> str:
+        return Path(self.alcatraz_dir, "promotion-daemon.log").read_text()
+
+    def test_final_sync_on_shutdown_logs_graceful_when_state_says_requested(self):
+        """When `alcatrazer stop`/`clear` signals intent via state.json,
+        daemon's shutdown path logs "graceful shutdown" prefix. This is
+        the happy path: CLI stopped docker first, final sync is safe by
+        the ordering contract."""
+        Path(self.alcatraz_dir, "state.json").write_text(
+            '{"schema_version": 1, "daemon_shutdown": "requested"}\n'
+        )
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)  # Let daemon start + run at least one poll.
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (graceful shutdown)", log, log)
+
+    def test_final_sync_on_shutdown_logs_unexpected_when_state_absent(self):
+        """No state.json at all — user ran `kill <pid>` or OS sent
+        SIGTERM during shutdown. Daemon still attempts final sync (best
+        effort; eventual consistency via marks on next start). Log
+        prefix distinguishes this from the graceful case so forensics
+        is possible later."""
+        # Deliberately DO NOT write state.json.
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_logs_unexpected_when_state_flag_is_done(self):
+        """Previous shutdown finished cleanly (CLI wrote "done"). Now
+        the daemon is killed without a new CLI-initiated shutdown cycle
+        — still counts as unexpected."""
+        Path(self.alcatraz_dir, "state.json").write_text(
+            '{"schema_version": 1, "daemon_shutdown": "done"}\n'
+        )
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_logs_unexpected_when_state_json_is_corrupt(self):
+        """Corrupt state.json — daemon's load_state returns {}, which
+        `.get("daemon_shutdown")` makes None → unexpected prefix.
+        Daemon keeps shutting down regardless."""
+        Path(self.alcatraz_dir, "state.json").write_text("{not json")
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_actually_promotes_pending_commits(self):
+        """Race-closer: a commit lands after the last poll tick but
+        before SIGTERM. Without final sync, that commit would stay in
+        the workspace until next start. With final sync, it shows up
+        in the outer repo before the daemon exits."""
+        # Let the initial seed sync through first.
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)  # First poll cycle syncs the seed.
+            # Now add a new commit in the workspace AFTER the daemon's
+            # poll, tight window before we SIGTERM.
+            Path(self.workspace, "late.txt").write_text("after last poll\n")
+            git(self.workspace, "add", "late.txt")
+            git(self.workspace, "commit", "-m", "late commit (pre-shutdown)")
+            # Mark the shutdown as graceful so the log line is
+            # predictable; final sync runs either way.
+            Path(self.alcatraz_dir, "state.json").write_text(
+                '{"schema_version": 1, "daemon_shutdown": "requested"}\n'
+            )
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=10)
+
+        # The late commit must appear in the outer repo.
+        msgs = git(self.test_project, "log", "--all", "--format=%s").splitlines()
+        self.assertIn("late commit (pre-shutdown)", msgs, msgs)
+
 
 class TestLogRotation(unittest.TestCase):
     """Test that the daemon rotates log files when they exceed max_log_size."""
