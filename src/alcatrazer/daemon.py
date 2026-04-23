@@ -32,7 +32,8 @@ import threading
 import tomllib
 from pathlib import Path
 
-# Import promote module (same package)
+# Import sibling modules
+from alcatrazer import identity
 from alcatrazer import promote as promote_mod
 
 # --- Default config ---
@@ -57,16 +58,31 @@ def load_config(toml_path: Path) -> dict:
     return config
 
 
-def check_workspace(alcatraz_dir: Path) -> None:
-    """Exit if workspace/.git doesn't exist."""
-    workspace_git = alcatraz_dir / "workspace" / ".git"
-    if not workspace_git.is_dir():
+def resolve_workspace(project_dir: Path, alcatraz_dir: Path) -> Path:
+    """Resolve the workspace path via the `.alcatrazer/workspace-dir`
+    pointer written by `alcatrazer init`. Exit cleanly if the pointer
+    is missing (user never ran init) or the pointed-at directory isn't
+    a valid git repo.
+
+    Returns the workspace Path on success.
+    """
+    workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+    if workspace_name is None:
         print(
-            f"ERROR: No workspace found at {workspace_git}\n"
-            "Run `alcatrazer start` first to create the workspace.",
+            f"ERROR: No workspace pointer at {alcatraz_dir}/workspace-dir.\n"
+            "Run `alcatrazer init` then `alcatrazer start` first.",
             file=sys.stderr,
         )
         sys.exit(1)
+    workspace = project_dir / workspace_name
+    if not (workspace / ".git").is_dir():
+        print(
+            f"ERROR: No workspace git directory at {workspace}/.git.\n"
+            "Run `alcatrazer start` to recreate the workspace.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return workspace
 
 
 def check_pid(pid_file: Path) -> None:
@@ -119,7 +135,7 @@ def main():
     toml_file = alcatraz_dir / "config.toml"
 
     # --- Startup checks ---
-    check_workspace(alcatraz_dir)
+    workspace_path = resolve_workspace(project_dir, alcatraz_dir)
     check_pid(pid_file)
     write_pid(pid_file)
 
@@ -137,7 +153,7 @@ def main():
     interval = config["interval"]
 
     # --- Resolve promotion identity ---
-    source_repo = alcatraz_dir / "workspace"
+    source_repo = workspace_path
     target_repo = project_dir
     marks_dir = alcatraz_dir
     name, email = promote_mod.resolve_identity(target_repo, toml_file, "", "")

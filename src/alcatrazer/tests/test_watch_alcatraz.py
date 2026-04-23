@@ -38,6 +38,12 @@ DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
 INSPECT_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "inspect.py")
 PYTHON = python_bin()
 
+# Fixed workspace dir name for test fixtures. Real installs generate a
+# random `.{word}-{4hex}` via `identity.generate_workspace_dir_name()`,
+# but tests don't need randomness — the daemon finds the workspace via
+# the `.alcatrazer/workspace-dir` pointer regardless of the name.
+WORKSPACE_DIR_NAME = ".devspace-test"
+
 
 class TestConfigLoading(unittest.TestCase):
     """Daemon reads per-developer config from `.alcatrazer/config.toml`
@@ -48,7 +54,12 @@ class TestConfigLoading(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
+        os.makedirs(self.alcatraz_dir)
+        # Point daemon at a real workspace git directory alongside
+        # `.alcatrazer/` — mirrors what `alcatrazer init` + `start` would
+        # have produced on a real install.
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
 
     def tearDown(self):
         # Kill any daemon we may have started
@@ -177,7 +188,14 @@ class TestConfigLoading(unittest.TestCase):
 
 
 class TestWorkspaceCheck(unittest.TestCase):
-    """Test that the daemon validates workspace existence."""
+    """Daemon resolves the workspace via the `.alcatrazer/workspace-dir`
+    pointer written by `alcatrazer init` — the workspace itself is a
+    sibling of `.alcatrazer/` at `project_dir / <name>`, NOT a child of
+    `.alcatrazer/`. The daemon must error out cleanly when either the
+    pointer is missing, the pointed-at directory is missing, or the
+    directory exists but isn't a git repo."""
+
+    WORKSPACE_NAME = ".devspace-test"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -189,24 +207,42 @@ class TestWorkspaceCheck(unittest.TestCase):
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_exits_when_workspace_missing(self):
-        """Daemon should exit non-zero when workspace/.git doesn't exist."""
-        result = subprocess.run(
-            [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+    def _run_daemon(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.tmpdir,
+            ],
             capture_output=True,
             text=True,
         )
+
+    def test_exits_when_workspace_dir_pointer_missing(self):
+        """No `.alcatrazer/workspace-dir` pointer → daemon tells the user
+        to run init+start first (that's what creates the pointer)."""
+        result = self._run_daemon()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("workspace", result.stderr.lower() + result.stdout.lower())
+        combined = (result.stderr + result.stdout).lower()
+        self.assertIn("init", combined)
+
+    def test_exits_when_workspace_directory_missing(self):
+        """Pointer says `<project>/.devspace-test`, but the directory was
+        never created / was manually deleted."""
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        result = self._run_daemon()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workspace", (result.stderr + result.stdout).lower())
 
     def test_exits_when_workspace_exists_but_no_git(self):
-        """Daemon should exit when workspace/ exists but has no .git."""
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace"))
-        result = subprocess.run(
-            [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            capture_output=True,
-            text=True,
-        )
+        """Directory is there (pointed at correctly) but has no `.git`
+        subdirectory — e.g., the inner repo was manually wiped."""
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, self.WORKSPACE_NAME))
+        result = self._run_daemon()
         self.assertNotEqual(result.returncode, 0)
 
 
@@ -216,7 +252,12 @@ class TestPidGuard(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
+        os.makedirs(self.alcatraz_dir)
+        # Workspace pointer + target dir so the daemon's workspace check
+        # passes. Real installs generate a random workspace name; tests
+        # use a fixed one.
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
         # Write minimal config at the post-refactor location.
         with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
@@ -321,7 +362,9 @@ class TestSignalHandling(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
+        os.makedirs(self.alcatraz_dir)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
         with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
 
@@ -405,7 +448,9 @@ class TestDaemonPromotion(unittest.TestCase):
         # project_dir layout: has .alcatrazer/workspace (source) and is itself a git repo (target)
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create the outer (target) repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -524,7 +569,9 @@ class TestLogRotation(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -607,7 +654,9 @@ class TestBranchFiltering(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -725,7 +774,9 @@ class _ConflictTestBase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -1037,7 +1088,9 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
