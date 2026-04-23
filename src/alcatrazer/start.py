@@ -19,6 +19,7 @@ the sandbox adapter via `Alcatraz.generate_prison()` (DockerPrison for
 MVP) — this module stays backend-agnostic.
 """
 
+import hashlib
 import secrets
 import shutil
 import subprocess
@@ -759,6 +760,71 @@ def coding_environment_changed(project_dir: Path) -> bool:
     if not last.exists():
         return True
     return source.read_text() != last.read_text()
+
+
+def _normalize_env_content(text: str) -> bytes:
+    """Strip what the Alcatraz will never see: blank lines and full-line
+    comments (leading whitespace + `#`). Preserves line order and
+    preserves inline `# ...` tails on `KEY=VALUE` lines because docker's
+    `--env-file` treats them as part of the value.
+
+    Returned as UTF-8 bytes so the caller can hash directly.
+    """
+    kept: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        kept.append(line.rstrip())
+    return "\n".join(kept).encode("utf-8")
+
+
+def _env_hash(env_path: Path) -> str:
+    """SHA256 of `.env`'s normalized content. Empty string if absent."""
+    if not env_path.exists():
+        return ""
+    return hashlib.sha256(_normalize_env_content(env_path.read_text())).hexdigest()
+
+
+def env_file_changed(project_dir: Path) -> bool:
+    """True when `.env` has meaningfully changed since the last snapshot.
+
+    Decision table (see install_method.md Step 4c):
+      - absent .env + absent .hash.last → False (greenfield)
+      - absent .env + present .hash.last → True (user removed .env)
+      - present .env + matching hash → False
+      - otherwise → True
+    """
+    env_path = project_dir / ".env"
+    last_path = project_dir / ".alcatrazer" / "env.hash.last"
+    env_present = env_path.exists()
+    last_present = last_path.exists()
+    if not env_present and not last_present:
+        return False
+    if not env_present and last_present:
+        return True
+    if not last_present:
+        return True
+    return last_path.read_text().strip() != _env_hash(env_path)
+
+
+def save_env_snapshot(project_dir: Path) -> Path | None:
+    """Persist the current `.env` hash to `.alcatrazer/env.hash.last`.
+
+    Symmetric with `save_coding_environment_snapshot`, with one wrinkle:
+    if `.env` is absent, we **delete** any existing `.hash.last` rather
+    than writing a sentinel — that keeps `env_file_changed`'s "both
+    absent → unchanged" branch honest on subsequent runs.
+    """
+    env_path = project_dir / ".env"
+    last_path = project_dir / ".alcatrazer" / "env.hash.last"
+    if not env_path.exists():
+        if last_path.exists():
+            last_path.unlink()
+        return None
+    last_path.parent.mkdir(parents=True, exist_ok=True)
+    last_path.write_text(_env_hash(env_path) + "\n")
+    return last_path
 
 
 def _load_coding_environment(project_dir: Path) -> dict:

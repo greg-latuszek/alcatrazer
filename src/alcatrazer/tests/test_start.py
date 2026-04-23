@@ -1236,6 +1236,169 @@ class CodingEnvironmentChangedTests(unittest.TestCase):
         self.assertFalse(start.coding_environment_changed(self.project_dir))
 
 
+class NormalizeEnvContentTests(unittest.TestCase):
+    """Step 4c: `_normalize_env_content` strips what the container will
+    never see so a comment-only .env edit doesn't force an Alcatraz
+    recreate. Rules:
+      - Drop blank lines.
+      - Drop full-line comments (leading whitespace then `#`).
+      - Preserve order (duplicate keys with different values may matter
+        to some parsers; conservative default).
+      - Do NOT strip inline `# ...` tails on KEY=VALUE lines — docker's
+        --env-file treats them as part of the value."""
+
+    def test_drops_blank_lines(self):
+        normalized = start._normalize_env_content("FOO=1\n\n\nBAR=2\n")
+        self.assertEqual(normalized, b"FOO=1\nBAR=2")
+
+    def test_drops_full_line_comments(self):
+        normalized = start._normalize_env_content("# hello\nFOO=1\n# world\nBAR=2\n")
+        self.assertEqual(normalized, b"FOO=1\nBAR=2")
+
+    def test_drops_full_line_comments_with_leading_whitespace(self):
+        """`    # indented comment` is still a comment line."""
+        normalized = start._normalize_env_content("    # indented\nFOO=1\n")
+        self.assertEqual(normalized, b"FOO=1")
+
+    def test_preserves_inline_hash_as_part_of_value(self):
+        """docker's --env-file reads `FOO=bar  # x` as value `bar  # x`,
+        not as `bar` with a trailing comment. Stripping `# x` would
+        change semantics, so we keep it."""
+        normalized = start._normalize_env_content("FOO=bar  # not a comment\n")
+        self.assertEqual(normalized, b"FOO=bar  # not a comment")
+
+    def test_preserves_line_order(self):
+        """Duplicate keys with different values can behave differently
+        across parsers — be conservative, don't reorder."""
+        normalized = start._normalize_env_content("B=2\nA=1\n")
+        self.assertEqual(normalized, b"B=2\nA=1")
+
+    def test_empty_or_comments_only_yields_empty_bytes(self):
+        self.assertEqual(start._normalize_env_content(""), b"")
+        self.assertEqual(start._normalize_env_content("# only\n\n# comments\n"), b"")
+
+
+class EnvFileChangedTests(unittest.TestCase):
+    """Step 4c: `.env` change detection for the Step 4 lifecycle.
+
+    Four cases from install_method.md Step 4c:
+      - absent .env + absent .hash.last → unchanged (greenfield repo)
+      - absent .env + present .hash.last → changed (user removed .env;
+        recreate drops the baked env vars)
+      - present .env + hash matches .hash.last → unchanged
+      - otherwise → changed (hash mismatch, or .env appeared where it
+        previously didn't exist)
+
+    Hash is SHA256 of the UTF-8-encoded NORMALIZED content (see
+    NormalizeEnvContentTests), so comment-only edits don't count."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.env_path = self.project_dir / ".env"
+        self.last_path = self.alcatraz_dir / "env.hash.last"
+
+    def _seed_hash(self, content: str) -> None:
+        """Write .hash.last as if save_env_snapshot had run with `content`."""
+        normalized = start._normalize_env_content(content)
+        self.last_path.write_text(hashlib.sha256(normalized).hexdigest() + "\n")
+
+    def test_false_when_both_env_and_hash_absent(self):
+        self.assertFalse(start.env_file_changed(self.project_dir))
+
+    def test_true_when_env_absent_but_hash_present(self):
+        """User had .env, snapshot was taken, then user deleted .env —
+        recreate so the now-absent vars stop being baked into the Alcatraz."""
+        self._seed_hash("FOO=1\n")
+        self.assertTrue(start.env_file_changed(self.project_dir))
+
+    def test_true_when_env_present_but_no_hash_yet(self):
+        """Bootstrap: user added .env between two subsequent runs before
+        any snapshot captured its state. Force recreate."""
+        self.env_path.write_text("FOO=1\n")
+        self.assertTrue(start.env_file_changed(self.project_dir))
+
+    def test_false_when_hash_matches(self):
+        self.env_path.write_text("FOO=1\n")
+        self._seed_hash("FOO=1\n")
+        self.assertFalse(start.env_file_changed(self.project_dir))
+
+    def test_true_when_hash_differs(self):
+        self.env_path.write_text("FOO=1\n")
+        self._seed_hash("FOO=2\n")
+        self.assertTrue(start.env_file_changed(self.project_dir))
+
+    def test_false_when_only_comment_added(self):
+        """The whole point of normalization: comment-only edits are a
+        no-op from the container's perspective, so they must not
+        trigger a recreate."""
+        self._seed_hash("FOO=1\n")
+        self.env_path.write_text("# explanation\nFOO=1\n")
+        self.assertFalse(start.env_file_changed(self.project_dir))
+
+    def test_false_when_only_blank_lines_added(self):
+        self._seed_hash("FOO=1\nBAR=2\n")
+        self.env_path.write_text("FOO=1\n\n\nBAR=2\n")
+        self.assertFalse(start.env_file_changed(self.project_dir))
+
+    def test_true_when_inline_hash_value_changes(self):
+        """Inline `# ...` is part of the value — changing it IS a real edit."""
+        self._seed_hash("FOO=bar  # x\n")
+        self.env_path.write_text("FOO=bar  # y\n")
+        self.assertTrue(start.env_file_changed(self.project_dir))
+
+
+class SaveEnvSnapshotTests(unittest.TestCase):
+    """Step 4c: `save_env_snapshot` — symmetric with
+    save_coding_environment_snapshot. Writes the hash when .env exists,
+    removes .hash.last when .env doesn't (so the "both absent"
+    unchanged case survives across runs)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.env_path = self.project_dir / ".env"
+        self.last_path = self.alcatraz_dir / "env.hash.last"
+
+    def test_writes_hash_when_env_exists(self):
+        self.env_path.write_text("FOO=1\n")
+        start.save_env_snapshot(self.project_dir)
+        expected = hashlib.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
+        self.assertEqual(self.last_path.read_text().strip(), expected)
+
+    def test_removes_hash_when_env_absent(self):
+        """If .env was removed since the last snapshot, the stored hash
+        becomes misleading — drop it so env_file_changed's "both absent"
+        branch holds on the NEXT run (not just this one)."""
+        self.last_path.write_text("deadbeef\n")
+        start.save_env_snapshot(self.project_dir)
+        self.assertFalse(self.last_path.exists())
+
+    def test_no_op_when_env_absent_and_hash_absent(self):
+        start.save_env_snapshot(self.project_dir)
+        self.assertFalse(self.last_path.exists())
+
+    def test_round_trips_through_env_file_changed(self):
+        """After save_env_snapshot, env_file_changed returns False until
+        the .env actually changes. Catches off-by-one bugs in newline /
+        encoding handling."""
+        self.env_path.write_text("A=1\nB=2\n")
+        start.save_env_snapshot(self.project_dir)
+        self.assertFalse(start.env_file_changed(self.project_dir))
+        # Cosmetic edit (comment) — still unchanged.
+        self.env_path.write_text("# meta\nA=1\nB=2\n")
+        self.assertFalse(start.env_file_changed(self.project_dir))
+        # Real edit.
+        self.env_path.write_text("A=1\nB=3\n")
+        self.assertTrue(start.env_file_changed(self.project_dir))
+
+
 class SubsequentRunTests(unittest.TestCase):
     """Step 4: _subsequent_run detection logic — branches on needs_rebuild,
     is_running, and coding_environment_changed."""
