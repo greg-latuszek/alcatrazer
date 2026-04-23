@@ -46,36 +46,36 @@ class TestRewriteIdentity(unittest.TestCase):
 
     def test_rewrites_author_and_committer(self):
         stream = (
-            "commit refs/heads/main\n"
-            "author Old Name <old@email.com> 1234567890 +0000\n"
-            "committer Old Name <old@email.com> 1234567890 +0000\n"
-            "data 5\nhello\n"
+            b"commit refs/heads/main\n"
+            b"author Old Name <old@email.com> 1234567890 +0000\n"
+            b"committer Old Name <old@email.com> 1234567890 +0000\n"
+            b"data 5\nhello\n"
         )
         result = promote_mod.rewrite_identity(stream, "New Name", "new@email.com")
-        self.assertIn("author New Name <new@email.com> 1234567890 +0000", result)
-        self.assertIn("committer New Name <new@email.com> 1234567890 +0000", result)
+        self.assertIn(b"author New Name <new@email.com> 1234567890 +0000", result)
+        self.assertIn(b"committer New Name <new@email.com> 1234567890 +0000", result)
 
     def test_preserves_timestamps(self):
-        stream = "author X <x@x> 9999999999 +0530\n"
+        stream = b"author X <x@x> 9999999999 +0530\n"
         result = promote_mod.rewrite_identity(stream, "Y", "y@y")
-        self.assertIn("9999999999 +0530", result)
+        self.assertIn(b"9999999999 +0530", result)
 
     def test_handles_multiple_commits(self):
         stream = (
-            "author A <a@a> 111 +0000\n"
-            "committer A <a@a> 111 +0000\n"
-            "author B <b@b> 222 +0000\n"
-            "committer B <b@b> 222 +0000\n"
+            b"author A <a@a> 111 +0000\n"
+            b"committer A <a@a> 111 +0000\n"
+            b"author B <b@b> 222 +0000\n"
+            b"committer B <b@b> 222 +0000\n"
         )
         result = promote_mod.rewrite_identity(stream, "Z", "z@z")
-        self.assertEqual(result.count("author Z <z@z>"), 2)
-        self.assertEqual(result.count("committer Z <z@z>"), 2)
+        self.assertEqual(result.count(b"author Z <z@z>"), 2)
+        self.assertEqual(result.count(b"committer Z <z@z>"), 2)
 
     def test_does_not_touch_data_sections(self):
-        stream = "author A <a@a> 111 +0000\ndata 20\nauthor line in body\n"
+        stream = b"author A <a@a> 111 +0000\ndata 20\nauthor line in body\n"
         result = promote_mod.rewrite_identity(stream, "Z", "z@z")
         # The "author line in body" doesn't match the pattern (no timestamp)
-        self.assertIn("author line in body", result)
+        self.assertIn(b"author line in body", result)
 
 
 class TestResolveIdentity(unittest.TestCase):

@@ -121,17 +121,25 @@ def resolve_identity(
     return name, email
 
 
-def rewrite_identity(stream: str, name: str, email: str) -> str:
-    """Rewrite author/committer lines in a fast-export stream."""
+def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
+    """Rewrite author/committer lines in a fast-export stream.
+
+    Operates on raw bytes because fast-export embeds blob content
+    inline and git histories can contain non-UTF-8 bytes (images,
+    archives, etc.). Anchoring on the trailing `<timestamp> <tz>` shape
+    keeps the regex from matching text that merely starts with
+    "author " or "committer " inside a data section.
+    """
+    repl = b"\\1 " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b"> \\2"
     stream = re.sub(
-        r"^(author) .+ <.+> (.+)$",
-        rf"\1 {name} <{email}> \2",
+        rb"^(author) .+ <.+> (.+)$",
+        repl,
         stream,
         flags=re.MULTILINE,
     )
     stream = re.sub(
-        r"^(committer) .+ <.+> (.+)$",
-        rf"\1 {name} <{email}> \2",
+        rb"^(committer) .+ <.+> (.+)$",
+        repl,
         stream,
         flags=re.MULTILINE,
     )
@@ -149,16 +157,16 @@ def dry_run(
     if export_marks.exists():
         cmd.append(f"--import-marks={export_marks}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True)
     stream = result.stdout
 
-    commits = re.findall(r"^commit (.+)$", stream, re.MULTILINE)
+    commits = re.findall(rb"^commit (.+)$", stream, re.MULTILINE)
     commit_count = len(commits)
 
     if commit_count == 0:
         print("Nothing to promote — target is up to date.")
         return
-    branches = sorted(set(commits))
+    branches = sorted({c.decode("utf-8", errors="replace") for c in commits})
 
     print(f"Dry run: {commit_count} commit(s) would be promoted")
     print("Branches affected:")
@@ -168,14 +176,15 @@ def dry_run(
     print(f"Author/committer will be rewritten to: {name} <{email}>")
 
 
-def rewrite_refs(stream: str, namespace: str) -> str:
+def rewrite_refs(stream: bytes, namespace: str) -> bytes:
     """Rewrite ref names in a fast-export stream to add a namespace prefix.
 
     refs/heads/main -> refs/heads/<namespace>/main
     """
+    repl = b"\\1 refs/heads/" + namespace.encode("utf-8") + b"/\\2"
     return re.sub(
-        r"^(commit|reset) refs/heads/(.+)$",
-        rf"\1 refs/heads/{namespace}/\2",
+        rb"^(commit|reset) refs/heads/(.+)$",
+        repl,
         stream,
         flags=re.MULTILINE,
     )
@@ -211,12 +220,14 @@ def promote(
         import_cmd.append(f"--import-marks={import_marks}")
     import_cmd.append(f"--export-marks={import_marks}")
 
-    # Run pipeline: fast-export | rewrite identity (+ namespace) | fast-import
-    export_proc = subprocess.run(export_cmd, capture_output=True, text=True, check=True)
+    # Run pipeline: fast-export | rewrite identity (+ namespace) | fast-import.
+    # Must stay in bytes mode — fast-export embeds blob content inline and
+    # git histories routinely contain non-UTF-8 bytes (images, archives).
+    export_proc = subprocess.run(export_cmd, capture_output=True, check=True)
     stream = rewrite_identity(export_proc.stdout, name, email)
     if namespace:
         stream = rewrite_refs(stream, namespace)
-    subprocess.run(import_cmd, input=stream, text=True, check=True)
+    subprocess.run(import_cmd, input=stream, check=True)
 
     print(f"Promotion complete: {source} -> {target}")
 
@@ -426,19 +437,19 @@ def _promote_single_branch(
         import_cmd.append(f"--import-marks={import_marks}")
     import_cmd.append(f"--export-marks={import_marks}")
 
-    export_proc = subprocess.run(export_cmd, capture_output=True, text=True, check=True)
+    export_proc = subprocess.run(export_cmd, capture_output=True, check=True)
     stream = rewrite_identity(export_proc.stdout, name, email)
 
     # Rewrite the ref name if promoting to a different target (e.g. conflict branch)
     if target_ref:
         stream = re.sub(
-            rf"^commit refs/heads/{re.escape(branch)}$",
-            f"commit refs/heads/{target_ref}",
+            rb"^commit refs/heads/" + re.escape(branch.encode("utf-8")) + rb"$",
+            b"commit refs/heads/" + target_ref.encode("utf-8"),
             stream,
             flags=re.MULTILINE,
         )
 
-    subprocess.run(import_cmd, input=stream, text=True, check=True)
+    subprocess.run(import_cmd, input=stream, check=True)
 
 
 def _default_project_dir() -> Path:
