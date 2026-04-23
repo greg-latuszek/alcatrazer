@@ -56,6 +56,25 @@ for the full reasoning behind this architecture.
 
 ---
 
+## Vocabulary — naming the actors
+
+Three concepts recur across this doc, the user-facing CLI strings, and the
+code. Consistent names reduce drift between layers:
+
+| Concept | User-facing phrase | Code / logs / config |
+|---|---|---|
+| The developer's outer git — the repo they `git clone`'d | **your repository** | `outer_repo`, `target_repo` |
+| The inner git at `project_dir/<workspace-name>/` where AI agents commit | **Alcatraz workspace** | `workspace`, `inner_repo`, `source_repo` |
+| The host-side background process that mirrors inner commits outward | **sync daemon** (verb: **sync**) | `daemon`, `promotion-daemon`, `promote()` |
+
+The historical name `promotion` survives in the code, config sections
+(`[promotion]`, `[promotion-daemon]`), and file paths (`promotion-daemon.log`,
+`promotion-daemon.pid`) — renaming those is churn for no user-visible gain.
+User-facing text says "sync" because that's what the user perceives happening
+and they won't cross-reference with code.
+
+---
+
 ## CLI: Five Commands
 
 **Design goal:** Minimalism. Developers are tired of learning new tools. Alcatrazer
@@ -175,6 +194,29 @@ commands, which picks up external script changes. Simple, predictable, no magic.
 After each successful build, the current `coding-environment.toml` is copied to
 `.alcatrazer/coding-environment.toml.last` as a record of what the last build used.
 
+**Sync daemon launch.** After the Alcatraz is up (first-run branch, resume,
+or any case where the container transitions to running), `alcatrazer start`
+launches the sync daemon in the background and prints a transparency block:
+
+```
+Sync daemon started.
+  What:   one-way sync from the Alcatraz workspace → your repository
+          (commits in .devspace-7f3a/ → commits in /home/you/your-repo)
+  When:   polls every 5s (see .alcatrazer/config.toml [promotion-daemon])
+  PID:    41287  (written to .alcatrazer/promotion-daemon.pid)
+  Logs:   .alcatrazer/promotion-daemon.log
+
+One-way: agent commits flow OUT, your commits do NOT flow in.
+Your repository's default branch was snapshotted into the Alcatraz
+workspace ONCE at creation (flat, no history). To replay a fresh
+snapshot after external changes, use `alcatrazer clear` + `start`.
+```
+
+On the fast path (`Already running, environment up to date.`) where the
+daemon is already alive, the CLI emits a single line instead:
+`Sync daemon already running (PID 41287).` — self-heals by relaunching
+silently if a stale PID file points at a dead process.
+
 ### `alcatrazer stop` — freeze the Alcatraz
 
 Stop the Alcatraz without throwing it away. The container's writable overlay
@@ -182,7 +224,22 @@ layer (and thus its caches — mise, pip, npm — see "Ephemeral caches" below)
 survives. A subsequent `alcatrazer start` with no config changes resumes
 from exactly where you left off.
 
-No flags, no options. Just stop.
+**Daemon interaction.** Before the container is stopped would reopen a
+race (agent commits during daemon sync), so the ordering is:
+1. `docker stop` — freezes agents.
+2. Signal the sync daemon (SIGTERM). Daemon runs one final sync against
+   the now-frozen inner repo, logs the result, exits.
+3. CLI tails the last lines of the daemon log to surface "synced N
+   commits" or conflict info to the user.
+
+If the final sync hits a conflict, `stop` exits non-zero — the container
+stays stopped, daemon is gone, unsynced commits remain in the Alcatraz
+workspace (which is on the host filesystem, preserved across docker
+lifecycle). User resolves the conflict in their repository; the next
+`alcatrazer start` relaunches the daemon, which picks up the paused
+branches automatically.
+
+No flags.
 
 ### `alcatrazer clear` — throw away the Alcatraz
 
@@ -196,10 +253,58 @@ Typical use: "my container state got weird, but I don't want to re-init
 the repo." For a fully fresh image too, follow with
 `alcatrazer start --rebuild`.
 
+**Daemon interaction.** Same three-step dance as `stop` before the
+container is removed:
+1. `docker stop` (agents frozen).
+2. SIGTERM the sync daemon, which does a final sync + exits.
+3. `docker rm` the container.
+
+**The Alcatraz workspace (inner repo) is preserved on the host** across
+`clear`. Only the sandbox runtime (container + writable overlay layer)
+goes away. This is the design guarantee that no agent work is lost: even
+after `clear`, every commit the agents produced has either (a) been
+synced to your repository, or (b) still lives in
+`project_dir/<workspace-name>/` awaiting conflict resolution.
+
 No flags. Idempotent (no container present = no-op). Does NOT remove
-`.alcatrazer/` (factory-reset belongs to a future `alcatrazer uninstall`)
-and does NOT touch user-owned repo-root files (`coding-environment.toml`,
-`.env`, `.env.example`).
+`.alcatrazer/` config, does NOT remove the Alcatraz workspace, does NOT
+touch user-owned repo-root files (`coding-environment.toml`, `.env`,
+`.env.example`). A future `alcatrazer reset --workspace` (out of scope
+for v1) would be the "destroy everything, start fresh snapshot" verb.
+
+### Sync daemon — background promotion
+
+Not a CLI command. A host-side background process (`alcatrazer.daemon`)
+that `alcatrazer start` spawns and `alcatrazer stop` / `alcatrazer clear`
+signals to exit. It polls the Alcatraz workspace every N seconds
+(configurable in `.alcatrazer/config.toml [promotion-daemon]`), runs
+`promote()` to replay any new commits into your repository with the
+promotion identity (rewriting author/committer), and handles conflicts
+by surfacing `conflict/resolve-*` branches in your repository.
+
+**Key property: daemon is host-side.** It runs outside docker, reads the
+inner git via the bind-mounted host path (not through docker), and
+survives any docker lifecycle event except an explicit CLI shutdown.
+This is what makes the ordering rule "docker down FIRST, daemon
+finalizes AFTER" possible: daemon doesn't depend on docker being alive
+to read the inner repo.
+
+**Lifecycle contract:**
+
+| When | What happens to the daemon |
+|---|---|
+| `alcatrazer start` (container up) | Daemon spawned, polls indefinitely. |
+| `alcatrazer start` fast path | CLI checks PID file; if daemon alive, no-op; if dead, relaunches (self-heal). |
+| `alcatrazer stop` | CLI stops docker, then SIGTERMs daemon. Daemon runs one final sync against the now-frozen inner repo, exits. |
+| `alcatrazer clear` | Same as stop, then `docker rm`. Inner repo preserved. |
+| Daemon crashed mid-run | Next `alcatrazer start` detects stale PID file and relaunches. |
+| Conflict during final sync | Daemon logs the conflict, exits. CLI surfaces the conflict line from the log; user resolves in their repository; next `start` relaunches daemon, which auto-resumes paused branches. |
+
+**Why daemon, not CLI, owns the final sync:** all sync machinery
+(conflict detection, paused-branches state, marks-file updates) already
+lives in the daemon's promote path. Having the CLI run a separate final
+sync would duplicate that code — same class of bug that caused the
+Steps 6a–e daemon drift. Instead, the CLI signals and tails the log.
 
 ### `alcatrazer upgrade` — self-update
 
@@ -1244,6 +1349,96 @@ No flags.
 Tests: `CmdClearTests` mirroring `CmdStopTests` (guard for missing
 `.alcatrazer/`, no-op when no Alcatraz, stop-then-remove when present)
 + `CliClearTests` for argparse wiring.
+
+### Step 5.7: Sync daemon lifecycle wiring
+
+Today the sync daemon exists (`alcatrazer.daemon`, refreshed in Steps
+6a–e — config path, workspace pointer, default project_dir all fixed)
+but launch and shutdown are manual (`mise run start-promotion`). This
+step wires it into `cmd_start` / `cmd_stop` / `cmd_clear` so users
+never need to think about it. See "Sync daemon — background promotion"
+in the CLI section for the user-facing contract.
+
+**Ordering rule (non-negotiable):** docker down BEFORE daemon finalizes
+— otherwise agents can commit after the "final" sync, leaving a
+commit unsynced until the next `alcatrazer start`. See the rationale
+in the CLI section's lifecycle table.
+
+**Substeps:**
+
+**5.7a — Daemon final-sync on shutdown.**
+In `daemon.py`'s main-loop `finally` block (currently just logs
+"Daemon stopped" + removes PID file), add one more promote cycle
+BEFORE the cleanup. The daemon is already SIGTERM-aware via
+`shutdown_event = threading.Event()`; by the time the `finally` runs,
+the event is set and the container is already stopped (the CLI
+enforced that before signaling). Final sync logs either
+`Final sync: N commits synced` or `CONFLICT on branch X` — enough for
+the CLI to tail and surface. Unit tests: drive the daemon's main-loop
+function with a mock promote; assert final sync is attempted exactly
+once on SIGTERM and the outcome is logged.
+
+**5.7b — CLI helper: `launch_sync_daemon(project_dir) -> DaemonLaunchInfo`.**
+Lives in `alcatrazer.start` (or a small `alcatrazer.daemon_lifecycle`
+module if it grows). Spawns `python -m alcatrazer.daemon --project-dir
+<X>` detached, waits up to ~2 seconds for `.alcatrazer/promotion-daemon.pid`
+to appear (liveness signal), returns a dataclass with `pid`,
+`pid_file`, `log_file`, `config_file`, `interval` for the CLI to
+print. Self-heal path: if PID file exists and `os.kill(pid, 0)`
+succeeds → return info for the existing daemon, skip relaunch. If PID
+file exists but process is dead → delete PID file and relaunch.
+Unit tests: tempdir + mocked subprocess.Popen; assert spawn once on
+absent-PID case, zero spawns on alive-PID case, one spawn on
+stale-PID case.
+
+**5.7c — CLI helper: `shutdown_sync_daemon(project_dir) -> ShutdownResult`.**
+Reads the PID file, sends `SIGTERM`, polls until the process exits
+(10s default timeout, with `SIGKILL` fallback on timeout as a safety
+valve). After exit, reads the last ~20 lines of
+`.alcatrazer/promotion-daemon.log`, parses out the final-sync outcome
+(regex over the strings the daemon produces in 5.7a), returns
+`ShutdownResult(outcome, synced_count, conflict_branches)` for the
+CLI to print. If no daemon was running (no PID file or stale PID),
+returns a "no-op" outcome — not an error. Unit tests: fake PID file
++ fake log file + patched os.kill; cover success, conflict-on-final-sync,
+no-daemon-present, timeout-fallback.
+
+**5.7d — `cmd_start` wires daemon launch.**
+At the end of the happy path (right before `print("Ready.")` in
+`_first_run_after_init`, or after `_subsequent_run` returns 0 via the
+resume/fresh-start branches), call `launch_sync_daemon(project_dir)`
+and print the transparency block (full block on actual launch,
+single-line on already-alive). Fast-path also calls the helper — it
+self-heals if a stale PID lingers. Tests: extend `FirstRunAfterInit`
+and `SubsequentRunTests` with mocked launch helper; assert the helper
+is called and its info surfaced; assert no crash when daemon launch
+fails (launch error → warning, don't fail `start`).
+
+**5.7e — `cmd_stop` wires daemon shutdown.**
+Reorder inside `cmd_stop`: `prison.stop()` FIRST (the non-negotiable
+ordering rule), THEN `shutdown_sync_daemon(project_dir)`. Print the
+`ShutdownResult` — "Synced N commits" or conflict info. If conflict:
+exit non-zero (container stays stopped, daemon stays dead, user
+resolves in their repository). Extend `CmdStopTests`.
+
+**5.7f — `cmd_clear` wires daemon shutdown.**
+Same ordering as stop: `prison.stop()` → `shutdown_sync_daemon` →
+`prison.remove()`. Inner repo directory is explicitly NOT removed
+(preservation invariant from the "Sync daemon" section). Extend
+`CmdClearTests`.
+
+**5.7g — Smoke-test lifecycle coverage.**
+Extend `test_smoke.py` with an end-to-end case: `init` → `start` →
+verify daemon PID file exists and process is alive → commit inside
+the Alcatraz workspace via `docker exec` → wait one poll cycle →
+verify the commit appears in the outer repo via `git log` → `stop` →
+verify daemon PID file gone + container stopped + inner repo dir
+still present → `start` again → verify daemon relaunched + container
+resumed → `clear` → verify daemon gone + container gone + **inner
+repo dir STILL present**.
+
+**Dependencies:** 6a–e already landed. 5.7 is pure orchestration on
+top of the corrected daemon.
 
 ### Step 6: Implement `alcatrazer upgrade`
 
