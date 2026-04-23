@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from alcatrazer import daemon, state
+from alcatrazer import daemon, identity, state
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,46 @@ def launch_sync_daemon(
         time.sleep(0.05)
 
     raise DaemonLaunchError(f"Sync daemon failed to start within {timeout}s; see {log_file}")
+
+
+def print_launch_info(info: DaemonLaunchInfo, project_dir: Path) -> None:
+    """User-facing output for the daemon-launch transparency block —
+    what / when / PID / files — or a single-line "already running"
+    note on the self-heal path. Format defined in install_method.md
+    CLI section ("Sync daemon launch")."""
+    if info.was_already_running:
+        print(f"Sync daemon already running (PID {info.pid}).")
+        return
+
+    alcatraz_dir = (project_dir / ".alcatrazer").resolve()
+    workspace_name = identity.load_workspace_dir(str(alcatraz_dir)) or "<workspace>"
+
+    print()
+    print("Sync daemon started.")
+    print("  What:   one-way sync from the Alcatraz workspace → your repository")
+    print(f"          (commits in {workspace_name}/ → commits in {project_dir})")
+    print(f"  When:   polls every {info.interval}s (see {info.config_file} [promotion-daemon])")
+    print(f"  PID:    {info.pid}  (written to {info.pid_file})")
+    print(f"  Logs:   {info.log_file}")
+    print()
+    print("One-way: agent commits flow OUT, your commits do NOT flow in.")
+    print("Your repository's default branch was snapshotted into the Alcatraz")
+    print("workspace ONCE at creation (flat, no history). To replay a fresh")
+    print("snapshot after external changes, use `alcatrazer clear` + `start`.")
+
+
+def launch_daemon_and_print(project_dir: Path) -> DaemonLaunchInfo | None:
+    """Convenience: launch + print, swallowing launch failures into a
+    stderr warning. Used by cmd_start — a failed daemon launch must
+    NOT fail `alcatrazer start`, since the Alcatraz itself is up and
+    the user can retry via `stop` + `start` or investigate the log."""
+    try:
+        info = launch_sync_daemon(project_dir)
+    except DaemonLaunchError as e:
+        print(f"WARNING: {e}", file=sys.stderr)
+        return None
+    print_launch_info(info, project_dir)
+    return info
 
 
 # ── Shutdown ───────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ from pathlib import Path
 
 from alcatrazer import identity, snapshot
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
+from alcatrazer.daemon_lifecycle import launch_daemon_and_print
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
 
@@ -216,6 +217,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     if rc == 0:
         save_coding_environment_snapshot(project_dir)
         save_env_snapshot(project_dir)
+        launch_daemon_and_print(project_dir)
         print()
         print("Ready.")
     return rc
@@ -957,6 +959,9 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # Case 1: fast path.
     if running and not rebuild and not toml_changed and not env_changed:
         print("Already running, environment up to date.")
+        # Self-heal: ensure the sync daemon is alive (relaunch silently
+        # if a stale PID pointed at a dead process).
+        launch_daemon_and_print(project_dir)
         return 0
 
     # Case 2: full recreate (rebuild or env_changed).
@@ -1013,4 +1018,5 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     if rc == 0:
         save_coding_environment_snapshot(project_dir)
         save_env_snapshot(project_dir)
+        launch_daemon_and_print(project_dir)
     return rc

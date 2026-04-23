@@ -1451,6 +1451,7 @@ class SubsequentRunTests(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
             patch.object(start, "env_file_changed", return_value=env_changed),
+            patch.object(start, "launch_daemon_and_print") as self._launch_mock,
         ):
             rc = start._subsequent_run(self.project_dir, prison=prison)
         return rc, stdout.getvalue(), stderr.getvalue()
@@ -1612,6 +1613,43 @@ class SubsequentRunTests(unittest.TestCase):
             original_coding_last,
         )
         self.assertFalse((self.alcatraz_dir / "env.hash.last").exists())
+
+    # --- Sync daemon wiring (Step 5.7e) ----------------------------------
+
+    def test_sync_daemon_launched_on_fast_path(self):
+        """Fast path self-heals the daemon: even when nothing about the
+        Alcatraz changed, if the daemon died since last start we want
+        it back. Helper's own stale-PID detection handles the no-op
+        case when the daemon is already alive."""
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=False, exists=True)
+        self._run(prison)
+        self._launch_mock.assert_called_once_with(self.project_dir)
+
+    def test_sync_daemon_launched_after_successful_recreate(self):
+        """Full-recreate path ends at `docker run` for a fresh Alcatraz —
+        daemon needs to come up alongside it."""
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=True, exists=True)
+        self._run(prison)
+        self._launch_mock.assert_called_once_with(self.project_dir)
+
+    def test_sync_daemon_launched_after_resume(self):
+        """Resume-stopped branch brings the container back without
+        recreate — daemon still needs relaunching (it doesn't survive
+        stop/clear cycles, only the container's writable layer does)."""
+        self._seed_last(match=True)
+        prison = self._prison(running=False, rebuild=False, exists=True)
+        self._run(prison)
+        self._launch_mock.assert_called_once_with(self.project_dir)
+
+    def test_sync_daemon_not_launched_on_startup_failure(self):
+        """Don't spawn a daemon against an Alcatraz whose startup
+        commands failed — it would just log promote errors."""
+        self._seed_last(match=True)
+        prison = self._prison(running=True, rebuild=True, exec_rc=7, exists=True)
+        self._run(prison)
+        self._launch_mock.assert_not_called()
 
 
 class CmdInitIntegrationTests(unittest.TestCase):
@@ -1804,6 +1842,7 @@ class FirstRunAfterInitTests(unittest.TestCase):
             (start, "run_startup_commands", 0),
             (start, "save_coding_environment_snapshot", None),
             (start, "save_env_snapshot", None),
+            (start, "launch_daemon_and_print", None),
             (identity, "load_workspace_dir", ".devspace-abcd"),
         ]
         for mod, name, rv in to_patch:
@@ -1865,6 +1904,18 @@ class FirstRunAfterInitTests(unittest.TestCase):
         doesn't misdetect the same .env as changed."""
         self._run()
         self.mocks["save_env_snapshot"].assert_called_once_with(self.project_dir)
+
+    def test_sync_daemon_launched_on_happy_path(self):
+        """First-run happy path wires up the sync daemon — Step 5.7e."""
+        self._run()
+        self.mocks["launch_daemon_and_print"].assert_called_once_with(self.project_dir)
+
+    def test_sync_daemon_not_launched_on_startup_failure(self):
+        """If startup commands failed we don't have a healthy Alcatraz;
+        launching the sync daemon would just race with the failure."""
+        self.mocks["run_startup_commands"].return_value = 7
+        self._run()
+        self.mocks["launch_daemon_and_print"].assert_not_called()
 
     def test_build_failure_reports_and_returns_nonzero(self):
         self.prison.build.side_effect = PrisonBuildError(
