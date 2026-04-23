@@ -1652,3 +1652,113 @@ into the `start` / `stop` / `clear` lifecycle, (c) v0.1.0 is on PyPI, and
 - Version single-sourced from `src/alcatrazer/__init__.py`
 
 **PyPI account:** Recovery in progress. Name `alcatrazer` is available.
+
+---
+
+## Manual tests and troubleshooting
+
+Running log of real-world install/run sessions — the things the automated
+smoke test doesn't catch. Add new entries at the bottom as they come up.
+
+### 2026-04-23 — First real end-to-end install via built wheel
+
+**Scenario.** Built wheel locally via `mise run build`, installed it into
+a separate repo on the same machine (`markdown-knowledge-base` —
+`/gitrepos/train_ai/build_ai_agents_training`). `alcatrazer
+init` and `alcatrazer start` both succeeded: config files generated,
+workspace snapshot taken, Docker image built, container up, promotion
+daemon launched (PID visible in `ps`). `alcatrazer stop` reported
+success at the CLI level but the daemon's final sync failed, and the
+promotion log showed the daemon had been failing every poll since start.
+
+**Symptom 1 — init's `[startup]` template is incomplete.**
+First `alcatrazer start` aborted with:
+
+```
+→ Running startup command #1: mise env-create
+mise ERROR Config files in /workspace/mise.toml are not trusted.
+Trust them with `mise trust`.
+```
+
+Init had written only `mise env-create`, but a freshly-created workspace
+needs `mise trust /workspace/mise.toml` run first. Re-running `start`
+after hand-editing `coding-environment.toml` to prepend the `mise trust`
+line worked. The `init` template should emit the `mise trust` line
+automatically when the user chooses a language with a mise runtime.
+
+**Symptom 2 — promotion daemon fails every poll.**
+`.alcatrazer/promotion-daemon.log` after a normal session:
+
+```
+2026-04-23 18:23:46 Daemon started (PID 18800, interval=5s, branches=all, mode=mirror)
+2026-04-23 18:23:52 Promotion failed: 'utf-8' codec can't decode byte 0xff in position 351656: invalid start byte
+2026-04-23 18:23:57 Promotion failed: Command '[... 'fast-import', '--force', '--quiet', '--export-marks=...promote-import-marks']' returned non-zero exit status 128.
+2026-04-23 18:24:02 Promotion failed: Command '[... 'fast-import', '--force', '--quiet', '--import-marks=...promote-import-marks', '--export-marks=...promote-import-marks']' returned non-zero exit status 128.
+... (repeats every 5s until shutdown)
+2026-04-23 18:27:32 Final sync (graceful shutdown) failed: ...fast-import... exit 128
+```
+
+**Root cause — `text=True` on a `git fast-export` pipe.**
+`src/alcatrazer/promote.py:215` (and `:429` for the single-branch path):
+
+```python
+export_proc = subprocess.run(export_cmd, capture_output=True, text=True, check=True)
+```
+
+`text=True` forces stdout to be decoded as UTF-8. `git fast-export`
+streams **raw blob bytes inline** — every binary file in git history
+(images, fonts, compiled artifacts, PDFs, anything) is emitted verbatim
+inside `data <n>\n<bytes>\n` sections. The first byte that isn't valid
+UTF-8 (`0xff` here, ~344 KB into the stream) raises `UnicodeDecodeError`
+before `promote()` ever returns. The `markdown-knowledge-base` repo has
+binary content in history, which is what tripped this.
+
+**Secondary cascade — marks-file desync.**
+After the first Unicode error the daemon can't self-heal:
+
+1. `git fast-export` ran to completion and flushed
+   `.alcatrazer/promote-export-marks` (fast-export writes marks on exit).
+   The Python decode error only fired *after* `subprocess.run` returned.
+2. But `fast-import` was never called, so
+   `.alcatrazer/promote-import-marks` was never created.
+3. On every subsequent poll, `fast-export --import-marks=<full marks>`
+   produces a tiny stream that references mark numbers (e.g. `from :3`)
+   already recorded as exported. `fast-import` has no matching
+   `--import-marks` file, doesn't know those marks, and exits 128.
+
+So the first error is the *cause*; the long tail of `fast-import exit
+128` is the daemon spinning on a desynced pair of marks files it can't
+recover from on its own.
+
+**Fix.**
+Two things, in order of importance:
+
+1. **Rewrite the fast-export → fast-import pipeline in bytes mode.**
+   Drop `text=True` on the two fast-export subprocess calls in
+   `promote.py`, change `rewrite_identity` and `rewrite_refs` to operate
+   on `bytes` (use `rb"…"` patterns), and pipe bytes into fast-import's
+   stdin. Plain-text git commands elsewhere (`git branch --format`,
+   `rev-parse`, `config`) can keep `text=True` — only the
+   fast-export/fast-import I/O needs to be binary. Add a regression test
+   with a binary blob in history so this can't come back.
+
+2. **Make `init` emit `mise trust /workspace/mise.toml` as the first
+   startup command** when a mise-managed language is selected, so a
+   fresh workspace doesn't die on its first `start`.
+
+**Recovery for an already-broken install** (until the fix lands): delete
+the desynced marks so the next run starts fresh —
+
+```
+rm .alcatrazer/promote-export-marks \
+   .alcatrazer/promote-import-marks \
+   .alcatrazer/promoted-tips.json
+```
+
+— or simply `alcatrazer clear && alcatrazer start`.
+
+**Why the smoke test didn't catch this.** `test_smoke.py` seeds the
+Alcatraz workspace with commits of small text files, so `fast-export`'s
+output stays inside the ASCII subset of UTF-8 and `text=True` happens to
+work. The regression test for the bytes-mode fix should include a
+binary blob in the seeded history.
