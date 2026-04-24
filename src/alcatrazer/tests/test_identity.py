@@ -410,5 +410,69 @@ class TestStoreRetrieveWorkspaceDir(unittest.TestCase):
             self.assertEqual(content.strip(), ".sandbox-ab12")
 
 
+# ── Unit tests: phantom UID (Step 3i) ────────────────────────────────
+
+
+class DetectPhantomUidTests(unittest.TestCase):
+    """detect_phantom_uid finds a UID not present in either /etc/passwd or
+    /etc/group (matching the convention from the old initialize_alcatraz.sh).
+    """
+
+    def test_returns_start_when_start_is_free(self):
+        from alcatrazer import identity
+
+        with patch.object(identity, "_uid_or_gid_exists", return_value=False):
+            self.assertEqual(identity.detect_phantom_uid(start=1001), 1001)
+
+    def test_increments_until_free(self):
+        from alcatrazer import identity
+
+        taken = {1001, 1002, 1003}
+        with patch.object(identity, "_uid_or_gid_exists", side_effect=lambda uid: uid in taken):
+            self.assertEqual(identity.detect_phantom_uid(start=1001), 1004)
+
+    def test_default_start_is_1001(self):
+        from alcatrazer import identity
+
+        with patch.object(identity, "_uid_or_gid_exists", return_value=False):
+            self.assertEqual(identity.detect_phantom_uid(), 1001)
+
+
+class EnsurePhantomUidTests(unittest.TestCase):
+    """ensure_phantom_uid reads .alcatrazer/uid if present; otherwise detects
+    and persists, so rebuilds reuse the same UID (image cache consistency)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.alcatraz_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_detects_and_persists_when_missing(self):
+        from alcatrazer import identity
+
+        with patch.object(identity, "detect_phantom_uid", return_value=1007):
+            uid = identity.ensure_phantom_uid(self.alcatraz_dir)
+        self.assertEqual(uid, 1007)
+        self.assertEqual((self.alcatraz_dir / "uid").read_text().strip(), "1007")
+
+    def test_reads_existing_file_without_calling_detect(self):
+        from alcatrazer import identity
+
+        (self.alcatraz_dir / "uid").write_text("1234\n")
+        with patch.object(identity, "detect_phantom_uid") as mock_detect:
+            uid = identity.ensure_phantom_uid(self.alcatraz_dir)
+        self.assertEqual(uid, 1234)
+        mock_detect.assert_not_called()
+
+    def test_creates_alcatraz_dir_if_missing(self):
+        from alcatrazer import identity
+
+        nested = self.alcatraz_dir / "fresh"  # does not exist yet
+        with patch.object(identity, "detect_phantom_uid", return_value=1007):
+            uid = identity.ensure_phantom_uid(nested)
+        self.assertEqual(uid, 1007)
+        self.assertTrue((nested / "uid").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

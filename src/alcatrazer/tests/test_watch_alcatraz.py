@@ -2,7 +2,7 @@
 Unit tests for watch_alcatraz.py — the promotion daemon.
 
 Tests the Python daemon's core logic:
-- Config loading from alcatrazer.toml via tomllib
+- Config loading from .alcatrazer/config.toml via tomllib
 - PID guard (create, detect running, detect stale, cleanup)
 - Workspace existence check
 - Signal handling (SIGTERM graceful shutdown)
@@ -38,14 +38,28 @@ DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
 INSPECT_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "inspect.py")
 PYTHON = python_bin()
 
+# Fixed workspace dir name for test fixtures. Real installs generate a
+# random `.{word}-{4hex}` via `identity.generate_workspace_dir_name()`,
+# but tests don't need randomness — the daemon finds the workspace via
+# the `.alcatrazer/workspace-dir` pointer regardless of the name.
+WORKSPACE_DIR_NAME = ".devspace-test"
+
 
 class TestConfigLoading(unittest.TestCase):
-    """Test that the daemon reads config from alcatrazer.toml correctly."""
+    """Daemon reads per-developer config from `.alcatrazer/config.toml`
+    (the post-install_method.md layout — `[promotion-daemon]` and
+    `[promotion]` live under alcatraz_dir, not alongside the public
+    `coding-environment.toml` at the repo root)."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
+        os.makedirs(self.alcatraz_dir)
+        # Point daemon at a real workspace git directory alongside
+        # `.alcatrazer/` — mirrors what `alcatrazer init` + `start` would
+        # have produced on a real install.
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
 
     def tearDown(self):
         # Kill any daemon we may have started
@@ -61,10 +75,14 @@ class TestConfigLoading(unittest.TestCase):
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_toml(self, content):
-        toml_path = os.path.join(self.tmpdir, "alcatrazer.toml")
+    def _write_config(self, content):
+        """Write the daemon config at the post-refactor location."""
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         with open(toml_path, "w") as f:
             f.write(content)
+
+    def _log_path(self):
+        return os.path.join(self.alcatraz_dir, "promotion-daemon.log")
 
     def _start_daemon(self, extra_args=None):
         """Start daemon and return the Popen object."""
@@ -86,9 +104,32 @@ class TestConfigLoading(unittest.TestCase):
         time.sleep(0.5)  # Let it start
         return proc
 
+    def test_reads_interval_value_into_startup_log(self):
+        """Strong assertion (previous tests only checked `didn't crash`):
+        the interval actually reaches the daemon's logging — so if the
+        daemon reads the wrong file and silently falls back to defaults,
+        this test fails."""
+        self._write_config("[promotion-daemon]\ninterval = 42\n")
+        proc = self._start_daemon()
+        try:
+            # Poll the log briefly — it's written once the daemon settles.
+            log_file = self._log_path()
+            deadline = time.time() + 3
+            content = ""
+            while time.time() < deadline:
+                if os.path.exists(log_file):
+                    content = Path(log_file).read_text()
+                    if "Daemon started" in content:
+                        break
+                time.sleep(0.1)
+            self.assertIn("interval=42s", content, f"Log did not show interval=42: {content!r}")
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+
     def test_reads_interval_from_toml(self):
-        """Daemon should read the interval value from alcatrazer.toml."""
-        self._write_toml("[promotion-daemon]\ninterval = 42\n")
+        """Daemon should read the interval value from .alcatrazer/config.toml."""
+        self._write_config("[promotion-daemon]\ninterval = 42\n")
         proc = self._start_daemon()
         try:
             # Daemon is running — we can't directly inspect its internal state,
@@ -100,7 +141,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_all_config_keys(self):
         """Daemon should parse all [promotion-daemon] config keys without error."""
-        self._write_toml(
+        self._write_config(
             "[promotion-daemon]\n"
             "interval = 3\n"
             'branches = "main"\n'
@@ -115,9 +156,9 @@ class TestConfigLoading(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
-    def test_handles_missing_toml(self):
-        """Daemon should use defaults when alcatrazer.toml is missing."""
-        # Don't write any toml file
+    def test_handles_missing_config(self):
+        """Daemon should use defaults when .alcatrazer/config.toml is missing."""
+        # Don't write any config file
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
@@ -127,7 +168,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_handles_missing_daemon_section(self):
         """Daemon should use defaults when [promotion-daemon] section is missing."""
-        self._write_toml('[promotion]\nname = "Test"\n')
+        self._write_config('[promotion]\nname = "Test"\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
@@ -137,7 +178,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_reads_branch_list_config(self):
         """Daemon should handle branches as a TOML list."""
-        self._write_toml('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
+        self._write_config('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should handle branch list")
@@ -147,11 +188,18 @@ class TestConfigLoading(unittest.TestCase):
 
 
 class TestWorkspaceCheck(unittest.TestCase):
-    """Test that the daemon validates workspace existence."""
+    """Daemon resolves the workspace via the `.alcatrazer/workspace-dir`
+    pointer written by `alcatrazer init` — the workspace itself is a
+    sibling of `.alcatrazer/` at `project_dir / <name>`, NOT a child of
+    `.alcatrazer/`. The daemon must error out cleanly when either the
+    pointer is missing, the pointed-at directory is missing, or the
+    directory exists but isn't a git repo."""
+
+    WORKSPACE_NAME = ".devspace-test"
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -159,24 +207,42 @@ class TestWorkspaceCheck(unittest.TestCase):
 
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_exits_when_workspace_missing(self):
-        """Daemon should exit non-zero when workspace/.git doesn't exist."""
-        result = subprocess.run(
-            [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+    def _run_daemon(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                PYTHON,
+                DAEMON_SCRIPT,
+                "--alcatraz-dir",
+                self.alcatraz_dir,
+                "--project-dir",
+                self.tmpdir,
+            ],
             capture_output=True,
             text=True,
         )
+
+    def test_exits_when_workspace_dir_pointer_missing(self):
+        """No `.alcatrazer/workspace-dir` pointer → daemon tells the user
+        to run init+start first (that's what creates the pointer)."""
+        result = self._run_daemon()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("workspace", result.stderr.lower() + result.stdout.lower())
+        combined = (result.stderr + result.stdout).lower()
+        self.assertIn("init", combined)
+
+    def test_exits_when_workspace_directory_missing(self):
+        """Pointer says `<project>/.devspace-test`, but the directory was
+        never created / was manually deleted."""
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        result = self._run_daemon()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workspace", (result.stderr + result.stdout).lower())
 
     def test_exits_when_workspace_exists_but_no_git(self):
-        """Daemon should exit when workspace/ exists but has no .git."""
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace"))
-        result = subprocess.run(
-            [PYTHON, DAEMON_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
-            capture_output=True,
-            text=True,
-        )
+        """Directory is there (pointed at correctly) but has no `.git`
+        subdirectory — e.g., the inner repo was manually wiped."""
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, self.WORKSPACE_NAME))
+        result = self._run_daemon()
         self.assertNotEqual(result.returncode, 0)
 
 
@@ -185,10 +251,15 @@ class TestPidGuard(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
-        # Write minimal toml
-        with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
+        os.makedirs(self.alcatraz_dir)
+        # Workspace pointer + target dir so the daemon's workspace check
+        # passes. Real installs generate a random workspace name; tests
+        # use a fixed one.
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
+        # Write minimal config at the post-refactor location.
+        with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
         self.pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
 
@@ -290,9 +361,11 @@ class TestSignalHandling(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
-        os.makedirs(os.path.join(self.alcatraz_dir, "workspace", ".git"))
-        with open(os.path.join(self.tmpdir, "alcatrazer.toml"), "w") as f:
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
+        os.makedirs(self.alcatraz_dir)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
+        os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
+        with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
             f.write("[promotion-daemon]\ninterval = 1\n")
 
     def tearDown(self):
@@ -375,7 +448,9 @@ class TestDaemonPromotion(unittest.TestCase):
         # project_dir layout: has .alcatrazer/workspace (source) and is itself a git repo (target)
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create the outer (target) repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -397,8 +472,8 @@ class TestDaemonPromotion(unittest.TestCase):
         # Seed the workspace with commits
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
-        # Write alcatrazer.toml with promotion identity and fast polling
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        # Write .alcatrazer/config.toml with promotion identity and fast polling
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -486,6 +561,99 @@ class TestDaemonPromotion(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
+    def _read_log(self) -> str:
+        return Path(self.alcatraz_dir, "promotion-daemon.log").read_text()
+
+    def test_final_sync_on_shutdown_logs_graceful_when_state_says_requested(self):
+        """When `alcatrazer stop`/`clear` signals intent via state.json,
+        daemon's shutdown path logs "graceful shutdown" prefix. This is
+        the happy path: CLI stopped docker first, final sync is safe by
+        the ordering contract."""
+        Path(self.alcatraz_dir, "state.json").write_text(
+            '{"schema_version": 1, "daemon_shutdown": "requested"}\n'
+        )
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)  # Let daemon start + run at least one poll.
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (graceful shutdown)", log, log)
+
+    def test_final_sync_on_shutdown_logs_unexpected_when_state_absent(self):
+        """No state.json at all — user ran `kill <pid>` or OS sent
+        SIGTERM during shutdown. Daemon still attempts final sync (best
+        effort; eventual consistency via marks on next start). Log
+        prefix distinguishes this from the graceful case so forensics
+        is possible later."""
+        # Deliberately DO NOT write state.json.
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_logs_unexpected_when_state_flag_is_done(self):
+        """Previous shutdown finished cleanly (CLI wrote "done"). Now
+        the daemon is killed without a new CLI-initiated shutdown cycle
+        — still counts as unexpected."""
+        Path(self.alcatraz_dir, "state.json").write_text(
+            '{"schema_version": 1, "daemon_shutdown": "done"}\n'
+        )
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_logs_unexpected_when_state_json_is_corrupt(self):
+        """Corrupt state.json — daemon's load_state returns {}, which
+        `.get("daemon_shutdown")` makes None → unexpected prefix.
+        Daemon keeps shutting down regardless."""
+        Path(self.alcatraz_dir, "state.json").write_text("{not json")
+        proc = self._start_daemon()
+        try:
+            time.sleep(2)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=5)
+        log = self._read_log()
+        self.assertIn("Final sync (unexpected shutdown)", log, log)
+
+    def test_final_sync_actually_promotes_pending_commits(self):
+        """Race-closer: a commit lands after the last poll tick but
+        before SIGTERM. Without final sync, that commit would stay in
+        the workspace until next start. With final sync, it shows up
+        in the outer repo before the daemon exits."""
+        # Let the initial seed sync through first.
+        proc = self._start_daemon()
+        try:
+            time.sleep(3)  # First poll cycle syncs the seed.
+            # Now add a new commit in the workspace AFTER the daemon's
+            # poll, tight window before we SIGTERM.
+            Path(self.workspace, "late.txt").write_text("after last poll\n")
+            git(self.workspace, "add", "late.txt")
+            git(self.workspace, "commit", "-m", "late commit (pre-shutdown)")
+            # Mark the shutdown as graceful so the log line is
+            # predictable; final sync runs either way.
+            Path(self.alcatraz_dir, "state.json").write_text(
+                '{"schema_version": 1, "daemon_shutdown": "requested"}\n'
+            )
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=10)
+
+        # The late commit must appear in the outer repo.
+        msgs = git(self.test_project, "log", "--all", "--format=%s").splitlines()
+        self.assertIn("late commit (pre-shutdown)", msgs, msgs)
+
 
 class TestLogRotation(unittest.TestCase):
     """Test that the daemon rotates log files when they exceed max_log_size."""
@@ -494,7 +662,9 @@ class TestLogRotation(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -531,7 +701,7 @@ class TestLogRotation(unittest.TestCase):
     def test_log_rotates_when_exceeding_max_size(self):
         """Log file should rotate when it exceeds max_log_size KB."""
         # Set max_log_size to 1 KB so rotation triggers quickly
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -577,7 +747,9 @@ class TestBranchFiltering(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -613,7 +785,7 @@ class TestBranchFiltering(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_toml(self, branches_value):
-        toml_path = os.path.join(self.test_project, "alcatrazer.toml")
+        toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
@@ -695,7 +867,9 @@ class _ConflictTestBase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -715,7 +889,7 @@ class _ConflictTestBase(unittest.TestCase):
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
         # Write toml
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
@@ -855,7 +1029,7 @@ class TestConflictDetection(_ConflictTestBase):
         git(self.workspace, "commit", "-m", "new work on feature branch")
 
         # Configure to promote all branches
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
@@ -965,7 +1139,7 @@ class TestInspectPromotion(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.alcatraz_dir = os.path.join(self.tmpdir, "alcatrazer")
+        self.alcatraz_dir = os.path.join(self.tmpdir, ".alcatrazer")
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
@@ -1007,7 +1181,9 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.test_project = self.tmpdir
         self.alcatraz_dir = os.path.join(self.test_project, ".alcatrazer")
-        self.workspace = os.path.join(self.alcatraz_dir, "workspace")
+        self.workspace = os.path.join(self.test_project, WORKSPACE_DIR_NAME)
+        Path(self.alcatraz_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
         subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
@@ -1026,7 +1202,7 @@ class TestAlcatrazTreeMode(unittest.TestCase):
         git(self.workspace, "config", "commit.gpgsign", "false")
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
-        Path(self.test_project, "alcatrazer.toml").write_text(
+        Path(self.alcatraz_dir, "config.toml").write_text(
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'

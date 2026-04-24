@@ -1,12 +1,19 @@
 """
-Random agent identity and workspace directory name generation.
+Random agent identity and workspace directory name generation, plus phantom
+UID detection.
 
 Generates realistic-looking human names, email addresses, and generic
 directory names for use inside the Alcatraz workspace. Agents see these
 instead of anything that hints at Alcatrazer.
+
+Also provides phantom-UID helpers used by the sandbox adapter at build time:
+the UID must not exist in either /etc/passwd or /etc/group on the host, so a
+container escape gives the process no matching host user and therefore no
+write access to host files.
 """
 
 import random
+import subprocess
 from pathlib import Path
 
 FIRST_NAMES = [
@@ -267,6 +274,51 @@ def load_workspace_dir(alcatraz_dir: str) -> str | None:
     if not path.exists():
         return None
     return path.read_text().strip()
+
+
+# ── Phantom UID ──────────────────────────────────────────────────────
+
+
+def _uid_or_gid_exists(uid: int) -> bool:
+    """True if `uid` resolves in /etc/passwd or /etc/group on the host."""
+    for db in ("passwd", "group"):
+        result = subprocess.run(
+            ["getent", db, str(uid)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def detect_phantom_uid(start: int = 1001) -> int:
+    """Find a UID (>= `start`) that exists in neither /etc/passwd nor /etc/group.
+
+    Mirrors the convention from the old initialize_alcatraz.sh: start at 1001
+    (above common system and user UIDs) and increment until both databases
+    say "not found". The resulting UID is the security pivot — a container
+    escape has no matching host user.
+    """
+    uid = start
+    while _uid_or_gid_exists(uid):
+        uid += 1
+    return uid
+
+
+def ensure_phantom_uid(alcatraz_dir: str | Path) -> int:
+    """Read `alcatraz_dir/uid` if it exists, else detect + persist. Return the UID.
+
+    Rebuilds reuse the persisted UID so cached volumes retain consistent
+    ownership between image versions.
+    """
+    path = Path(alcatraz_dir) / "uid"
+    if path.exists():
+        return int(path.read_text().strip())
+    uid = detect_phantom_uid()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{uid}\n")
+    return uid
 
 
 if __name__ == "__main__":

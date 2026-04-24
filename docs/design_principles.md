@@ -103,14 +103,43 @@ no git remotes, identity rewriting, file ownership.
 
 ### Target Repo Gets Almost Nothing
 
-Alcatrazer must not pollute the target repository. The only things that touch the repo proper:
-- `alcatrazer.toml` — version controlled, captures project decisions
-- `.gitignore` entries for `.alcatrazer/`, `.<workspace>/`, and `.env`
-- `.env.example` — template for API keys
+Alcatrazer must not pollute the target repository. The only version-controlled artifacts are:
+- `coding-environment.toml` — defines the agent's coding environment (languages, tools, 
+  boot-up commands). Contains zero alcatrazer branding. Agents see it as a natural project 
+  file and can even improve it.
+- `.env.example` — template for API keys (standard pattern, no branding)
 
-Everything else lives inside `.alcatrazer/` (gitignored).
+Everything alcatrazer-specific lives in locations invisible to agents:
+- `.alcatrazer/` (gitignored) — config, Dockerfile, compose files, entrypoint scripts, 
+  all isolation machinery. This is load-bearing: the workspace snapshot copies everything 
+  from the target repo's main branch, so anything version-controlled would be visible 
+  to agents inside the container (Principle 2).
+- `.git/info/exclude` — ignore patterns for `.alcatrazer/`, workspace dir. 
+  Git's built-in per-repo ignore that is NOT version controlled and NOT in the working tree.
 
-*Source: [install_method.md](features/install_method.md)*
+This three-file architecture replaced the original `alcatrazer.toml` design after 
+discovering that a version-controlled file named "alcatrazer" violates Principle 2 
+and leaks developer identity via `[promotion]`. See 
+[alcatraz_how_and_what_for.md](features/alcatraz_how_and_what_for.md) 
+"Resolved: Config Split" for full reasoning.
+
+*Source: [install_method.md](features/install_method.md), [alcatraz_how_and_what_for.md](features/alcatraz_how_and_what_for.md)*
+
+### Dockerfile Is Generated, Never User-Written
+
+Alcatrazer generates the Dockerfile from `coding-environment.toml`. The user declares 
+what the coding environment needs (languages, OS packages, startup commands); the generator 
+produces a Dockerfile with alcatrazer's security base plus the user's tool layer on top. 
+The user never writes or edits Docker syntax.
+
+This means:
+- The "wrap vs base image" question disappears — it's always base, always generated
+- Docker is an implementation detail — if isolation changes in the future, only the 
+  generator changes, the toml stays the same
+- The security layer stays under alcatrazer's control — the user cannot accidentally 
+  weaken it
+
+*Source: [alcatraz_how_and_what_for.md](features/alcatraz_how_and_what_for.md)*
 
 ### Per-Repo Install, Not Global
 
@@ -201,7 +230,8 @@ No accidental cross-branch contamination. Clear mental model: main → workspace
 
 ### Unidirectional: Inner → Outer Only
 
-Commits flow from workspace to outer repo only. Identity is rewritten to match `alcatrazer.toml`.
+Commits flow from workspace to outer repo only. Identity is rewritten to match 
+`.alcatrazer/config.toml` `[promotion]` section (name, email).
 
 ### Promotion is Idempotent
 

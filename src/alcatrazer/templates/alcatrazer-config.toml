@@ -1,0 +1,34 @@
+# Alcatrazer per-developer configuration.
+# Lives at .alcatrazer/config.toml in the target repository.
+# Gitignored via .git/info/exclude — never enters the agent workspace.
+
+# Path to the coding environment definition, relative to repo root.
+coding_environment_file = "coding-environment.toml"
+
+[promotion]
+# Identity used when promoting commits from the workspace to the outer repo.
+# Priority chain (lowest to highest):
+#   git config (local > global) < this file < CLI --author-name/--author-email
+name = "Your Name"
+email = "your@email.com"
+
+[promotion-daemon]
+# Polling interval in seconds.
+interval = 5
+
+# Which branches to promote from the inner repo:
+#   "all" — every branch
+#   A branch name — e.g. "main"
+#   A list of patterns — e.g. ["main", "feature/*"]
+branches = "all"
+
+# Conflict handling mode:
+#   "mirror"        — promote to same branch names (default)
+#   "alcatraz-tree" — promote to alcatraz/* namespace
+mode = "mirror"
+
+# Logging verbosity: "normal" or "detailed".
+verbosity = "normal"
+
+# Maximum log file size before rotation (in KB).
+max_log_size = 512

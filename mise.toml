@@ -55,21 +55,13 @@ run = ["ruff format", "ruff check --fix"]
 description = "Build PyPI package"
 run = ["uv build"]
 
-[tasks.docker-build]
-description = "Build the Alcatraz container"
-run = ["docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml build"]
+[tasks.start]
+description = "Set up (first run) or start the alcatrazer workspace container"
+run = ["alcatrazer start"]
 
-[tasks.docker-run]
-description = "Run the workspace container"
-run = ["docker compose --env-file .env -f src/alcatrazer/container/docker-compose.yml run --rm workspace"]
-
-[tasks.init]
-description = "Initialize Alcatraz (workspace, UID, Python)"
-run = ["./src/alcatrazer/scripts/initialize_alcatraz.sh"]
-
-[tasks.init-reset]
-description = "Reset and reinitialize Alcatraz"
-run = ["./src/alcatrazer/scripts/initialize_alcatraz.sh --reset"]
+[tasks.stop]
+description = "Stop the running alcatrazer workspace container"
+run = ["alcatrazer stop"]
 
 [tasks.start-promotion]
 description = "Start the promotion daemon"

@@ -46,36 +46,36 @@ class TestRewriteIdentity(unittest.TestCase):
 
     def test_rewrites_author_and_committer(self):
         stream = (
-            "commit refs/heads/main\n"
-            "author Old Name <old@email.com> 1234567890 +0000\n"
-            "committer Old Name <old@email.com> 1234567890 +0000\n"
-            "data 5\nhello\n"
+            b"commit refs/heads/main\n"
+            b"author Old Name <old@email.com> 1234567890 +0000\n"
+            b"committer Old Name <old@email.com> 1234567890 +0000\n"
+            b"data 5\nhello\n"
         )
         result = promote_mod.rewrite_identity(stream, "New Name", "new@email.com")
-        self.assertIn("author New Name <new@email.com> 1234567890 +0000", result)
-        self.assertIn("committer New Name <new@email.com> 1234567890 +0000", result)
+        self.assertIn(b"author New Name <new@email.com> 1234567890 +0000", result)
+        self.assertIn(b"committer New Name <new@email.com> 1234567890 +0000", result)
 
     def test_preserves_timestamps(self):
-        stream = "author X <x@x> 9999999999 +0530\n"
+        stream = b"author X <x@x> 9999999999 +0530\n"
         result = promote_mod.rewrite_identity(stream, "Y", "y@y")
-        self.assertIn("9999999999 +0530", result)
+        self.assertIn(b"9999999999 +0530", result)
 
     def test_handles_multiple_commits(self):
         stream = (
-            "author A <a@a> 111 +0000\n"
-            "committer A <a@a> 111 +0000\n"
-            "author B <b@b> 222 +0000\n"
-            "committer B <b@b> 222 +0000\n"
+            b"author A <a@a> 111 +0000\n"
+            b"committer A <a@a> 111 +0000\n"
+            b"author B <b@b> 222 +0000\n"
+            b"committer B <b@b> 222 +0000\n"
         )
         result = promote_mod.rewrite_identity(stream, "Z", "z@z")
-        self.assertEqual(result.count("author Z <z@z>"), 2)
-        self.assertEqual(result.count("committer Z <z@z>"), 2)
+        self.assertEqual(result.count(b"author Z <z@z>"), 2)
+        self.assertEqual(result.count(b"committer Z <z@z>"), 2)
 
     def test_does_not_touch_data_sections(self):
-        stream = "author A <a@a> 111 +0000\ndata 20\nauthor line in body\n"
+        stream = b"author A <a@a> 111 +0000\ndata 20\nauthor line in body\n"
         result = promote_mod.rewrite_identity(stream, "Z", "z@z")
         # The "author line in body" doesn't match the pattern (no timestamp)
-        self.assertIn("author line in body", result)
+        self.assertIn(b"author line in body", result)
 
 
 class TestResolveIdentity(unittest.TestCase):
@@ -87,7 +87,12 @@ class TestResolveIdentity(unittest.TestCase):
         os.makedirs(self.target)
         subprocess.run(["git", "init", self.target], capture_output=True, check=True)
         git(self.target, "config", "commit.gpgsign", "false")
-        self.toml_file = Path(self.tmpdir) / "alcatrazer.toml"
+        # Local fixture path — `resolve_identity` accepts any path, doesn't
+        # care where it lives. Mirrors the real post-refactor location
+        # (.alcatrazer/config.toml) for consistency with production callers.
+        alcatraz_dir = Path(self.tmpdir) / ".alcatrazer"
+        alcatraz_dir.mkdir()
+        self.toml_file = alcatraz_dir / "config.toml"
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -322,6 +327,57 @@ class TestDryRun(PromotionTestBase):
         self.do_dry_run()
         count_after = int(git(str(self.target), "rev-list", "--all", "--count"))
         self.assertEqual(count_before, count_after)
+
+
+class TestBinaryBlobPromotion(PromotionTestBase):
+    """Promote a repo whose history contains a non-UTF-8 blob.
+
+    Regression guard for a bug where `subprocess.run(..., text=True)` on
+    `git fast-export` raised `UnicodeDecodeError` the moment the stream
+    hit a byte outside UTF-8 (e.g. `0xff` in a PNG / compressed blob),
+    leaving the marks files desynced and the daemon unable to recover.
+    See docs/features/install_method.md → "Manual tests and
+    troubleshooting" for the field incident that motivated this test.
+    """
+
+    # Bytes that are invalid as UTF-8 — 0xff is the exact byte that
+    # tripped the production daemon; 0xfe / 0x80 cover the other common
+    # shapes (BOM-ish, stray continuation byte).
+    BINARY_PAYLOAD = b"\xff\xd8\xff\xe0\x00\x10JFIF\xfe\x80\x81\x82\x83\x84\x85\x86\x87"
+
+    def setUp(self):
+        super().setUp()
+        blob_path = self.source / "logo.bin"
+        blob_path.write_bytes(self.BINARY_PAYLOAD * 64)
+        git(str(self.source), "add", "logo.bin")
+        git(str(self.source), "commit", "-m", "add binary blob to history")
+
+    def test_promote_succeeds_with_binary_blob_in_history(self):
+        self.do_promote()
+
+    def test_binary_blob_round_trips_byte_for_byte(self):
+        self.do_promote()
+        src_bytes = subprocess.run(
+            ["git", "-C", str(self.source), "show", "main:logo.bin"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        tgt_bytes = subprocess.run(
+            ["git", "-C", str(self.target), "show", "main:logo.bin"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(src_bytes, tgt_bytes)
+
+    def test_incremental_promote_after_binary_blob(self):
+        """Second poll must not wedge on mark desync — the bug's tail."""
+        self.do_promote()
+        (self.source / "followup.txt").write_text("after the blob\n")
+        git(str(self.source), "add", "followup.txt")
+        git(str(self.source), "commit", "-m", "text commit after blob")
+        self.do_promote()
+        msgs = git(str(self.target), "log", "--all", "--format=%s").splitlines()
+        self.assertIn("text commit after blob", msgs)
 
 
 class TestNamespacePromotion(PromotionTestBase):
