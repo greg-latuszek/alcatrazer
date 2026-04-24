@@ -3,7 +3,7 @@
 *Your code gets out. Your secrets don't.*
 
 <p align="center">
-  <img src="images/alcatraz.jpg" alt="Alcatraz Island" width="700">
+  <img src="https://raw.githubusercontent.com/greg-latuszek/alcatrazer/main/images/alcatraz.jpg" alt="Alcatraz Island" width="700">
   <br>
   <sub>Photo: Javier Branas — <a href="https://commons.wikimedia.org/wiki/File:Alcatraz_-_panoramio.jpg">Wikimedia Commons</a> — <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a></sub>
 </p>
@@ -207,7 +207,7 @@ branch, you'll see a note like:
 >       what you have checked out. Your 'abc' branch will be neither
 >       read nor modified.
 
-This is intentional — see `docs/design_principles.md` § "Main Branch
+This is intentional — see [`docs/design_principles.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/design_principles.md) § "Main Branch
 Only". The rule keeps the mental model simple: *agents always start
 from main, and their output always lands on main.* No accidental
 cross-branch contamination, no loop between your feature branch and
@@ -390,7 +390,7 @@ max_log_size = 512              # log rotation threshold (KB)
 name here instead of the working-tree `.gitignore` — so the ignore
 patterns themselves don't enter the agent snapshot.
 
-See [docs/features/install_method.md](docs/features/install_method.md) for
+See [docs/features/install_method.md](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/features/install_method.md) for
 the full rationale.
 
 ## Promoting Agent Work
@@ -504,7 +504,7 @@ tampering. Keeping caches per-container closes that attack surface,
 at the cost of re-downloading packages on `clear` + `start`. A
 `stop` + `start` cycle preserves the writable layer, so caches
 survive a normal restart. See
-[docs/features/install_method.md](docs/features/install_method.md)
+[docs/features/install_method.md](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/features/install_method.md)
 § "Ephemeral caches — no shared Docker volumes" for the full
 rationale.
 
