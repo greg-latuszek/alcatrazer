@@ -11,6 +11,10 @@ jobs:
       contents: write  # needed for creating GitHub Releases
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history so the "tag is on main" check below can walk
+          # from the tag commit to main's tip via merge-base.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -28,6 +32,19 @@ jobs:
             exit 1
           fi
           echo "Version verified: ${PKG_VERSION}"
+
+      - name: Verify tag is on main
+        run: |
+          # Releases must be cut from the main branch — never from a
+          # feature branch tagged by accident. actions/checkout fetches
+          # only the tag ref by default, so bring main in first.
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "ERROR: tag $GITHUB_REF_NAME ($GITHUB_SHA) is not reachable from main."
+            echo "Releases must be cut from the main branch."
+            exit 1
+          fi
+          echo "Tag is on main — OK."
 
       - name: Install uv
         run: pip install uv
