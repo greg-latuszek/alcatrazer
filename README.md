@@ -225,21 +225,45 @@ them into whatever branch you like on the outer side afterwards.
 
 ## Getting Started
 
-### 1. Install the CLI
+### 1. Set up the CLI
 
-Alcatrazer is a Python 3.11+ package. Any of these work — all three
-paths land on the same package:
+Alcatrazer is a pure-Python package (stdlib only, Python 3.11+).
+There are two ways to run it, and the choice changes how you'll type
+every subsequent command:
+
+| Mode | How you invoke it | `which alcatrazer` | Typical when |
+|---|---|---|---|
+| **A. Ephemeral** | `uvx alcatrazer <cmd>` (or `pipx run alcatrazer <cmd>`) | *empty* — by design | Trying it out; you don't want anything persistent on `PATH` |
+| **B. Persistent install** | `alcatrazer <cmd>` | `~/.local/bin/alcatrazer` | You'll use it regularly |
+
+Both modes converge on the exact same package — the only difference is whether the `alcatrazer` executable lives on your `PATH`.
+
+**Mode A — ephemeral (recommended for first try):**
 
 ```bash
-pipx run alcatrazer init      # one-shot, pipx manages a temp venv
-uvx alcatrazer init           # same, via uv
-# or, for a persistent install:
-pipx install alcatrazer
+uvx alcatrazer init              # or: pipx run alcatrazer init
+uvx alcatrazer start             # …prefix every command with `uvx `
+uvx alcatrazer stop
 ```
 
-> **Status note:** the package is not on PyPI yet (see the CAUTION
-> banner above). Until then, build from source with `mise run build`
-> and install the wheel from `dist/`.
+Each call spins up (or reuses the cached) throwaway venv under `~/.cache/uv/`. **`which alcatrazer` stays empty — that is expected, not broken.** Nothing to uninstall later; the cache is GC'd automatically, or you can force it with `uv cache clean alcatrazer`.
+
+**Mode B — persistent install:**
+
+```bash
+uv tool install alcatrazer       # or: pipx install alcatrazer
+which alcatrazer                 # → ~/.local/bin/alcatrazer
+alcatrazer --version
+```
+
+Then call `alcatrazer <cmd>` directly, as the examples below do.
+
+- Upgrade:  `uv tool upgrade alcatrazer`  (or `pipx upgrade alcatrazer`)
+- Uninstall: `uv tool uninstall alcatrazer`  (or `pipx uninstall alcatrazer`)
+
+> The rest of this README uses the short `alcatrazer <cmd>` form. If
+> you're in Mode A, prefix every call with `uvx ` (or `pipx run `).
+> The behavior is identical.
 
 ### 2. Initialize Alcatrazer in your repo
 
