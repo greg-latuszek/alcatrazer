@@ -192,25 +192,72 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         install_segment = dev[install_line_idx:end_of_run_idx]
         self.assertEqual(install_segment.count("libicu74"), 1)
 
-    def test_apt_install_packages_in_deterministic_order(self):
-        # Two coding-environments that union to the same package set must
-        # produce the exact same apt-install line. Otherwise needs_rebuild
-        # would flap when the user reorders [os].packages.
+    def _apt_install_segment(self, dev: str) -> str:
+        """Slice the apt-install command's argument list out of the dev stage.
+        Bounded by `apt-get install` on the left and the cleanup `rm -rf
+        /var/lib/apt/lists` on the right — package names appear only here."""
+        start = dev.find("apt-get install")
+        end = dev.find("rm -rf /var/lib/apt/lists", start)
+        self.assertGreater(start, -1, "no apt-get install line found")
+        self.assertGreater(end, start, "no apt-list cleanup found")
+        return dev[start:end]
+
+    def test_apt_install_preserves_user_declared_order(self):
+        # Reordering [os].packages may be load-bearing for the user (intent
+        # or dependency ordering for any package manager that's order-
+        # sensitive). The renderer must NOT silently sort — whatever order
+        # the user wrote is the order that lands in the apt-get install line.
+        content = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev", "build-essential", "libpq-dev"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        segment = self._apt_install_segment(self._slice(content, "FROM ai-base AS dev"))
+        idx_zlib = segment.find("zlib1g-dev")
+        idx_build = segment.find("build-essential")
+        idx_pq = segment.find("libpq-dev")
+        self.assertLess(idx_zlib, idx_build)
+        self.assertLess(idx_build, idx_pq)
+
+    def test_language_required_packages_append_after_user_packages(self):
+        # User-declared packages come first (their explicit list, their
+        # order); language-injected requirements ride along behind.
+        # Picking `zlib1g-dev` here is deliberate: it sorts AFTER `libicu74`
+        # alphabetically, so under a sort-based merge the language's
+        # libicu74 would come first and this assertion would fail. A
+        # first-occurrence dedupe with "user list first" is the only
+        # implementation that keeps user packages ahead in this case.
+        content = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        segment = self._apt_install_segment(self._slice(content, "FROM ai-base AS dev"))
+        self.assertLess(segment.find("zlib1g-dev"), segment.find("libicu74"))
+
+    def test_reordering_user_packages_changes_dockerfile(self):
+        # Counterpart to "preserves user order": if the user reorders, the
+        # rendered Dockerfile reflects that. Same logical inputs in different
+        # order are NOT byte-equivalent — and that's correct, because we
+        # don't second-guess the user's ordering. needs_rebuild firing on
+        # reorder is the right behavior, not a flap.
         a = self._generate(
             {
                 "os": {"packages": ["zlib1g-dev", "build-essential"]},
-                "languages": {"dotnet": {"version": "10.0.100"}},
+                "languages": {"python": {"version": "3.12"}},
             }
         )
         b = self._generate(
             {
                 "os": {"packages": ["build-essential", "zlib1g-dev"]},
-                "languages": {"dotnet": {"version": "10.0.100"}},
+                "languages": {"python": {"version": "3.12"}},
             }
         )
-        # Compare just the dev stages — the rest is identical anyway.
-        self.assertEqual(
-            self._slice(a, "FROM ai-base AS dev"), self._slice(b, "FROM ai-base AS dev")
+        self.assertNotEqual(
+            self._slice(a, "FROM ai-base AS dev"),
+            self._slice(b, "FROM ai-base AS dev"),
         )
 
     def test_verify_block_always_chains_git_mise_claude(self):
