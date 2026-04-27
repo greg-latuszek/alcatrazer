@@ -397,6 +397,17 @@ the major matters; dprint, asdf-style configs use plain integers).
 - Tests assert: missing field loads as v1, explicit `1` loads, `2`
   errors clearly with a "upgrade alcatrazer" message, `0` errors with
   a "downgrade or migrate" message.
+- `cmd_start` catches `UnsupportedSchemaVersionError` raised by either
+  routing branch (`_first_run_after_init`, `_subsequent_run`) and prints
+  the validator's message as a single `ERROR:` stderr line — same
+  presentation pattern already used for `PrisonBuildError` /
+  `PrisonStartError`. Without this catch, a too-new schema surfaces as
+  a Python traceback, which reads as a tool crash even though the
+  message itself is actionable.
+- Tests assert that path: exit code 1, stderr contains the offending
+  version + "upgrade alcatrazer", stderr does **not** contain
+  `Traceback` or the exception class name, and `prison.build` /
+  `prison.start` are never invoked.
 - README configuration section gains a one-line note about the field.
 
 **Out of scope for this phase but worth flagging:**
