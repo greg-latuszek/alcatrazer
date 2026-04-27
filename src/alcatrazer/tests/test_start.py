@@ -500,16 +500,61 @@ class SupportedLanguagesTests(unittest.TestCase):
         )
         self.assertIn("readme", tip_lower)
 
-    def test_other_languages_have_no_version_tip(self):
-        # version_tip is opt-in per language; only java declares one
-        # today. Other languages get the bare prompt they had before
-        # Phase 1.2.2.
-        for name in ("python", "node", "rust", "go", "dotnet"):
-            self.assertNotIn(
+    # --- Phase 1.2.3: every language declares a version_tip --------------
+
+    def test_every_language_declares_a_version_tip(self):
+        # Phase 1.2.3 expanded version_tip from java-only to every entry,
+        # so users always see format examples and any default behavior
+        # before the version prompt. The tip is no longer optional in
+        # practice — leaving it off a future entry is a regression.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
                 "version_tip",
-                languages.SUPPORTED_LANGUAGES[name],
-                f"{name!r} should not declare a version_tip — only java does today",
+                cfg,
+                f"{name!r} must declare a version_tip",
             )
+            self.assertTrue(
+                cfg["version_tip"].strip(),
+                f"{name!r} version_tip must be non-empty",
+            )
+
+    def test_every_version_tip_starts_with_version_examples(self):
+        # Leading "Version examples:" is the chosen wording — keeps tips
+        # consistent across languages and signals intent ("here are
+        # concrete strings you can paste") rather than an open-ended
+        # explanation.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            tip = cfg.get("version_tip", "")
+            self.assertTrue(
+                tip.startswith("Version examples:"),
+                f"{name!r} version_tip must start with 'Version examples:' (got: {tip[:40]!r}…)",
+            )
+
+    def test_python_version_tip_includes_modern_releases(self):
+        tip = languages.SUPPORTED_LANGUAGES["python"]["version_tip"]
+        for v in ("3.11", "3.12", "3.13"):
+            self.assertIn(v, tip)
+
+    def test_node_version_tip_mentions_lts(self):
+        tip = languages.SUPPORTED_LANGUAGES["node"]["version_tip"].lower()
+        self.assertIn("lts", tip)
+        # Node's even-numbered LTS lines (18/20/22) are the recommended
+        # production versions; tip should surface them.
+        for v in ("18", "20", "22"):
+            self.assertIn(v, tip)
+
+    def test_rust_and_go_version_tips_pin_concrete_releases(self):
+        rust_tip = languages.SUPPORTED_LANGUAGES["rust"]["version_tip"].lower()
+        go_tip = languages.SUPPORTED_LANGUAGES["go"]["version_tip"].lower()
+        self.assertIn("concrete", rust_tip)
+        self.assertIn("concrete", go_tip)
+
+    def test_dotnet_version_tip_mentions_lts_versions(self):
+        tip = languages.SUPPORTED_LANGUAGES["dotnet"]["version_tip"].lower()
+        self.assertIn("lts", tip)
+        # Both currently-supported LTS versions surface in the tip.
+        self.assertIn("8.0.404", tip)
+        self.assertIn("10.0.100", tip)
 
 
 def _run_wizard(func, inputs):
@@ -625,14 +670,42 @@ class AskVersionTipTests(unittest.TestCase):
         )
         self.assertIn("readme", out_lower)
 
-    def test_prints_no_tip_when_language_lacks_one(self):
-        # python doesn't declare version_tip; the wizard should print
-        # nothing extra — only the bare prompt (which `input()` swallows
-        # under the patch, so stdout stays empty).
+    def test_prints_tip_for_python_too(self):
+        # Phase 1.2.3 expanded version_tip from java-only to every entry.
+        # Python now also gets its own format hint before the prompt.
         result, out = self._capture_ask_version("python", "3.12")
         self.assertEqual(result, "3.12")
-        self.assertNotIn("Tip:", out)
-        self.assertNotIn("tip:", out.lower())
+        self.assertIn("Tip:", out)
+        self.assertIn("Version examples:", out)
+
+    def test_blank_line_precedes_tip_not_follows_it(self):
+        # Layout fix: today's blank-line-after-tip visually orphans the
+        # tip from the upcoming `Version for X:` prompt and groups it
+        # with the previous answer instead. The blank must come BEFORE
+        # the tip so the tip groups with what it explains.
+        _, out = self._capture_ask_version("java", "21")
+        lines = out.split("\n")
+        # Find the Tip line; the line just before it must be empty.
+        tip_idx = next(i for i, line in enumerate(lines) if "Tip:" in line)
+        self.assertGreater(tip_idx, 0, "Tip must not be the very first line")
+        self.assertEqual(
+            lines[tip_idx - 1].strip(),
+            "",
+            "blank line must precede the Tip block",
+        )
+
+    def test_no_blank_line_separates_tip_from_prompt(self):
+        # Counterpart to the previous test: no blank line between the
+        # tip's last line and the version prompt. The captured stdout
+        # ends right after the tip (input() under mock doesn't echo its
+        # prompt), so the discriminator is whether output ends with a
+        # SINGLE newline (good — tip's last line then prompt is next)
+        # or DOUBLE (bad — tip then orphan blank line then prompt).
+        _, out = self._capture_ask_version("java", "21")
+        self.assertFalse(
+            out.endswith("\n\n"),
+            "output must not end with a blank line; the prompt comes next",
+        )
 
 
 class AskOsPackagesTests(unittest.TestCase):
@@ -930,6 +1003,74 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
             self.assertTrue(
                 stripped == "" or stripped.startswith("#"),
                 f"Non-comment content before schema_version: {line!r}",
+            )
+
+    # --- Phase 1.2.3: version_tip rendered as TOML comment -----------------
+
+    def test_each_language_section_carries_its_version_tip_as_comment(self):
+        # The same version_tip the wizard prints surfaces in the generated
+        # TOML as a comment block above its `version =` line — DRY: one
+        # source string in SUPPORTED_LANGUAGES, two consumers (wizard +
+        # generated config). Users editing the file later see the same
+        # guidance, no need to re-run init.
+        data = {
+            "languages": {
+                "python": {"version": "3.12"},
+                "java": {"version": "21"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+
+        for lang in ("python", "java"):
+            section_idx = content.index(f"[languages.{lang}]")
+            # Find this section's version line; everything between header
+            # and version line is the tip-as-comments block.
+            version_idx = content.index("version =", section_idx)
+            block = content[section_idx:version_idx]
+            tip = languages.SUPPORTED_LANGUAGES[lang]["version_tip"]
+            # The tip's leading "Version examples:" must show up as a
+            # comment in the section.
+            self.assertIn("# Version examples:", block, f"missing tip in {lang} section")
+            # And the language-specific kernel of the tip must show too
+            # (sanity check that we're rendering the right tip per language).
+            kernel = "3.11" if lang == "python" else "Eclipse Temurin"
+            self.assertIn(kernel, block)
+            # No bare (uncommented) leakage — every non-blank line in the
+            # block between header and version must start with `#`.
+            for line in block.splitlines()[1:]:  # skip the [languages.X] header
+                stripped = line.strip()
+                if stripped:
+                    self.assertTrue(
+                        stripped.startswith("#"),
+                        f"non-comment line in tip block for {lang}: {line!r}",
+                    )
+            # And the kernel string proves the right tip is rendered for
+            # this language, not a stale one (avoid `tip` "unused" lint).
+            self.assertTrue(tip)
+
+    def test_long_version_tips_wrap_at_comment_friendly_width(self):
+        # Java's tip is the longest one (mentions four distributions plus
+        # README pointer). It must wrap into multiple `# `-prefixed lines
+        # in the generated TOML rather than land as one mile-long comment.
+        data = {"languages": {"java": {"version": "21"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        section = content[
+            content.index("[languages.java]") : content.index(
+                "version =", content.index("[languages.java]")
+            )
+        ]
+        comment_lines = [ln for ln in section.splitlines() if ln.strip().startswith("#")]
+        self.assertGreater(
+            len(comment_lines),
+            1,
+            "java's tip must wrap to multiple comment lines, not stay one long line",
+        )
+        # Each wrapped line should keep within a sensible width (~80 cols).
+        for line in comment_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                f"tip comment line exceeds 80 cols: {line!r}",
             )
 
 
