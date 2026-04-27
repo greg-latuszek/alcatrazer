@@ -381,10 +381,11 @@ packages = ["build-essential", "libpq-dev"]
 
 [languages.python]
 version = "3.12"
-manager = "uv"          # omit for the language default (pip)
+manager = "uv"          # always written; defaults to "pip" if omitted
 
 [languages.node]
 version = "22"
+manager = "npm"         # always written; defaults to "npm" if omitted
 
 [startup]
 commands = ["uv sync", "npm install"]
@@ -394,6 +395,14 @@ commands = ["uv sync", "npm install"]
 existed are accepted as version 1, so existing configs keep working
 unchanged. An older alcatrazer that meets a newer schema refuses to read
 it rather than silently misinterpreting — upgrade alcatrazer in that case.
+
+`manager` is always written by `alcatrazer init` (since Phase 1.2.4) so
+the choice is visible at the line you'd edit. Each language declares
+which managers ship bundled with the runtime — `pip` with Python, `npm`
+with Node, `cargo` with Rust, `go` and `dotnet` are runtimes themselves.
+Bundled managers are skipped at image build (no double-install); anything
+else (`uv`, `poetry`, `pnpm`, `yarn`, `maven`, `gradle`) is installed via
+`mise use --global` whether it's the language default or your override.
 
 #### Java distributions
 
