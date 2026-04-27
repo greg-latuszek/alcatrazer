@@ -395,6 +395,27 @@ existed are accepted as version 1, so existing configs keep working
 unchanged. An older alcatrazer that meets a newer schema refuses to read
 it rather than silently misinterpreting — upgrade alcatrazer in that case.
 
+#### Java distributions
+
+mise's `java` plugin defaults to Eclipse Temurin. Override by prefixing
+the version string in `[languages.java].version`:
+
+| TOML                | Distribution                          |
+| ------------------- | ------------------------------------- |
+| `"21"`              | Eclipse Temurin (default)             |
+| `"temurin-21.0.5"`  | Temurin, pinned build                 |
+| `"corretto-21"`     | Amazon Corretto                       |
+| `"zulu-21"`         | Azul Zulu                             |
+| `"liberica-21"`     | BellSoft Liberica                     |
+| `"graalvm-21"`      | GraalVM (incl. native-image)          |
+
+Pick whichever your project or employer requires; the choice is opaque
+to alcatrazer — mise installs whatever the version string asks for, and
+the JDKs are binary-compatible across distributions for standard Java
+workloads. The `alcatrazer init` wizard nudges you about this when you
+pick `java`, and the same hint lives as a comment on the generated
+`# [languages.java]` block in `coding-environment.toml`.
+
 ### `.alcatrazer/config.toml` — gitignored, per-developer
 
 Alcatrazer-specific, invisible to agents. Contains the promotion identity
@@ -510,7 +531,9 @@ branches = ["main", "feature/*"]    # branch names and glob patterns
   `coding-environment.toml` — they are installed via mise, with the
   exact version the user declared (no hidden defaults). Supported:
   `python`, `node`, `rust`, `go`, `dotnet` (the .NET SDK — runs
-  C#, F#, and VB.NET).
+  C#, F#, and VB.NET), `java` (JVM — Maven or Gradle as build tool;
+  see [Java distributions](#java-distributions) for picking Temurin
+  vs Corretto vs Zulu vs GraalVM).
 - OS packages come from `[os].packages` (installed with `apt-get`).
   Some languages also auto-add OS packages they need at runtime: for
   example, picking `[languages.dotnet]` includes `libicu74` (.NET
