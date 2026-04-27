@@ -801,6 +801,72 @@ class CodingEnvironmentSchemaVersionTests(unittest.TestCase):
         self.assertEqual(loaded["startup"]["commands"], ["uv sync"])
 
 
+class CmdStartHandlesUnsupportedSchemaVersionTests(unittest.TestCase):
+    """Phase 1.1: when coding-environment.toml declares a schema_version this
+    alcatrazer cannot parse, cmd_start surfaces the error to the user as a
+    clean stderr line — not a Python traceback. The actionable message
+    (`upgrade alcatrazer ...`) is what the user sees, with no internal frames
+    or class names leaking.
+
+    Routing: workspace-dir pointer present but workspace dir missing →
+    workspace_ready=False → cmd_start routes to _first_run_after_init,
+    which calls _load_coding_environment as its first real step. The
+    exception fires there, before prison.build is invoked.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.project_dir / ".git").mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
+        # Deliberately do NOT create the workspace dir — workspace_ready
+        # comes back False, routing to _first_run_after_init.
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        self.coding_env_path.write_text(
+            'schema_version = 99\n[languages.python]\nversion = "3.12"\n'
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.image_exists.return_value = True
+
+    def _run(self) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_exit_code_one(self):
+        rc, _, _ = self._run()
+        self.assertEqual(rc, 1)
+
+    def test_stderr_names_the_offending_version(self):
+        _, _, stderr = self._run()
+        self.assertIn("99", stderr)
+
+    def test_stderr_tells_user_to_upgrade(self):
+        _, _, stderr = self._run()
+        self.assertIn("upgrade alcatrazer", stderr.lower())
+
+    def test_stderr_has_no_python_traceback(self):
+        """Traceback / exception class name leaking would make the error look
+        like a crash rather than a config issue."""
+        _, _, stderr = self._run()
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("UnsupportedSchemaVersionError", stderr)
+
+    def test_does_not_invoke_prison_build_or_start(self):
+        """The schema check is a fast-fail gate; nothing downstream runs."""
+        self._run()
+        self.prison.build.assert_not_called()
+        self.prison.start.assert_not_called()
+
+
 class WriteAlcatrazerConfigTests(unittest.TestCase):
     """Step 3e: .alcatrazer/config.toml writer — daemon defaults stay in template."""
 
