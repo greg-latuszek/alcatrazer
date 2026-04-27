@@ -366,7 +366,7 @@ class SupportedLanguagesTests(unittest.TestCase):
     def test_supported_language_set(self):
         self.assertEqual(
             set(languages.SUPPORTED_LANGUAGES),
-            {"python", "node", "rust", "go", "dotnet"},
+            {"python", "node", "rust", "go", "dotnet", "java"},
         )
 
     def test_python_default_manager_is_pip_with_alternatives(self):
@@ -448,14 +448,67 @@ class SupportedLanguagesTests(unittest.TestCase):
         )
 
     def test_other_languages_have_no_required_os_packages(self):
-        # python/node/rust/go run on what Ubuntu 24.04's minimal base
+        # python/node/rust/go/java run on what Ubuntu 24.04's minimal base
         # provides; any future addition must justify itself with a
         # crash-on-startup-without-it argument like .NET's ICU.
-        for name in ("python", "node", "rust", "go"):
+        for name in ("python", "node", "rust", "go", "java"):
             self.assertEqual(
                 languages.SUPPORTED_LANGUAGES[name].get("required_os_packages", ()),
                 (),
                 f"{name!r} should not declare required_os_packages",
+            )
+
+    # --- Phase 1.2.2: java (JVM — Maven / Gradle) ------------------------
+
+    def test_java_default_manager_is_maven_with_gradle_alternative(self):
+        java = languages.SUPPORTED_LANGUAGES["java"]
+        self.assertEqual(java["default_manager"], "maven")
+        self.assertIn("maven", java["managers"])
+        self.assertIn("gradle", java["managers"])
+
+    def test_java_version_check_redirects_stderr(self):
+        # `2>&1` is load-bearing: java prints `-version` output to stderr,
+        # and the verify block's chained `&&` only captures stdout in the
+        # docker-build log. Without the redirect, the version line is lost.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"]["version_check"],
+            "java -version 2>&1",
+        )
+
+    def test_java_has_no_required_os_packages(self):
+        # JDK binary distributions (Temurin, etc.) link only against
+        # Ubuntu 24.04's libc / libstdc++ — no extra apt-time deps for
+        # `java -version` / basic compilation. Verified empirically inside
+        # a fresh Alcatraz before merging.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"].get("required_os_packages", ()),
+            (),
+        )
+
+    def test_java_declares_distribution_version_tip(self):
+        # Java is the first language with multiple shipped distributions
+        # (Temurin / Corretto / Zulu / Liberica / GraalVM) reachable via
+        # the same mise key. The version_tip nudges users mid-wizard so
+        # the option doesn't stay invisible.
+        tip = languages.SUPPORTED_LANGUAGES["java"].get("version_tip", "")
+        self.assertTrue(tip, "java must declare a version_tip")
+        tip_lower = tip.lower()
+        self.assertIn("temurin", tip_lower)
+        self.assertTrue(
+            any(d in tip_lower for d in ("corretto", "zulu", "graalvm")),
+            "version_tip must mention at least one alternative distribution",
+        )
+        self.assertIn("readme", tip_lower)
+
+    def test_other_languages_have_no_version_tip(self):
+        # version_tip is opt-in per language; only java declares one
+        # today. Other languages get the bare prompt they had before
+        # Phase 1.2.2.
+        for name in ("python", "node", "rust", "go", "dotnet"):
+            self.assertNotIn(
+                "version_tip",
+                languages.SUPPORTED_LANGUAGES[name],
+                f"{name!r} should not declare a version_tip — only java does today",
             )
 
 
@@ -527,6 +580,59 @@ class AskLanguagesTests(unittest.TestCase):
         # .NET ships one CLI; same single-manager treatment as rust/go.
         result = _run_wizard(start.ask_languages, ["dotnet", "10.0.100"])
         self.assertEqual(result, {"dotnet": {"version": "10.0.100"}})
+
+    def test_java_manager_prompt_offers_maven_default_and_gradle(self):
+        # Java has multiple managers; wizard prompts user to pick.
+        # Empty input accepts default (maven), so the field is omitted.
+        result = _run_wizard(start.ask_languages, ["java", "21", ""])
+        self.assertEqual(result, {"java": {"version": "21"}})
+
+    def test_java_manager_prompt_accepts_gradle(self):
+        result = _run_wizard(start.ask_languages, ["java", "21", "gradle"])
+        self.assertEqual(result, {"java": {"version": "21", "manager": "gradle"}})
+
+
+class AskVersionTipTests(unittest.TestCase):
+    """Phase 1.2.2: `_ask_version` prints `cfg["version_tip"]` (if declared)
+    before the version prompt, so language-specific nudges (Java's
+    distribution prefixes, future Ruby/Python tips) surface in the wizard.
+    Languages without a `version_tip` keep the bare prompt they have today.
+    """
+
+    def _capture_ask_version(self, language: str, answer: str) -> tuple[str, str]:
+        """Run `_ask_version(language)` with `answer` as the typed input.
+        Returns (return_value, captured_stdout)."""
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", return_value=answer),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = start._ask_version(language)
+        return result, stdout.getvalue()
+
+    def test_prints_tip_when_language_declares_it(self):
+        # Java declares a version_tip mentioning Temurin, alternatives,
+        # and a "see README" pointer; all three must appear in the
+        # printed tip (otherwise the wizard nudge is incomplete).
+        result, out = self._capture_ask_version("java", "21")
+        self.assertEqual(result, "21")
+        out_lower = out.lower()
+        self.assertIn("tip:", out_lower)
+        self.assertIn("temurin", out_lower)
+        self.assertTrue(
+            any(d in out_lower for d in ("corretto", "zulu", "graalvm")),
+            "wizard tip must surface at least one alternative distribution",
+        )
+        self.assertIn("readme", out_lower)
+
+    def test_prints_no_tip_when_language_lacks_one(self):
+        # python doesn't declare version_tip; the wizard should print
+        # nothing extra — only the bare prompt (which `input()` swallows
+        # under the patch, so stdout stays empty).
+        result, out = self._capture_ask_version("python", "3.12")
+        self.assertEqual(result, "3.12")
+        self.assertNotIn("Tip:", out)
+        self.assertNotIn("tip:", out.lower())
 
 
 class AskOsPackagesTests(unittest.TestCase):
