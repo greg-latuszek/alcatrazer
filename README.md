@@ -374,6 +374,8 @@ Agent-visible, zero alcatrazer branding. Describes what the container
 must provide before the project's own setup can run:
 
 ```toml
+schema_version = 1
+
 [os]
 packages = ["build-essential", "libpq-dev"]
 
@@ -387,6 +389,11 @@ version = "22"
 [startup]
 commands = ["uv sync", "npm install"]
 ```
+
+`schema_version` stamps the file format. Files written before this field
+existed are accepted as version 1, so existing configs keep working
+unchanged. An older alcatrazer that meets a newer schema refuses to read
+it rather than silently misinterpreting — upgrade alcatrazer in that case.
 
 ### `.alcatrazer/config.toml` — gitignored, per-developer
 
