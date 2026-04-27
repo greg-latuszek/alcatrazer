@@ -509,8 +509,15 @@ branches = ["main", "feature/*"]    # branch names and glob patterns
 - Language runtimes come from `[languages.*]` in
   `coding-environment.toml` — they are installed via mise, with the
   exact version the user declared (no hidden defaults). Supported:
-  `python`, `node`, `rust`, `go`.
+  `python`, `node`, `rust`, `go`, `dotnet` (the .NET SDK — runs
+  C#, F#, and VB.NET).
 - OS packages come from `[os].packages` (installed with `apt-get`).
+  Some languages also auto-add OS packages they need at runtime: for
+  example, picking `[languages.dotnet]` includes `libicu74` (.NET
+  cannot start without an ICU library). These are baked at image
+  build time — the agent user has no runtime privilege escalation,
+  so anything requiring root has to land before the container's
+  entrypoint drops to the non-root user.
 
 Inside the container agents can use `mise` to layer additional
 runtimes on top; those stay local to the writable layer.

@@ -461,6 +461,7 @@ _EXAMPLE_LANGUAGE_BLOCKS: dict[str, list[str]] = {
     "node": ["# [languages.node]", '# version = "22"'],
     "rust": ["# [languages.rust]", '# version = "1.75"'],
     "go": ["# [languages.go]", '# version = "1.22"'],
+    "dotnet": ["# [languages.dotnet]", '# version = "10.0.100"'],
 }
 
 _CODING_ENVIRONMENT_HEADER = [
