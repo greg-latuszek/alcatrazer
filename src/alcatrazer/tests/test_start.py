@@ -556,6 +556,95 @@ class SupportedLanguagesTests(unittest.TestCase):
         self.assertIn("8.0.404", tip)
         self.assertIn("10.0.100", tip)
 
+    # --- Phase 1.2.4: bundled_managers + manager_tip ---------------------
+
+    def test_every_language_declares_bundled_managers(self):
+        # Phase 1.2.4 separates "default manager" (UI hint) from "what
+        # mise installs". `bundled_managers` says "ships with the
+        # runtime, no separate install needed". Every entry must
+        # declare this — the empty tuple is a valid value (e.g. java).
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "bundled_managers",
+                cfg,
+                f"{name!r} must declare bundled_managers",
+            )
+            self.assertIsInstance(
+                cfg["bundled_managers"],
+                tuple,
+                f"{name!r} bundled_managers must be a tuple",
+            )
+
+    def test_python_pip_is_bundled_other_managers_are_not(self):
+        # pip ships with CPython; mise installs CPython, so pip arrives
+        # for free. uv / poetry / pipenv are separate and must install.
+        bm = languages.SUPPORTED_LANGUAGES["python"]["bundled_managers"]
+        self.assertIn("pip", bm)
+        for non_bundled in ("uv", "poetry", "pipenv"):
+            self.assertNotIn(non_bundled, bm)
+
+    def test_node_npm_is_bundled_pnpm_yarn_are_not(self):
+        bm = languages.SUPPORTED_LANGUAGES["node"]["bundled_managers"]
+        self.assertIn("npm", bm)
+        for non_bundled in ("pnpm", "yarn"):
+            self.assertNotIn(non_bundled, bm)
+
+    def test_rust_cargo_is_bundled(self):
+        # cargo ships with the rust toolchain; single canonical manager.
+        bm = languages.SUPPORTED_LANGUAGES["rust"]["bundled_managers"]
+        self.assertEqual(bm, ("cargo",))
+
+    def test_go_and_dotnet_managers_are_runtime_themselves(self):
+        # `go` IS the runtime; `dotnet` IS the runtime. Bundled by
+        # tautology — there's nothing else to install.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["go"]["bundled_managers"],
+            ("go",),
+        )
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["dotnet"]["bundled_managers"],
+            ("dotnet",),
+        )
+
+    def test_java_has_empty_bundled_managers(self):
+        # Java is the first language where NOTHING is bundled. mise
+        # must install whichever manager is picked (default or override).
+        # This is the heart of the bug Phase 1.2.4 fixes — accepting
+        # the default `[maven]` previously left Maven uninstalled.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"]["bundled_managers"],
+            (),
+        )
+
+    def test_every_language_declares_a_manager_tip(self):
+        # Symmetric with version_tip from Phase 1.2.3. Every entry
+        # declares one — even single-manager languages get the tip in
+        # the generated TOML as self-documenting comment, although the
+        # wizard skips the prompt for single-manager cases.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "manager_tip",
+                cfg,
+                f"{name!r} must declare a manager_tip",
+            )
+            self.assertTrue(
+                cfg["manager_tip"].strip(),
+                f"{name!r} manager_tip must be non-empty",
+            )
+
+    def test_python_manager_tip_mentions_pip_bundled(self):
+        # Tip should explain the pip-is-bundled detail so users know
+        # their default isn't a separate install.
+        tip = languages.SUPPORTED_LANGUAGES["python"]["manager_tip"].lower()
+        self.assertIn("pip", tip)
+        self.assertIn("bundled", tip)
+
+    def test_java_manager_tip_mentions_both_options(self):
+        # Java's tip surfaces both maven (default) and gradle.
+        tip = languages.SUPPORTED_LANGUAGES["java"]["manager_tip"].lower()
+        self.assertIn("maven", tip)
+        self.assertIn("gradle", tip)
+
 
 def _run_wizard(func, inputs):
     """Call a wizard function with patched input() and captured stdout."""
@@ -569,19 +658,24 @@ def _run_wizard(func, inputs):
 class AskLanguagesTests(unittest.TestCase):
     """Step 3d: languages prompt — selection, version + manager per language."""
 
-    def test_single_language_default_manager_omits_field(self):
-        # Empty input for manager == accept default == omit the field.
+    def test_single_language_default_manager_stored_as_default(self):
+        # Phase 1.2.4: accepting the default no longer omits the field.
+        # The resolved manager (default `pip` for python) is always
+        # written into the dict so the generated TOML can show it
+        # explicitly and `_render_mise_uses` can decide whether to
+        # install it (bundled vs not).
         result = _run_wizard(start.ask_languages, ["python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_single_language_non_default_manager_stored(self):
         result = _run_wizard(start.ask_languages, ["python", "3.12", "uv"])
         self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
 
-    def test_explicit_default_manager_name_still_omits_field(self):
-        # User types "pip" — it is the default; field is not stored.
+    def test_explicit_default_manager_name_stored_same_as_implicit(self):
+        # User types "pip" (the default) → result must equal what the
+        # implicit-default path produces. No special-casing.
         result = _run_wizard(start.ask_languages, ["python", "3.12", "pip"])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_multiple_languages_comma_separated(self):
         result = _run_wizard(
@@ -592,45 +686,47 @@ class AskLanguagesTests(unittest.TestCase):
             result,
             {
                 "python": {"version": "3.12", "manager": "uv"},
-                "node": {"version": "22"},
+                "node": {"version": "22", "manager": "npm"},
             },
         )
 
     def test_unknown_language_reprompts(self):
         result = _run_wizard(start.ask_languages, ["cobol", "python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_empty_selection_reprompts(self):
         result = _run_wizard(start.ask_languages, ["", "python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_version_latest_is_rejected(self):
         result = _run_wizard(start.ask_languages, ["python", "latest", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_empty_version_is_rejected(self):
         result = _run_wizard(start.ask_languages, ["python", "", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_unknown_manager_reprompts(self):
         result = _run_wizard(start.ask_languages, ["python", "3.12", "pixi", "uv"])
         self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
 
-    def test_rust_single_manager_skips_manager_prompt(self):
-        # Rust's only manager is cargo — no prompt, exactly two inputs total.
+    def test_rust_single_manager_skips_prompt_and_stores_cargo(self):
+        # Single-manager case skips the wizard prompt but still records
+        # the resolved manager in the dict.
         result = _run_wizard(start.ask_languages, ["rust", "1.75"])
-        self.assertEqual(result, {"rust": {"version": "1.75"}})
+        self.assertEqual(result, {"rust": {"version": "1.75", "manager": "cargo"}})
 
-    def test_dotnet_single_manager_skips_manager_prompt(self):
-        # .NET ships one CLI; same single-manager treatment as rust/go.
+    def test_dotnet_single_manager_skips_prompt_and_stores_dotnet(self):
         result = _run_wizard(start.ask_languages, ["dotnet", "10.0.100"])
-        self.assertEqual(result, {"dotnet": {"version": "10.0.100"}})
+        self.assertEqual(result, {"dotnet": {"version": "10.0.100", "manager": "dotnet"}})
 
-    def test_java_manager_prompt_offers_maven_default_and_gradle(self):
-        # Java has multiple managers; wizard prompts user to pick.
-        # Empty input accepts default (maven), so the field is omitted.
+    def test_java_manager_prompt_default_accepted_stores_maven(self):
+        # Java has multiple managers; default-accepted (empty input)
+        # now records the default explicitly. This is the bug Phase
+        # 1.2.4 fixes — accepting `[maven]` previously left manager
+        # unset, which silently meant Maven didn't install.
         result = _run_wizard(start.ask_languages, ["java", "21", ""])
-        self.assertEqual(result, {"java": {"version": "21"}})
+        self.assertEqual(result, {"java": {"version": "21", "manager": "maven"}})
 
     def test_java_manager_prompt_accepts_gradle(self):
         result = _run_wizard(start.ask_languages, ["java", "21", "gradle"])
@@ -705,6 +801,69 @@ class AskVersionTipTests(unittest.TestCase):
         self.assertFalse(
             out.endswith("\n\n"),
             "output must not end with a blank line; the prompt comes next",
+        )
+
+
+class AskManagerTipTests(unittest.TestCase):
+    """Phase 1.2.4: `_ask_manager` prints `cfg["manager_tip"]` before the
+    multi-manager prompt — same pattern as `_ask_version` + `version_tip`
+    from Phase 1.2.3 (blank BEFORE the tip, no blank between tip and
+    prompt). Single-manager languages skip the prompt entirely; the tip
+    still surfaces in the generated TOML as a comment."""
+
+    def _capture_ask_manager(self, language: str, answer: str | None) -> tuple:
+        """Run `_ask_manager(language)`. If answer is None, no input
+        is consumed (single-manager case). Returns (return_value,
+        captured_stdout)."""
+        stdout = io.StringIO()
+        side_effect = iter([]) if answer is None else iter([answer])
+        with (
+            patch("builtins.input", side_effect=side_effect),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = start._ask_manager(language)
+        return result, stdout.getvalue()
+
+    def test_returns_resolved_default_when_user_accepts_default(self):
+        # Phase 1.2.4: _ask_manager always returns a string, never None.
+        # The contract change is the heart of "manager always written".
+        result, _ = self._capture_ask_manager("python", "")
+        self.assertEqual(result, "pip")
+
+    def test_returns_user_pick_when_user_chooses_alternative(self):
+        result, _ = self._capture_ask_manager("python", "uv")
+        self.assertEqual(result, "uv")
+
+    def test_returns_lone_manager_for_single_manager_language(self):
+        # rust has only `cargo` — no prompt, just return the lone option.
+        result, _ = self._capture_ask_manager("rust", None)
+        self.assertEqual(result, "cargo")
+
+    def test_returns_dotnet_for_single_manager_dotnet(self):
+        result, _ = self._capture_ask_manager("dotnet", None)
+        self.assertEqual(result, "dotnet")
+
+    def test_prints_tip_for_multi_manager_language(self):
+        # Java's manager_tip should surface in the wizard before the
+        # `Package manager for java?` prompt.
+        _, out = self._capture_ask_manager("java", "")
+        self.assertIn("Tip:", out)
+        out_lower = out.lower()
+        self.assertIn("maven", out_lower)
+        self.assertIn("gradle", out_lower)
+
+    def test_prints_no_tip_for_single_manager_language(self):
+        # rust has only cargo; the wizard skips the prompt entirely.
+        # No tip is printed mid-wizard either (nothing to choose).
+        _, out = self._capture_ask_manager("rust", None)
+        self.assertNotIn("Tip:", out)
+
+    def test_blank_line_precedes_tip_not_follows_it(self):
+        # Same layout convention as `_ask_version`'s tip (Phase 1.2.3).
+        _, out = self._capture_ask_manager("java", "")
+        self.assertTrue(
+            out.startswith("\n"),
+            "output must start with a blank line preceding the Tip block",
         )
 
 
@@ -1071,6 +1230,76 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
                 len(line),
                 80,
                 f"tip comment line exceeds 80 cols: {line!r}",
+            )
+
+    # --- Phase 1.2.4: `manager =` always emitted + manager_tip as comment -
+
+    def test_each_language_section_always_emits_manager_line(self):
+        # Phase 1.2.4: `manager =` is no longer optional in the TOML.
+        # The resolved value (user pick OR language default) lands on
+        # disk so users can see and edit the choice without re-init.
+        # Tested for both default-accepted (python+pip) and explicit-
+        # override (java+gradle) cases.
+        data = {
+            "languages": {
+                "python": {"version": "3.12", "manager": "pip"},
+                "java": {"version": "21", "manager": "gradle"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        # Both sections carry the resolved manager line.
+        self.assertIn('manager = "pip"', content)
+        self.assertIn('manager = "gradle"', content)
+
+    def test_each_language_section_carries_its_manager_tip_as_comment(self):
+        # Symmetric with version_tip: same DRY plumbing, same shape —
+        # `manager_tip` lands as `# `-prefixed comments above the
+        # `manager =` line.
+        data = {
+            "languages": {
+                "python": {"version": "3.12", "manager": "pip"},
+                "java": {"version": "21", "manager": "maven"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        for lang in ("python", "java"):
+            section_start = content.index(f"[languages.{lang}]")
+            manager_idx = content.index("manager =", section_start)
+            block = content[section_start:manager_idx]
+            tip = languages.SUPPORTED_LANGUAGES[lang]["manager_tip"]
+            # Some kernel of the tip's content must surface in the
+            # comment block (avoids matching against the wrong tip).
+            kernel = "pip" if lang == "python" else "maven"
+            self.assertIn(f"# ", block, f"missing manager_tip comment for {lang}")
+            self.assertIn(kernel, block)
+            # The tip itself shouldn't be unused in this assertion path.
+            self.assertTrue(tip)
+
+    def test_long_manager_tips_wrap_at_comment_friendly_width(self):
+        # Python's manager_tip is the longest (mentions pip default
+        # and three alternatives). Must wrap to multiple lines, each
+        # within ~80 cols.
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        section_start = content.index("[languages.python]")
+        version_idx = content.index("version =", section_start)
+        manager_idx = content.index("manager =", section_start)
+        # Slice between the version line and the manager line — that's
+        # where the manager_tip comment block lives.
+        manager_block = content[version_idx:manager_idx]
+        manager_comment_lines = [
+            ln for ln in manager_block.splitlines() if ln.strip().startswith("#")
+        ]
+        self.assertGreaterEqual(
+            len(manager_comment_lines),
+            2,
+            "python's manager_tip must wrap to multiple comment lines",
+        )
+        for line in manager_comment_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                f"manager_tip comment line exceeds 80 cols: {line!r}",
             )
 
 

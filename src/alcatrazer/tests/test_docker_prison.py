@@ -111,9 +111,73 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         self.assertIn("mise use --global uv", dev)
 
     def test_no_manager_line_when_language_uses_default(self):
-        content = self._generate({"languages": {"python": {"version": "3.12"}}})
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
         for mgr in ("uv", "poetry", "pnpm", "yarn"):
             self.assertNotIn(mgr, content)
+
+    # --- Phase 1.2.4: bundled vs installable manager install logic --------
+
+    def test_default_manager_for_java_installs_via_mise(self):
+        # Heart of the user-reported bug: accepting Java's default
+        # `[maven]` previously left Maven uninstalled because mise
+        # only emitted `mise use --global` for non-default managers.
+        # bundled_managers=() for java forces install for any pick.
+        content = self._generate({"languages": {"java": {"version": "21", "manager": "maven"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global maven", dev)
+
+    def test_user_picked_gradle_for_java_installs_via_mise(self):
+        # Override path still works: explicit gradle gets installed.
+        content = self._generate({"languages": {"java": {"version": "21", "manager": "gradle"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global gradle", dev)
+        # And maven is NOT installed (user picked gradle, not maven).
+        self.assertNotIn("mise use --global maven", dev)
+
+    def test_default_manager_for_python_does_not_install_via_mise(self):
+        # pip is bundled with CPython; mise installs Python so pip
+        # arrives for free. No separate `mise use --global pip` line.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("mise use --global pip", dev)
+
+    def test_bundled_manager_skipped_even_when_explicitly_chosen(self):
+        # User explicitly types `manager = "pip"` — still skipped
+        # because pip is bundled either way. No double-install.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("mise use --global pip", dev)
+
+    def test_user_picked_uv_for_python_installs_via_mise(self):
+        # Non-bundled override: uv installs.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global uv", dev)
+
+    def test_node_default_npm_skipped_node_runtime_installed(self):
+        # npm bundled with node — runtime installs but npm doesn't
+        # need a separate line.
+        content = self._generate({"languages": {"node": {"version": "22", "manager": "npm"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global node@22", dev)
+        self.assertNotIn("mise use --global npm", dev)
+
+    def test_rust_cargo_skipped_runtime_only_install(self):
+        content = self._generate({"languages": {"rust": {"version": "1.75", "manager": "cargo"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global rust@1.75", dev)
+        self.assertNotIn("mise use --global cargo", dev)
+
+    def test_dotnet_self_bundled_no_separate_manager_install(self):
+        content = self._generate(
+            {"languages": {"dotnet": {"version": "10.0.100", "manager": "dotnet"}}}
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # Only one `mise use --global dotnet@…` line — the manager
+        # name `dotnet` matches the runtime, so it's not double-emitted.
+        self.assertIn("mise use --global dotnet@10.0.100", dev)
+        # No standalone `mise use --global dotnet` (without the @version).
+        self.assertNotIn("mise use --global dotnet\n", dev + "\n")
 
     def test_os_packages_become_apt_install_in_dev_stage(self):
         content = self._generate(
