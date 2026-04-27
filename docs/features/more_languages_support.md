@@ -700,6 +700,184 @@ the two.
 - Does **not** refactor wizard structure (one intro + four `ask_*`
   functions stays the same shape).
 
+### Phase 1.2.2 — Java added to `SUPPORTED_LANGUAGES`
+
+Java is the next language that justifies a formal whitelist entry
+under the dotnet pattern. Bun and Deno don't — they install fully in
+agent-userspace via mise and have zero OS deps, so they're best
+expressed as a single `[startup].commands` line by users who want
+them; formal entries would just buy us maintenance commitment for no
+ergonomic gain. Java is different because (a) mise's `java` plugin
+gives multiple-manager UX worth wizarding (Maven vs Gradle), and (b)
+encoding it in the whitelist documents Java as a first-class
+supported runtime, which materially affects the addressable
+population.
+
+**The dict entry — shape parallel to `dotnet`, with a multi-element
+`managers` tuple:**
+
+```python
+"java": {
+    "default_manager": "maven",
+    "managers": ("maven", "gradle"),
+    # Java prints `-version` to stderr; redirect so the verify block's
+    # chained `&&` doesn't lose the output to the docker-build noise.
+    "version_check": "java -version 2>&1",
+    # JDK is self-contained on Ubuntu 24.04 base — no extra OS deps
+    # required for `java -version` / basic compilation. Verify
+    # empirically, see "Verification" below.
+    "required_os_packages": (),
+},
+```
+
+**Naming choice: `java`, not `jdk` and not a distribution-specific
+key.** mise's plugin is `java`. A distribution prefix (Temurin,
+Corretto, Zulu, …) goes in the *value*, not the key — see
+"Distribution choice" below.
+
+**Default-version suggestion for the wizard: `21`** (Java 21 LTS,
+shipped September 2023, supported until September 2031). It is the
+de-facto enterprise baseline as of April 2026 — wide library /
+framework support, ubiquitous in production. `25` (the next LTS,
+shipped September 2025) is a valid alternative for users who want
+the newer LTS, but library compat is still catching up so we don't
+push it as default. `17` (LTS, EOL 2029) is also still common for
+legacy projects.
+
+**Default package manager: `maven`.** Alternatives: `gradle`. We
+intentionally limit to these two for v1.2.2 because both have
+core/aqua mise plugins that auto-install on first use of
+`mise use --global maven` / `… gradle`. `ant` and `sbt` exist as
+asdf-community plugins but their mise-availability is less stable;
+adding them would either need empirical verification + a
+`requires_plugin_install` flag (we deliberately avoided that for
+dotnet) or risk build-time failures for users who pick them. They
+can be added later if a real user asks; for now the canonical
+Java/Kotlin/Scala build tools are covered by `gradle`, and Maven is
+the obvious default.
+
+### Distribution choice — handled by the existing free-form version
+
+Earlier we worried Java's distribution-choice question (Temurin vs
+Corretto vs Zulu vs Liberica vs GraalVM) would force a schema
+change. It doesn't. `version` is already a free-form string passed
+verbatim to `mise use --global java@<version>` (`docker_prison.py`
+`_render_mise_uses` does plain f-string interpolation), and mise's
+`java` plugin accepts distribution prefixes:
+
+| User writes in TOML       | mise resolves to                                         |
+| ------------------------- | -------------------------------------------------------- |
+| `version = "21"`          | Eclipse Temurin 21 (mise's default JDK distribution)     |
+| `version = "21.0.5"`      | Eclipse Temurin 21.0.5                                   |
+| `version = "corretto-21"` | Amazon Corretto 21                                       |
+| `version = "zulu-21"`     | Azul Zulu 21                                             |
+| `version = "graalvm-21"`  | GraalVM 21                                               |
+
+So users who care about distribution write the prefix; users who
+don't care get a sane default (Temurin) automatically. No schema
+field, no wizard branching, no maintenance burden on us.
+
+The wizard's example block emits `version = "21"` (plain LTS, no
+prefix), which is what most users want. Distribution-conscious users
+edit `coding-environment.toml` after `alcatrazer init` — same
+escape-hatch contract Phase 1.1 captured ("you can edit before
+`alcatrazer start` to tweak").
+
+### Concrete code touches
+
+- `src/alcatrazer/languages.py` — add the `java` entry. No new
+  fields; `required_os_packages = ()` follows the default.
+- `src/alcatrazer/start.py` `_EXAMPLE_LANGUAGE_BLOCKS` — add
+  `"java": ["# [languages.java]", '# version = "21"']`.
+- `src/alcatrazer/tests/test_start.py`:
+  - Extend `test_supported_language_set` to include `"java"`.
+  - `test_java_default_manager_is_maven_with_alternatives` — asserts
+    `default_manager == "maven"` and `gradle` is in `managers`.
+  - `test_java_version_check_redirects_stderr` — asserts the
+    `version_check` is `"java -version 2>&1"` (the `2>&1` is
+    load-bearing; without it the stderr-only output is invisible to
+    the chained `&&` verify block in stdout-driven log capture).
+  - `test_java_has_no_required_os_packages` — keeps the "JDK is
+    self-contained on Ubuntu 24.04 base" claim under test.
+  - The existing `test_other_languages_have_no_required_os_packages`
+    needs `java` added to its scope (the test currently asserts
+    `python/node/rust/go` are empty; with java in the whitelist it
+    becomes `python/node/rust/go/java`).
+- `src/alcatrazer/tests/test_docker_prison.py` — no new tests
+  required; the existing `test_no_libicu74_when_dotnet_not_declared`
+  (regression guard for per-language `required_os_packages`) already
+  covers the "java doesn't pull libicu74" case implicitly because
+  java declares no required_os_packages.
+- `README.md` — extend the "Supported" line (currently
+  `python, node, rust, go, dotnet`) to include `java` with a
+  parenthetical "JVM — Maven / Gradle".
+
+### Verification — must run inside a fresh Alcatraz before merging
+
+The dotnet experience taught us that "looks fine on paper" can mask
+runtime OS deps (libicu74 was invisible until `dotnet --version`
+crashed). Same probe-then-merge discipline for Java:
+
+```bash
+docker exec -it -u agent -w /workspace workspace bash
+mise use --global java@21
+java -version 2>&1
+javac -version 2>&1
+```
+
+- **Both succeed cleanly:** ship the entry with
+  `required_os_packages = ()`. This is the expected outcome — JDK
+  binary distributions are self-contained and Ubuntu 24.04's base
+  has the libc / libstdc++ they link against.
+- **Either errors with a missing-library message:** add the package
+  to `required_os_packages = (...)`, exactly the way libicu74 was
+  added for dotnet. No runtime sudo, no fix-by-hand — root work
+  goes in image build.
+
+Worth probing both `java -version` AND `javac -version` because the
+runtime and the compiler can diverge in their dependency surface
+(rare on JDK distributions but cheap to confirm).
+
+If the user picks `manager = "gradle"`, also probe:
+
+```bash
+mise use --global gradle
+gradle --version
+```
+
+This validates the multi-manager wizard path produces a working
+build environment, not just a working JVM.
+
+### What Phase 1.2.2 does NOT do
+
+To keep scope tight:
+
+- Does **not** add a `distribution` schema field. The free-form
+  version string already covers Temurin / Corretto / Zulu / Liberica
+  / GraalVM via mise's plugin syntax.
+- Does **not** include `ant` or `sbt` in `managers`. Both can be
+  added later if a user asks, after empirical verification that
+  mise auto-installs the relevant plugins. Sticking to Maven + Gradle
+  keeps Phase 1.2.2's risk surface identical to dotnet's.
+- Does **not** add Kotlin or Scala — they require Java but have
+  their own `SUPPORTED_LANGUAGES` rationale (asdf-only mise plugins,
+  separate ecosystem decisions). Defer to Phase 2.
+- Does **not** prescribe a JDK distribution. mise's default
+  (Temurin) is what users get if they don't specify; that's not us
+  picking a distribution, it's mise's existing convention.
+- Does **not** auto-install anything beyond the JDK + selected build
+  tool — the whole point is that Java fits the existing pattern. No
+  new render path, no new conditional logic.
+
+### Phase 1.2.2 independence
+
+Independent of Phase 1.2.1 (wizard self-explanation) and Phase 1.2
+(dotnet entry) — both predecessors landed already. Phase 1.2.2 is
+purely additive: one new `SUPPORTED_LANGUAGES` entry, one new
+example block, four new tests, three lines in the README. Estimated
+~30 minutes of code time once the `mise use --global java@21` smoke
+test confirms `required_os_packages = ()` is empirically correct.
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -752,26 +930,36 @@ To keep scope tight:
    diagram, section banners + 2–4 line context per `ask_*`, closing
    messages rewritten in Alcatraz vocabulary. No structural changes;
    no new flags or parsing.
+4. **Java (Phase 1.2.2).** Add `java` entry to `SUPPORTED_LANGUAGES`
+   with `default_manager = "maven"`, `managers = ("maven", "gradle")`,
+   `version_check = "java -version 2>&1"`, `required_os_packages = ()`.
+   Wizard suggests Java 21 LTS. Distribution choice (Temurin /
+   Corretto / Zulu / GraalVM) handled by free-form mise version
+   string — no schema field. Bun and Deno deliberately NOT added —
+   `[startup].commands` is the canonical path for languages that
+   need no root-time install.
 
 **Phase 2 — v2 refactor (deferred):**
 
-4. Validate the empty-stage-3 path on the current container — confirm
+5. Validate the empty-stage-3 path on the current container — confirm
    `apt-get` works at provision time and `curl | bash` works as agent.
-5. Sketch the `Alcatraz` port interface under the two-method contract
+6. Sketch the `Alcatraz` port interface under the two-method contract
    (`provision`, `start`). Verify `DockerPrison` can implement it
    without regression. Sketch a hypothetical `FirecrackerPrison` for
    the same methods — surface any axis we missed.
-6. Implement `[provision]` as a v2 TOML section. Bump
+7. Implement `[provision]` as a v2 TOML section. Bump
    `schema_version` to `2`.
-7. Make existing `[os].packages` and `[languages.*]` desugar into
+8. Make existing `[os].packages` and `[languages.*]` desugar into
    `[provision]` lists in the config loader (still under v1 schema for
    backcompat; v2 schema decides whether to keep or remove the sugar).
-8. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+9. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
    `WIZARD_SUGGESTIONS` or similar).
-9. Java added cleanly under v2 — distribution prefix expressed as raw
-   `version = "temurin-21.0.5"` or via raw `[provision]` bash for users
-   on SDKMAN!.
-10. Documentation pass — README "Supported languages" section becomes
+10. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
+    other Tier B/C/D languages added cleanly under v2 — either as raw
+    `[provision]` bash, or as suggestions (curated wizard menu, no
+    longer a gate). Distribution-conscious Java users who want SDKMAN!
+    or jenv instead of mise can also do it via raw `[provision]`.
+11. Documentation pass — README "Supported languages" section becomes
     "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
