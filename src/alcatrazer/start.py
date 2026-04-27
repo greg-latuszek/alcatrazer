@@ -124,9 +124,18 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     workspace_ready = (
         workspace_name is not None and (project_dir / workspace_name / ".git").is_dir()
     )
-    if not prison.image_exists() or not workspace_ready:
-        return _first_run_after_init(project_dir, prison=prison)
-    return _subsequent_run(project_dir, prison=prison)
+    try:
+        if not prison.image_exists() or not workspace_ready:
+            return _first_run_after_init(project_dir, prison=prison)
+        return _subsequent_run(project_dir, prison=prison)
+    except UnsupportedSchemaVersionError as e:
+        # Both routing branches load coding-environment.toml as their first
+        # real step; either can raise this. We print the validator's own
+        # message — it already names the offending version and tells the
+        # user to upgrade alcatrazer — and skip the traceback so the
+        # config issue doesn't read like a tool crash.
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
 
 def _host_has_claude_creds() -> bool:
