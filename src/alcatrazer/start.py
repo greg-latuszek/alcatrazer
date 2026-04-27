@@ -186,6 +186,7 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     print("Starting interactive setup...")
     print()
+    _print_init_intro()
 
     # 3c — promotion identity.
     name, email = ask_promotion_identity(project_dir)
@@ -224,15 +225,15 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     print()
     if _host_has_claude_creds():
-        print("Claude credentials found on host — they will be mounted into the workspace.")
-        print("Next: run `alcatrazer start` to build the image and launch the workspace.")
+        print("Claude credentials found on host — they will be used by Alcatraz.")
+        print("Next: run `alcatrazer start` to build Alcatraz and run it with own git.")
     else:
         print("Claude credentials not found at ~/.claude/.credentials.json.")
         print("Before running `alcatrazer start`, either:")
         print("  (a) run `claude` on your host to authenticate, or")
         print("  (b) copy .env.example to .env and fill in ANTHROPIC_API_KEY.")
         print()
-        print("Then run `alcatrazer start` to build the image and launch the workspace.")
+        print("Then run `alcatrazer start` to build Alcatraz and run it with own git.")
     return 0
 
 
@@ -324,8 +325,36 @@ def read_git_identity(project_dir: Path) -> tuple[str | None, str | None]:
     return name, email
 
 
+def _print_init_intro() -> None:
+    """Print the introductory diagram + explanation for `alcatrazer init`.
+
+    Once at the top of the wizard so subsequent prompts can use the
+    terms `promote`, `Alcatraz`, and `agents` without redefining them.
+    The diagram puts `your repo` and `Alcatraz (agents repo)` in
+    parallel structure with parity labels for identity + credentials,
+    so the contrast lands at a glance.
+    """
+    print("What this sets up:")
+    print()
+    print("   your repo  <--- promote ---  Alcatraz (agents repo)")
+    print("   ---------                    ---------------------")
+    print("   YOUR identity                fake throwaway identity")
+    print("   YOUR git credentials         no credentials, no SSH keys")
+    print()
+    print("Agents commit inside Alcatraz; a daemon promotes commits back to")
+    print("your repo, re-authored as YOU. Agents cannot push — only you can.")
+    print()
+    print("This wizard writes coding-environment.toml; you can edit it before")
+    print("running `alcatrazer start` if you want to tweak.")
+    print()
+
+
 def ask_promotion_identity(project_dir: Path) -> tuple[str, str]:
     """Prompt the user for the promotion identity, offering the detected one as default."""
+    print("=== Promotion identity ===")
+    print("Re-authored onto agent commits when the daemon promotes them to")
+    print("your repo (see diagram above).")
+    print()
     name, email = read_git_identity(project_dir)
     if name and email:
         print(f"Detected git identity: {name} <{email}>")
@@ -370,6 +399,12 @@ def _ask_manager(language: str) -> str | None:
 
 def ask_languages() -> dict[str, dict]:
     """Ask which languages the project uses; collect version + manager for each."""
+    print()
+    print("=== Languages ===")
+    print("Languages you list here are baked into Alcatraz so agents have a")
+    print("ready dev environment from day one. Stored in coding-environment.toml;")
+    print("edit before `alcatrazer start` to tweak the picks below.")
+    print()
     supported = ", ".join(SUPPORTED_LANGUAGES)
     while True:
         print(f"What languages does this project use? (supported: {supported})")
@@ -397,6 +432,10 @@ def ask_languages() -> dict[str, dict]:
 
 def ask_os_packages() -> list[str]:
     """Optional list of apt-get packages. Accepts comma or whitespace separated."""
+    print()
+    print("=== System packages (optional) ===")
+    print("Extra apt packages baked into Alcatraz at build time, alongside")
+    print("the languages above.")
     raw = input("Any system packages needed? (e.g. libpq-dev ffmpeg; empty for none): ").strip()
     if not raw:
         return []
@@ -405,6 +444,12 @@ def ask_os_packages() -> list[str]:
 
 def ask_startup_commands() -> list[str]:
     """Commands to run after Alcatraz start — one per line, empty line ends input."""
+    print()
+    print("=== Startup commands (optional) ===")
+    print("Run every time Alcatraz boots — typically `uv sync`, `npm install`,")
+    print("or similar dev-env prep. These are NOT baked in (unlike languages")
+    print("above).")
+    print()
     print("Commands to run after Alcatraz start (one per line, empty line to finish):")
     commands: list[str] = []
     while True:
