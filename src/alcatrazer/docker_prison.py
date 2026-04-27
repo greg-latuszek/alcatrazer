@@ -103,6 +103,25 @@ def _render_apt_install(packages: list[str]) -> str:
     )
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    """Return ``items`` with subsequent duplicates dropped, original order kept.
+
+    Used for merging user-declared and tool-injected lists (currently apt
+    package lists, but the helper is generic). The user's list comes first
+    in user order; tool-injected items appended after. ``sorted(set(...))``
+    is deliberately avoided — silent reordering of user input can break
+    dependency ordering for order-sensitive tooling, and it overrides
+    explicit user intent.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
 def _render_mise_uses(languages: dict) -> str:
     """Render the `mise use --global` block covering runtimes + non-default managers."""
     if not languages:
@@ -144,14 +163,18 @@ def _render_dockerfile(data: dict) -> str:
 
     languages = data.get("languages", {})
     user_pkgs = data.get("os", {}).get("packages", [])
-    # Union user-declared packages with every declared language's
+    # Merge user-declared packages with every declared language's
     # required_os_packages (deps that the runtime needs at startup, e.g.
-    # .NET → libicu74). Sorted + deduped so reordering [os].packages or
-    # [languages.*] never churns the rendered Dockerfile.
+    # .NET → libicu74). Order rule: user list first in user-declared
+    # order, then language-injected packages in language-declaration
+    # order. Dedupe is by first occurrence — never sort, because
+    # silent reordering of a user-supplied list can break dependency
+    # ordering for any package manager that's order-sensitive (apt
+    # happens to tolerate it; we don't assume future tooling will).
     lang_pkgs: list[str] = []
     for name in languages:
         lang_pkgs.extend(SUPPORTED_LANGUAGES[name].get("required_os_packages", ()))
-    all_pkgs = sorted(set(user_pkgs) | set(lang_pkgs))
+    all_pkgs = _dedupe_preserve_order(list(user_pkgs) + lang_pkgs)
     os_block = _render_apt_install(all_pkgs)
     if os_block:
         dev_stage.append("")
