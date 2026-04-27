@@ -552,6 +552,154 @@ build will produce automatically — same effect, just done at the
 correct phase (image build, root legitimate) rather than as runtime
 privilege escalation (which is forbidden).
 
+### Phase 1.2.1 — Wizard self-explanation
+
+The `alcatrazer init` wizard uses domain terms — "promoted commits",
+"baked into Alcatraz", "agents" — without explaining them. New users
+see "Use for promoted commits? [Y/n]" before they know what
+"promoted" means in this context, why we ask for git identity, what
+gets baked vs. run-on-each-boot, and how their commits differ from
+agent commits. Phase 1.2.1 fixes that without expanding the wizard
+into a help system.
+
+**Three changes to the wizard:**
+
+1. A one-time intro panel at the top of `alcatrazer init` (after
+   "Starting interactive setup...") with an ASCII diagram + two short
+   prose paragraphs that establish the credential and promotion model.
+2. Section banners + 2–4 lines of context before each subsequent
+   `ask_*` prompt (promotion identity, languages, system packages,
+   startup commands).
+3. Closing messages rewritten in Alcatraz vocabulary instead of
+   container terminology ("Alcatraz" / "agents repo", not "workspace"
+   / "image").
+
+**The planned transcript:**
+
+```text
+$ alcatrazer init
+Starting interactive setup...
+
+What this sets up:
+
+   your repo  <--- promote ---  Alcatraz (agents repo)
+   ---------                    ---------------------
+   YOUR identity                fake throwaway identity
+   YOUR git credentials         no credentials, no SSH keys
+
+Agents commit inside Alcatraz; a daemon promotes commits back to your
+repo, re-authored as YOU. Agents cannot push — only you can.
+
+This wizard writes coding-environment.toml; you can edit it before
+running `alcatrazer start` if you want to tweak.
+
+=== Promotion identity ===
+Re-authored onto agent commits when the daemon promotes them to your
+repo (see diagram above).
+
+Detected git identity: Alice Example <alice@example.com>
+Use for promoted commits? [Y/n]
+
+=== Languages ===
+Languages you list here are baked into Alcatraz so agents have a ready
+dev environment from day one. Stored in coding-environment.toml; edit
+before `alcatrazer start` to tweak the picks below.
+
+What languages does this project use? (supported: python, node, rust, go, dotnet)
+Languages (comma-separated): python, dotnet
+  Version for python: 3.12
+  Package manager for python? [pip] / uv / poetry / pipenv:
+  Version for dotnet: 10.0.100
+
+=== System packages (optional) ===
+Extra apt packages baked into Alcatraz at build time, alongside the
+languages above.
+
+Any system packages needed? (e.g. libpq-dev ffmpeg; empty for none):
+
+=== Startup commands (optional) ===
+Run every time Alcatraz boots — typically `uv sync`, `npm install`, or
+similar dev-env prep. Unlike languages above, these are NOT baked in.
+
+Commands to run after Alcatraz start (one per line, empty line to finish):
+> uv sync
+>
+
+Writing configuration...
+  coding-environment.toml      (commit to git — your team's workspace recipe)
+  .alcatrazer/config.toml      (per-developer; auto-excluded from git)
+  .env.example                 (commit to git — placeholders only, no secrets)
+
+Generating Alcatraz recipe...
+
+Claude credentials found on host — they will be used by Alcatraz.
+Next: run `alcatrazer start` to build Alcatraz and run it with own git.
+```
+
+**Naming choice in the diagram:** `Alcatraz (agents repo)` mirrors
+`your repo` on the left side — both labels are 1-line "what this is",
+parallel structure makes the contrast immediate. The next sentence
+("Agents commit inside Alcatraz") is the equivalent of "where agents
+work", so we don't lose that information.
+
+**"See diagram above" appears once,** in the promotion-identity
+banner — that's the one section whose content (identity + credentials)
+is directly anchored in the diagram. Other sections don't reference
+it because the diagram doesn't speak to them.
+
+**Closing-line rewrites:**
+
+| Before                                                                   | After                                                                       |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| "they will be mounted into the workspace"                                | "they will be used by Alcatraz"                                             |
+| "Next: run `alcatrazer start` to build the image and launch the workspace" | "Next: run `alcatrazer start` to build Alcatraz and run it with own git"   |
+
+The "with own git" tail is the explanatory hook that recalls the
+diagram — Alcatraz has its own git history; promotion is what bridges
+the two.
+
+**Concrete code touches:**
+
+- `start.py`: new `_print_init_intro()` helper that emits the
+  diagram + two prose paragraphs.
+- `cmd_init`: call `_print_init_intro()` after the
+  "Starting interactive setup..." line; rewrite the two closing
+  lines using Alcatraz vocabulary.
+- `ask_promotion_identity`, `ask_languages`, `ask_os_packages`,
+  `ask_startup_commands`: each prepends a `=== Section ===` banner
+  plus a 2–4 line explainer before its existing prompt logic. No
+  changes to input parsing or return values.
+
+**Tests** (per the "test every decision" rule):
+
+- `_print_init_intro` output contains the key terms the diagram is
+  meant to introduce: `promote`, `Alcatraz`, `your repo`, `agents`,
+  `fake` / `throwaway`, `credentials`, `coding-environment.toml`.
+- `ask_promotion_identity` output contains the `Promotion identity`
+  banner header and references `promote` (so the existing
+  "Use for promoted commits?" prompt is no longer cold).
+- `ask_languages` output contains the `Languages` banner header and
+  the words `baked` and `coding-environment.toml`.
+- `ask_os_packages` output contains the `System packages` banner
+  header and `baked`.
+- `ask_startup_commands` output contains the `Startup commands`
+  banner header, `every time`, and `NOT baked` (the explicit contrast
+  with languages).
+- `cmd_init` closing-message scrub: when `_host_has_claude_creds()`
+  returns True, the printed lines mention `Alcatraz` and do **not**
+  contain `workspace` or `image`. Same for the API-key branch.
+
+**What Phase 1.2.1 does NOT do:**
+
+- Does **not** add new flags or change input parsing — same prompts,
+  same accepted answers, same return values. Existing wizard tests
+  keep working unchanged (they assert on return values, not stdout).
+- Does **not** add a `--quiet` mode for the new prose. If the volume
+  ever becomes a problem in CI / scripts, that's a follow-up; for
+  now `init` is interactive by design.
+- Does **not** refactor wizard structure (one intro + four `ask_*`
+  functions stays the same shape).
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -594,33 +742,37 @@ To keep scope tight:
    documentation note.
 2. **C# / .NET.** Add `dotnet` entry to `SUPPORTED_LANGUAGES` with
    `required_os_packages = ("libicu74",)`. Extend the apt-install
-   renderer in `docker_prison.py` to union per-language deps with
-   user-declared `[os].packages` (sorted, deduped). Tests on both the
-   languages whitelist (entry shape) and the Dockerfile generator
-   (libicu74 appears iff dotnet declared). README + wizard example.
-   mise plugin model already verified — `dotnet` is core, no
-   `requires_plugin_install` flag needed.
+   renderer in `docker_prison.py` to merge per-language deps with
+   user-declared `[os].packages` (first-occurrence dedupe, user list
+   first). Tests on both the languages whitelist (entry shape) and
+   the Dockerfile generator (libicu74 appears iff dotnet declared).
+   README + wizard example. mise plugin model already verified —
+   `dotnet` is core, no `requires_plugin_install` flag needed.
+3. **Wizard self-explanation (Phase 1.2.1).** Intro panel with ASCII
+   diagram, section banners + 2–4 line context per `ask_*`, closing
+   messages rewritten in Alcatraz vocabulary. No structural changes;
+   no new flags or parsing.
 
 **Phase 2 — v2 refactor (deferred):**
 
-3. Validate the empty-stage-3 path on the current container — confirm
+4. Validate the empty-stage-3 path on the current container — confirm
    `apt-get` works at provision time and `curl | bash` works as agent.
-4. Sketch the `Alcatraz` port interface under the two-method contract
+5. Sketch the `Alcatraz` port interface under the two-method contract
    (`provision`, `start`). Verify `DockerPrison` can implement it
    without regression. Sketch a hypothetical `FirecrackerPrison` for
    the same methods — surface any axis we missed.
-5. Implement `[provision]` as a v2 TOML section. Bump
+6. Implement `[provision]` as a v2 TOML section. Bump
    `schema_version` to `2`.
-6. Make existing `[os].packages` and `[languages.*]` desugar into
+7. Make existing `[os].packages` and `[languages.*]` desugar into
    `[provision]` lists in the config loader (still under v1 schema for
    backcompat; v2 schema decides whether to keep or remove the sugar).
-7. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+8. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
    `WIZARD_SUGGESTIONS` or similar).
-8. Java added cleanly under v2 — distribution prefix expressed as raw
+9. Java added cleanly under v2 — distribution prefix expressed as raw
    `version = "temurin-21.0.5"` or via raw `[provision]` bash for users
    on SDKMAN!.
-9. Documentation pass — README "Supported languages" section becomes
-   "Curated convenience languages — and how to add anything else."
+10. Documentation pass — README "Supported languages" section becomes
+    "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
 
