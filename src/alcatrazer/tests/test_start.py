@@ -661,6 +661,145 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         self.assertEqual(path, self.project_dir / "coding-environment-a3f7.toml")
         self.assertEqual(existing.read_text(), "# user's existing file — do not clobber\n")
 
+    def test_writer_emits_schema_version_field(self):
+        """Phase 1.1: every freshly-generated file declares its schema."""
+        data = {"languages": {"python": {"version": "3.12"}}}
+        path = start.write_coding_environment_toml(self.project_dir, data)
+        with open(path, "rb") as f:
+            parsed = tomllib.load(f)
+        self.assertEqual(parsed["schema_version"], start.CODING_ENV_SCHEMA_VERSION)
+
+    def test_schema_version_precedes_section_headers(self):
+        """Top-level fields must appear before any [section] in TOML — and
+        beyond that requirement, we want it visually first so a human
+        editor sees the version stamp before the data."""
+        data = {
+            "os": {"packages": ["build-essential"]},
+            "languages": {"python": {"version": "3.12"}},
+            "startup": {"commands": ["uv sync"]},
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        schema_idx = content.find("schema_version")
+        self.assertGreater(schema_idx, -1, "schema_version line must be present")
+        prefix = content[:schema_idx]
+        # Only comments and blank lines may precede schema_version.
+        for line in prefix.splitlines():
+            stripped = line.strip()
+            self.assertTrue(
+                stripped == "" or stripped.startswith("#"),
+                f"Non-comment content before schema_version: {line!r}",
+            )
+
+
+class CodingEnvironmentSchemaVersionTests(unittest.TestCase):
+    """Phase 1.1: schema versioning for coding-environment.toml.
+
+    Two surfaces under test:
+    - `_validate_coding_env_schema_version(data)` — pure dict-level validator.
+    - `_load_coding_environment(project_dir)` — file-level loader that calls
+      the validator after parsing. Backwards compat is the load contract:
+      configs without an explicit `schema_version` field were written before
+      Phase 1.1 and must keep working.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        self.addCleanup(self.tmp.cleanup)
+
+    # --- Constant ------------------------------------------------------------
+
+    def test_constant_is_one_for_this_release(self):
+        self.assertEqual(start.CODING_ENV_SCHEMA_VERSION, 1)
+
+    # --- Validator: accept ---------------------------------------------------
+
+    def test_validator_accepts_missing_field(self):
+        """Files predating Phase 1.1 carry no schema_version. Treat them
+        as the current version — refusing them would break every existing
+        user's config."""
+        start._validate_coding_env_schema_version({})  # must not raise
+
+    def test_validator_accepts_current_version_explicit(self):
+        start._validate_coding_env_schema_version({"schema_version": 1})
+
+    # --- Validator: reject ---------------------------------------------------
+
+    def test_validator_rejects_higher_version_with_upgrade_hint(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError) as ctx:
+            start._validate_coding_env_schema_version({"schema_version": 99})
+        msg = str(ctx.exception)
+        self.assertIn("99", msg)
+        self.assertIn("upgrade alcatrazer", msg.lower())
+
+    def test_validator_rejects_zero(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": 0})
+
+    def test_validator_rejects_negative(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": -1})
+
+    def test_validator_rejects_string(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError) as ctx:
+            start._validate_coding_env_schema_version({"schema_version": "1"})
+        self.assertIn("integer", str(ctx.exception).lower())
+
+    def test_validator_rejects_float(self):
+        # TOML `schema_version = 1.0` parses as float — reject it so users
+        # don't accidentally drift toward semver semantics we don't support.
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": 1.0})
+
+    def test_validator_rejects_bool(self):
+        # bool is a subclass of int in Python; the validator must
+        # short-circuit on bool before the int path.
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": True})
+
+    # --- Loader integration (validator wired into _load_coding_environment) -
+
+    def test_loader_treats_missing_field_as_v1(self):
+        """Backwards-compat for configs written before Phase 1.1."""
+        self.coding_env_path.write_text('[languages.python]\nversion = "3.12"\n')
+        data = start._load_coding_environment(self.project_dir)
+        self.assertEqual(data["languages"]["python"]["version"], "3.12")
+
+    def test_loader_accepts_explicit_v1(self):
+        self.coding_env_path.write_text(
+            'schema_version = 1\n[languages.python]\nversion = "3.12"\n'
+        )
+        data = start._load_coding_environment(self.project_dir)
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["languages"]["python"]["version"], "3.12")
+
+    def test_loader_rejects_unsupported_version(self):
+        self.coding_env_path.write_text(
+            'schema_version = 99\n[languages.python]\nversion = "3.12"\n'
+        )
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._load_coding_environment(self.project_dir)
+
+    def test_writer_loader_round_trip(self):
+        """The wizard-generated file is consumable by the loader unchanged."""
+        data = {
+            "os": {"packages": ["build-essential"]},
+            "languages": {"python": {"version": "3.12", "manager": "uv"}},
+            "startup": {"commands": ["uv sync"]},
+        }
+        start.write_coding_environment_toml(self.project_dir, data)
+        loaded = start._load_coding_environment(self.project_dir)
+        self.assertEqual(loaded["schema_version"], start.CODING_ENV_SCHEMA_VERSION)
+        self.assertEqual(loaded["os"]["packages"], ["build-essential"])
+        self.assertEqual(loaded["languages"]["python"]["manager"], "uv")
+        self.assertEqual(loaded["startup"]["commands"], ["uv sync"])
+
 
 class WriteAlcatrazerConfigTests(unittest.TestCase):
     """Step 3e: .alcatrazer/config.toml writer — daemon defaults stay in template."""
