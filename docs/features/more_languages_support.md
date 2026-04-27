@@ -417,13 +417,15 @@ there is a parallel cleanup, not blocking.
 
 ### Phase 1.2 — C# / .NET added to `SUPPORTED_LANGUAGES`
 
-The single dict entry, parallel to the existing `go` and `rust` shape:
+The dict entry — shape parallel to the existing `go` and `rust`
+entries, plus one new field (`required_os_packages`, see below):
 
 ```python
 "dotnet": {
     "default_manager": "dotnet",
     "managers": ("dotnet",),
     "version_check": "dotnet --version",
+    "required_os_packages": ("libicu74",),
 },
 ```
 
@@ -444,47 +446,111 @@ one canonical toolchain — `dotnet add package`, `dotnet restore`,
 the entry has a single-element `managers` tuple, same as `go` and
 `rust`.
 
-**Concrete code touches:**
+### New schema field — `required_os_packages`
 
-- `src/alcatrazer/languages.py:10-33` — add the entry.
-- `src/alcatrazer/start.py:408-411` — add wizard example:
+.NET is the first language Alcatrazer supports that has a non-trivial
+OS-level *runtime* dependency. Without `libicu74`, every `dotnet`
+invocation crashes immediately with:
+
+> Couldn't find a valid ICU package installed on the system. Please
+> install libicu (or icu-libs) using your package manager …
+
+(Verified empirically — see "Verification" below.) Python, Node, Rust,
+and Go all run on what Ubuntu 24.04's minimal base provides; .NET
+needs ICU for globalization at startup, and `libicu` isn't in the
+base. Java will likely surface similar deps once we add it.
+
+To keep the language whitelist data-driven instead of special-casing
+.NET in Dockerfile-generation code, `SUPPORTED_LANGUAGES` gains an
+optional **`required_os_packages: tuple[str, ...]`** field, defaulting
+to `()`. The Dockerfile generator unions this with the user-declared
+`[os].packages` before emitting the apt-get RUN.
+
+**Why this design and not "tell users to add `libicu74` themselves":**
+the dependency isn't optional or use-case-specific (like a Python user
+adding `libpq-dev` for psycopg) — `dotnet` literally cannot run without
+it. Encoding it next to the language entry means the user picks
+`[languages.dotnet]` and gets a working environment, with no
+discovery-by-crash step.
+
+**Why this design and not "let the agent install it via sudo":**
+**there is no sudo inside Alcatraz.** The agent user has no privilege
+escalation at runtime — that's a deliberate security property, not an
+oversight. Anything that needs root (apt-get, system-wide installs,
+shared library setup) **must** be baked during image build, where
+Dockerfile `RUN` lines already execute as root before the entrypoint
+drops to agent via gosu. `required_os_packages` rides the existing
+build-time apt-get, so it's compatible with the no-sudo invariant by
+construction.
+
+For one-off debugging, a host-side `docker exec -u root -w /workspace
+workspace bash` is the supported escape hatch — it grants temporary
+root inside the container without giving the agent user any standing
+privilege.
+
+### Concrete code touches
+
+- `src/alcatrazer/languages.py` — add the `dotnet` entry **with**
+  `required_os_packages = ("libicu74",)`. Update the module docstring
+  to document the new field.
+- `src/alcatrazer/docker_prison.py` — update the apt-install rendering
+  to take the union of `[os].packages` and every declared language's
+  `required_os_packages`. Sort + dedupe so the rendered Dockerfile is
+  stable across runs.
+- `src/alcatrazer/start.py` — add wizard example:
   `"dotnet": ["# [languages.dotnet]", '# version = "10.0.100"']`.
-- `src/alcatrazer/tests/test_start.py:368-420` — per-language tests
-  parallel to the existing `test_*_default_manager_is_*_with_alternatives`,
-  `test_*_version_check`. Specifically:
+- `src/alcatrazer/tests/test_start.py` — per-language tests parallel
+  to the existing `test_*_default_manager_is_*_with_alternatives`,
+  `test_*_version_check`:
   - `test_dotnet_default_manager_is_dotnet`
   - `test_dotnet_version_check_uses_dotnet`
+  - `test_dotnet_declares_libicu74_as_required_os_package`
   - existing `test_every_language_has_a_version_check_command` covers
     presence automatically.
-- `README.md` line 505 — add `dotnet` to the supported list, with a
-  parenthetical "C# / F# / VB.NET".
+- `src/alcatrazer/tests/test_docker_prison.py` — generator tests:
+  - dotnet declared → rendered Dockerfile's apt-install line includes
+    `libicu74`.
+  - python only declared → rendered Dockerfile's apt-install line does
+    NOT include `libicu74` (no over-reach).
+  - dotnet + user-declared `[os].packages = ["build-essential"]` →
+    apt-install line contains both, sorted/deduped.
+- `README.md` — add `dotnet` to the supported list with a parenthetical
+  "C# / F# / VB.NET", and a one-line note that selecting it
+  auto-installs `libicu74` so users aren't surprised by an unfamiliar
+  package in their build.
 
-### Caveat to verify before merging Phase 1.2
+### Verification — completed
 
-**mise's `dotnet` plugin is asdf-backed, not a core mise plugin.** The
-current `_render_mise_uses` (`docker_prison.py:106-116`) emits a single
-chained `RUN mise use --global dotnet@<version>` line. We need to
-confirm empirically that mise auto-installs the asdf plugin on first
-use of an unknown tool name.
-
-**Verification command** (run inside a fresh Alcatraz container):
+The previously-flagged unknown (mise plugin auto-install) and a new
+unknown (runtime OS deps) were both probed inside a fresh Alcatraz
+container:
 
 ```bash
-mise use --global dotnet@10.0.100
-dotnet --version
+mise use --global dotnet@10.0.100   # SDK install — succeeded
+dotnet --version                     # crashed: missing libicu (ICU)
 ```
 
-- **If clean:** no further change needed. Ship the entry as-is.
-- **If errors with "plugin not found":** small enhancement to
-  `_render_mise_uses` — emit `mise plugin install dotnet` before the
-  `mise use --global` line for languages flagged as needing it. Keep
-  the data-driven shape by adding an optional per-language field, e.g.
-  `"requires_plugin_install": True`, defaulting to `False`. Touches
-  `languages.py` (one extra key), `docker_prison.py` (one extra line
-  in the rendered RUN), and one new test asserting the `plugin
-  install` line is emitted only for flagged languages.
+mise treats `dotnet` as a **core plugin** (the trace shows
+`core:dotnet@10.0.100` and uses the official MS install script
+`dotnet-install.sh`) — not asdf-backed. So no `requires_plugin_install`
+flag is needed; `mise use --global dotnet@<version>` works as-is.
 
-This is the only unknown in Phase 1. Everything else is mechanical.
+The remaining failure was the ICU runtime dependency. Resolution
+verified by installing `libicu74` from the host side as root (NOT via
+sudo inside the container, per the no-sudo invariant):
+
+```bash
+docker exec -it -u root -w /workspace workspace bash
+apt-get update && apt-get install -y libicu74
+exit
+# back as agent:
+dotnet --version  # → 10.0.100   ✓
+```
+
+This is what `required_os_packages = ("libicu74",)` baked into image
+build will produce automatically — same effect, just done at the
+correct phase (image build, root legitimate) rather than as runtime
+privilege escalation (which is forbidden).
 
 ### Independence and ordering
 
@@ -499,10 +565,20 @@ from the moment it ships. If bundled in one PR, no ordering question.
 
 To keep scope tight:
 
-- Does **not** introduce `[provision]`. That's v2.
+- Does **not** introduce `[provision]` in `coding-environment.toml`.
+  That's v2.
 - Does **not** drop the `SUPPORTED_LANGUAGES` whitelist. The whitelist
-  is still a gate in v1.
-- Does **not** change the Dockerfile structure or backend interface.
+  is still a gate in v1 — `required_os_packages` is a new *internal*
+  field on existing entries, not a new user-facing schema concept.
+- Does **not** change Dockerfile *structure* (still 3 stages, still
+  apt-install + mise + verify). The apt-install RUN's *source list* is
+  enriched (user `[os].packages` ∪ per-language `required_os_packages`),
+  which is a small data-driven change inside `_render_apt_install`,
+  not an architectural one.
+- Does **not** change the user-facing TOML schema. `schema_version`
+  stays at `1`; users still write `[os].packages` and `[languages.*]`
+  the same way they do today. The new field lives in Python code, not
+  in user-edited TOML.
 - Does **not** address Java. Java's distribution-choice question
   (Temurin vs Corretto vs ...) is non-trivial and benefits from being
   done under the v2 model where users can express their distro
@@ -516,10 +592,14 @@ To keep scope tight:
 1. **Schema versioning.** Add `schema_version = 1` to
    `coding-environment.toml`. Loader, wizard writer, tests,
    documentation note.
-2. **C# / .NET.** Add `dotnet` entry to `SUPPORTED_LANGUAGES`. Tests,
-   README, wizard example. Verify mise plugin auto-install in a smoke
-   test; emit `mise plugin install dotnet` only if the smoke test
-   reveals it's needed.
+2. **C# / .NET.** Add `dotnet` entry to `SUPPORTED_LANGUAGES` with
+   `required_os_packages = ("libicu74",)`. Extend the apt-install
+   renderer in `docker_prison.py` to union per-language deps with
+   user-declared `[os].packages` (sorted, deduped). Tests on both the
+   languages whitelist (entry shape) and the Dockerfile generator
+   (libicu74 appears iff dotnet declared). README + wizard example.
+   mise plugin model already verified — `dotnet` is core, no
+   `requires_plugin_install` flag needed.
 
 **Phase 2 — v2 refactor (deferred):**
 
@@ -544,13 +624,21 @@ To keep scope tight:
 
 ## Open questions for the next pass
 
-- **Phase 1 — mise auto-install of asdf plugins.** Resolved by the
-  smoke test above; one of two known outcomes.
-- **Phase 2 — agent user sudo at runtime.** Does the entrypoint leave
-  the agent user with usable `sudo`, or is the expectation that all
-  root work happens at provision time and runtime has no privilege
-  escalation? (Probably the latter, by design — but needs to be
-  stated explicitly in the v2 contract.)
+- **Phase 1 — mise plugin model for dotnet.** Resolved: `dotnet` is a
+  core mise plugin, no `requires_plugin_install` flag needed.
+- **Phase 1 — runtime OS deps for languages.** Resolved by introducing
+  `required_os_packages` on `SUPPORTED_LANGUAGES` entries; populated
+  for `dotnet` (libicu74), empty for everything else for now. Java
+  will likely add to this when introduced under v2.
+- **Agent user privilege escalation at runtime.** Resolved: the agent
+  user has **no sudo** inside Alcatraz, by design. Sudo is attack
+  surface; an agent compromise must not escalate to root. Anything
+  that needs root (apt-get, system-wide installs) must be baked at
+  image build time, where the Dockerfile `RUN` already executes as
+  root. The v2 `[provision].root_commands` proposal is consistent
+  with this — provision is build time, not runtime. For one-off
+  debugging from outside, `docker exec -u root` is the supported
+  escape hatch and grants no standing privilege to the agent user.
 - **Phase 2 — `[provision]` per-step user selection.** Should
   `[provision]` allow per-step `user` selection (per-command root vs
   agent) instead of two separate lists? Two lists is simpler;
