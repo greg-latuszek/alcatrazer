@@ -326,10 +326,9 @@ Architectural consequences:
   commands to `[provision]` in `coding-environment.toml`."* — and
   optionally drops a commented example.
 
-## What this means for C# / Java specifically
+## What this means for C# / Java specifically (long-term view)
 
-The right answer is no longer "add entries to `SUPPORTED_LANGUAGES`."
-It's:
+The eventual right answer for arbitrary languages is:
 
 1. **Ship the `[provision]` contract.** Once that exists, C#, Java, Ruby,
    PHP, Kotlin, Elixir, Lua, Zig, Dart, Scala, Clojure, R, Julia, Perl,
@@ -342,48 +341,209 @@ It's:
    driven path actually works under the agent user — specifically, that
    `apt-get install` works at provision time as root, and that
    user-context commands like `curl | bash` install into the agent's
-   `$HOME` correctly. Both should be straightforward, but should be
-   exercised end-to-end before we commit to the contract.
+   `$HOME` correctly.
+
+That's a v2 refactor and breaks the current `coding-environment.toml`
+contract. We don't want to gate C# adoption on it.
+
+## Phase 1 — low-hanging fruit (do now)
+
+To get C# / .NET developers onboard immediately and prepare the file
+format for the v2 refactor without trapping any existing user, we land
+two small, independent changes first. Both stay inside the current
+architecture (mise + Stage 3 sugar). Neither requires the v2 contract.
+
+### Phase 1.1 — Schema versioning of `coding-environment.toml`
+
+Add a top-level integer field, set today to `1`. The loader reads it,
+defaults to `1` when absent (so every existing config keeps working),
+and errors on any value the running alcatrazer doesn't recognize. This
+gives us a clean cut-over when v2 introduces `[provision]`.
+
+```toml
+schema_version = 1
+
+[os]
+packages = ["build-essential"]
+
+[languages.python]
+version = "3.12"
+```
+
+Loader behavior:
+
+| Found `schema_version` | Behavior                                                    |
+| ---------------------- | ----------------------------------------------------------- |
+| absent                 | treat as `1` (backwards compatible)                         |
+| `1`                    | parse current schema (`[os]`, `[languages.*]`, `[startup]`) |
+| `2` (future)           | parse v2 schema (`[provision]`, etc.)                       |
+| unknown / higher       | error — ask user to upgrade alcatrazer                      |
+
+**Why integer, not semver:** for a config file the relevant question is
+"do I know how to parse this?" — yes/no. Minor-version additive changes
+inside one major can be handled by tolerating unknown sub-keys at parse
+time (warn, don't error). Bumping the integer is the explicit "you must
+migrate" signal. Simpler, clearer, and matches the convention in
+analogous tools (VS Code `tasks.json` uses `"version": "2.0.0"` but only
+the major matters; dprint, asdf-style configs use plain integers).
+
+**Concrete code touches:**
+
+- Wherever `coding-environment.toml` is parsed (the wizard / start
+  path) reads the field and dispatches.
+- Wizard writer (`start.py` near the `_format_toml_string` usage at
+  line 488) emits `schema_version = 1` as the first line of generated
+  TOML.
+- Tests assert: missing field loads as v1, explicit `1` loads, `2`
+  errors clearly with a "upgrade alcatrazer" message, `0` errors with
+  a "downgrade or migrate" message.
+- README configuration section gains a one-line note about the field.
+
+**Out of scope for this phase but worth flagging:**
+`.alcatrazer/config.toml` (per-developer alcatrazer config) is a
+separate file with a separate schema. Applying the same convention
+there is a parallel cleanup, not blocking.
+
+### Phase 1.2 — C# / .NET added to `SUPPORTED_LANGUAGES`
+
+The single dict entry, parallel to the existing `go` and `rust` shape:
+
+```python
+"dotnet": {
+    "default_manager": "dotnet",
+    "managers": ("dotnet",),
+    "version_check": "dotnet --version",
+},
+```
+
+**Naming choice: `dotnet`, not `csharp`.** The runtime is .NET (it also
+hosts F# and VB.NET); mise's plugin is named `dotnet`; the user-visible
+TOML key becomes `[languages.dotnet]`. The wizard's help text and
+README should mention "C# / F# / VB.NET" so C# developers find it
+when scanning.
+
+**Default-version suggestion for the wizard: `10.0.100`** (.NET 10
+LTS, shipped Nov 2025, supported until Nov 2028 — current LTS as of
+April 2026). `8.0.404` (.NET 8 LTS, supported until Nov 2026) is a
+valid alternative for users on legacy projects.
+
+**Default package manager:** `dotnet` (the CLI). Unlike Java, .NET has
+one canonical toolchain — `dotnet add package`, `dotnet restore`,
+`dotnet build` all ship with the SDK and use NuGet under the hood. So
+the entry has a single-element `managers` tuple, same as `go` and
+`rust`.
+
+**Concrete code touches:**
+
+- `src/alcatrazer/languages.py:10-33` — add the entry.
+- `src/alcatrazer/start.py:408-411` — add wizard example:
+  `"dotnet": ["# [languages.dotnet]", '# version = "10.0.100"']`.
+- `src/alcatrazer/tests/test_start.py:368-420` — per-language tests
+  parallel to the existing `test_*_default_manager_is_*_with_alternatives`,
+  `test_*_version_check`. Specifically:
+  - `test_dotnet_default_manager_is_dotnet`
+  - `test_dotnet_version_check_uses_dotnet`
+  - existing `test_every_language_has_a_version_check_command` covers
+    presence automatically.
+- `README.md` line 505 — add `dotnet` to the supported list, with a
+  parenthetical "C# / F# / VB.NET".
+
+### Caveat to verify before merging Phase 1.2
+
+**mise's `dotnet` plugin is asdf-backed, not a core mise plugin.** The
+current `_render_mise_uses` (`docker_prison.py:106-116`) emits a single
+chained `RUN mise use --global dotnet@<version>` line. We need to
+confirm empirically that mise auto-installs the asdf plugin on first
+use of an unknown tool name.
+
+**Verification command** (run inside a fresh Alcatraz container):
+
+```bash
+mise use --global dotnet@10.0.100
+dotnet --version
+```
+
+- **If clean:** no further change needed. Ship the entry as-is.
+- **If errors with "plugin not found":** small enhancement to
+  `_render_mise_uses` — emit `mise plugin install dotnet` before the
+  `mise use --global` line for languages flagged as needing it. Keep
+  the data-driven shape by adding an optional per-language field, e.g.
+  `"requires_plugin_install": True`, defaulting to `False`. Touches
+  `languages.py` (one extra key), `docker_prison.py` (one extra line
+  in the rendered RUN), and one new test asserting the `plugin
+  install` line is emitted only for flagged languages.
+
+This is the only unknown in Phase 1. Everything else is mechanical.
+
+### Independence and ordering
+
+Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
+each other and can land as two separate commits or one bundled PR.
+
+Recommended order if separated: **schema versioning first**, so the
+C# wizard-generated config naturally includes `schema_version = 1`
+from the moment it ships. If bundled in one PR, no ordering question.
+
+### What Phase 1 does NOT do
+
+To keep scope tight:
+
+- Does **not** introduce `[provision]`. That's v2.
+- Does **not** drop the `SUPPORTED_LANGUAGES` whitelist. The whitelist
+  is still a gate in v1.
+- Does **not** change the Dockerfile structure or backend interface.
+- Does **not** address Java. Java's distribution-choice question
+  (Temurin vs Corretto vs ...) is non-trivial and benefits from being
+  done under the v2 model where users can express their distro
+  preference as raw bash. .NET is the cleaner first add because it has
+  one canonical distribution.
 
 ## Recommended next steps (sequenced)
 
-1. **Validate the empty-stage-3 path today.** With current code: init
-   accepting empty `[languages]`, start, exec in, attempt `apt-get
-   install openjdk-21-jdk` (likely needs root — check entrypoint posture)
-   and `curl -s https://get.sdkman.io | bash` (as agent). This tells us
-   whether the new contract requires entrypoint changes or works on top
-   of what's there.
-2. **Sketch the `Alcatraz` port interface** under the two-method contract
-   (`provision`, `start`). Verify `DockerPrison` can implement it without
-   regression. Sketch what a hypothetical `FirecrackerPrison` would do
-   for the same methods — surface any axis we missed.
-3. **Implement `[provision]` as a TOML section.** Wire it through the
-   config loader, then through `DockerPrison._render_dockerfile` so that
-   `[provision].root_commands` and `[provision].user_commands` emit
-   `USER root` / `USER agent` RUN blocks in stage 3.
-4. **Make existing `[os].packages` and `[languages.*]` desugar into
-   `[provision]` lists** in the config loader. Backend code stops seeing
-   the sugar. Tests assert the desugaring (independent of backend).
-5. **Demote `SUPPORTED_LANGUAGES` from gate to suggestion.** Rename,
-   stop validating user input against it, keep it as the wizard's
-   curated menu.
-6. **Documentation pass.** README "Supported languages" section becomes
-   "Curated convenience languages — and how to add anything else."
+**Phase 1 — now:**
 
-Steps 1-2 are research; 3-5 are the implementation; 6 closes it.
+1. **Schema versioning.** Add `schema_version = 1` to
+   `coding-environment.toml`. Loader, wizard writer, tests,
+   documentation note.
+2. **C# / .NET.** Add `dotnet` entry to `SUPPORTED_LANGUAGES`. Tests,
+   README, wizard example. Verify mise plugin auto-install in a smoke
+   test; emit `mise plugin install dotnet` only if the smoke test
+   reveals it's needed.
+
+**Phase 2 — v2 refactor (deferred):**
+
+3. Validate the empty-stage-3 path on the current container — confirm
+   `apt-get` works at provision time and `curl | bash` works as agent.
+4. Sketch the `Alcatraz` port interface under the two-method contract
+   (`provision`, `start`). Verify `DockerPrison` can implement it
+   without regression. Sketch a hypothetical `FirecrackerPrison` for
+   the same methods — surface any axis we missed.
+5. Implement `[provision]` as a v2 TOML section. Bump
+   `schema_version` to `2`.
+6. Make existing `[os].packages` and `[languages.*]` desugar into
+   `[provision]` lists in the config loader (still under v1 schema for
+   backcompat; v2 schema decides whether to keep or remove the sugar).
+7. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+   `WIZARD_SUGGESTIONS` or similar).
+8. Java added cleanly under v2 — distribution prefix expressed as raw
+   `version = "temurin-21.0.5"` or via raw `[provision]` bash for users
+   on SDKMAN!.
+9. Documentation pass — README "Supported languages" section becomes
+   "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
 
-- Does the entrypoint leave the agent user with usable `sudo`, or is the
-  expectation that all root work happens at provision time and runtime
-  has no privilege escalation? (Probably the latter, by design — but
-  needs to be stated explicitly in the contract.)
-- Should `[provision]` allow per-step `user` selection (per-command root
-  vs agent) instead of two separate lists? Two lists is simpler; per-
-  step is more flexible. Lean toward two lists until a real use case
-  forces per-step.
-- Mise as default sugar: keep or remove? (Leaning keep — see caveat
-  above.)
-- Versioning of the `coding-environment.toml` schema: do we need a
-  `schema_version` field now that we're adding `[provision]`? Probably
-  yes, even if we don't enforce it for v1.
+- **Phase 1 — mise auto-install of asdf plugins.** Resolved by the
+  smoke test above; one of two known outcomes.
+- **Phase 2 — agent user sudo at runtime.** Does the entrypoint leave
+  the agent user with usable `sudo`, or is the expectation that all
+  root work happens at provision time and runtime has no privilege
+  escalation? (Probably the latter, by design — but needs to be
+  stated explicitly in the v2 contract.)
+- **Phase 2 — `[provision]` per-step user selection.** Should
+  `[provision]` allow per-step `user` selection (per-command root vs
+  agent) instead of two separate lists? Two lists is simpler;
+  per-step is more flexible. Lean toward two lists until a real use
+  case forces per-step.
+- **Phase 2 — mise as default sugar.** Keep or remove from `dev-base`?
+  Leaning keep — small, harmless, makes the curated path zero-friction.
