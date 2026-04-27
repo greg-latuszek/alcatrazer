@@ -363,10 +363,10 @@ class AskPromotionIdentityTests(unittest.TestCase):
 class SupportedLanguagesTests(unittest.TestCase):
     """Step 3d: the wizard must know a fixed set of mise-supported languages."""
 
-    def test_has_the_four_supported_languages(self):
+    def test_supported_language_set(self):
         self.assertEqual(
             set(languages.SUPPORTED_LANGUAGES),
-            {"python", "node", "rust", "go"},
+            {"python", "node", "rust", "go", "dotnet"},
         )
 
     def test_python_default_manager_is_pip_with_alternatives(self):
@@ -420,6 +420,43 @@ class SupportedLanguagesTests(unittest.TestCase):
         self.assertEqual(node["default_manager"], "npm")
         self.assertIn("pnpm", node["managers"])
         self.assertIn("yarn", node["managers"])
+
+    # --- Phase 1.2: dotnet (C# / F# / VB.NET) -----------------------------
+
+    def test_dotnet_default_manager_is_dotnet_only(self):
+        # .NET ships one canonical CLI — `dotnet add package` (NuGet under
+        # the hood). Same single-element shape as `go` and `rust`.
+        dotnet = languages.SUPPORTED_LANGUAGES["dotnet"]
+        self.assertEqual(dotnet["default_manager"], "dotnet")
+        self.assertEqual(dotnet["managers"], ("dotnet",))
+
+    def test_dotnet_version_check_uses_dotnet_dash_dash_version(self):
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["dotnet"]["version_check"],
+            "dotnet --version",
+        )
+
+    def test_dotnet_declares_libicu74_as_required_os_package(self):
+        # .NET runtime crashes immediately without an ICU library
+        # ("Couldn't find a valid ICU package") on minimal Ubuntu 24.04.
+        # Encoding it next to the language entry means picking
+        # [languages.dotnet] auto-installs libicu74 at image build —
+        # no runtime sudo, no discovery-by-crash.
+        self.assertIn(
+            "libicu74",
+            languages.SUPPORTED_LANGUAGES["dotnet"].get("required_os_packages", ()),
+        )
+
+    def test_other_languages_have_no_required_os_packages(self):
+        # python/node/rust/go run on what Ubuntu 24.04's minimal base
+        # provides; any future addition must justify itself with a
+        # crash-on-startup-without-it argument like .NET's ICU.
+        for name in ("python", "node", "rust", "go"):
+            self.assertEqual(
+                languages.SUPPORTED_LANGUAGES[name].get("required_os_packages", ()),
+                (),
+                f"{name!r} should not declare required_os_packages",
+            )
 
 
 def _run_wizard(func, inputs):
@@ -485,6 +522,11 @@ class AskLanguagesTests(unittest.TestCase):
         # Rust's only manager is cargo — no prompt, exactly two inputs total.
         result = _run_wizard(start.ask_languages, ["rust", "1.75"])
         self.assertEqual(result, {"rust": {"version": "1.75"}})
+
+    def test_dotnet_single_manager_skips_manager_prompt(self):
+        # .NET ships one CLI; same single-manager treatment as rust/go.
+        result = _run_wizard(start.ask_languages, ["dotnet", "10.0.100"])
+        self.assertEqual(result, {"dotnet": {"version": "10.0.100"}})
 
 
 class AskOsPackagesTests(unittest.TestCase):

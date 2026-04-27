@@ -132,6 +132,87 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         dev = self._slice(content, "FROM ai-base AS dev")
         self.assertNotIn("apt-get install", dev)
 
+    # --- Phase 1.2: per-language required_os_packages -----------------------
+
+    def test_dotnet_required_os_package_libicu74_appears_in_apt_install(self):
+        # .NET's runtime needs ICU; declaring [languages.dotnet] must auto-add
+        # libicu74 to the build-time apt-install line so the agent doesn't
+        # need runtime sudo to fix the missing-ICU crash.
+        content = self._generate({"languages": {"dotnet": {"version": "10.0.100"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("apt-get install", dev)
+        self.assertIn("libicu74", dev)
+
+    def test_dotnet_alone_creates_apt_install_block(self):
+        # Even without any user [os].packages, the language's required deps
+        # alone are enough to emit the apt-install block.
+        content = self._generate({"languages": {"dotnet": {"version": "10.0.100"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("USER root", dev)
+        self.assertIn("apt-get update && apt-get install -y", dev)
+
+    def test_no_libicu74_when_dotnet_not_declared(self):
+        # Regression guard: required_os_packages stay scoped to the language
+        # that declared them — a python-only project must not pull libicu74.
+        content = self._generate(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("libicu", dev)
+
+    def test_dotnet_required_packages_unioned_with_user_packages(self):
+        content = self._generate(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("build-essential", dev)
+        self.assertIn("libicu74", dev)
+
+    def test_dotnet_required_packages_deduped_when_user_already_declares(self):
+        # If a user already lists libicu74 explicitly, the merged apt-install
+        # line must contain it exactly once — not twice.
+        content = self._generate(
+            {
+                "os": {"packages": ["libicu74"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # Count occurrences on the apt-install line specifically (the package
+        # name might also appear in unrelated comments later if added; we
+        # care about the install command).
+        install_line_idx = dev.find("apt-get install")
+        end_of_run_idx = dev.find("rm -rf /var/lib/apt/lists", install_line_idx)
+        install_segment = dev[install_line_idx:end_of_run_idx]
+        self.assertEqual(install_segment.count("libicu74"), 1)
+
+    def test_apt_install_packages_in_deterministic_order(self):
+        # Two coding-environments that union to the same package set must
+        # produce the exact same apt-install line. Otherwise needs_rebuild
+        # would flap when the user reorders [os].packages.
+        a = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev", "build-essential"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        b = self._generate(
+            {
+                "os": {"packages": ["build-essential", "zlib1g-dev"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        # Compare just the dev stages — the rest is identical anyway.
+        self.assertEqual(
+            self._slice(a, "FROM ai-base AS dev"), self._slice(b, "FROM ai-base AS dev")
+        )
+
     def test_verify_block_always_chains_git_mise_claude(self):
         content = self._generate({"languages": {"python": {"version": "3.12"}}})
         dev = self._slice(content, "FROM ai-base AS dev")
