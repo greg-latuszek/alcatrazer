@@ -607,6 +607,100 @@ class AskCodingEnvironmentTests(unittest.TestCase):
         self.assertEqual(list(result), ["os", "languages", "startup"])
 
 
+class WizardSelfExplanationTests(unittest.TestCase):
+    """Phase 1.2.1: the wizard prints a one-time intro diagram, section
+    banners, and a few lines of context per `ask_*` so domain terms
+    (`promote`, `Alcatraz`, `baked`) are introduced BEFORE they appear
+    inside prompts. No structural changes — same prompts, same accepted
+    answers, same return values."""
+
+    def _capture(self, callable_, *args, **kwargs):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            callable_(*args, **kwargs)
+        return stdout.getvalue()
+
+    def _capture_with_inputs(self, func, inputs):
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter(inputs)),
+            contextlib.redirect_stdout(stdout),
+        ):
+            func()
+        return stdout.getvalue()
+
+    # --- Intro panel (`_print_init_intro`) -------------------------------
+
+    def test_intro_panel_introduces_promote_term(self):
+        # The very first prompt later asks "Use for promoted commits?".
+        # Users who don't already know what "promoted" means in this
+        # context need to have seen the term defined first.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("promote", out.lower())
+
+    def test_intro_panel_names_alcatraz_and_your_repo(self):
+        out = self._capture(start._print_init_intro)
+        self.assertIn("Alcatraz", out)
+        self.assertIn("your repo", out)
+
+    def test_intro_panel_distinguishes_real_and_throwaway_identity(self):
+        # YOUR (uppercase) for emphasis on the real side; the agent
+        # side mentions a fake / throwaway identity.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("YOUR", out)
+        self.assertTrue(
+            "fake" in out.lower() or "throwaway" in out.lower(),
+            "intro must describe the agent identity as fake/throwaway",
+        )
+
+    def test_intro_panel_mentions_credentials_contrast(self):
+        out = self._capture(start._print_init_intro)
+        self.assertIn("credentials", out.lower())
+
+    def test_intro_panel_points_at_editable_toml(self):
+        # The intro tells users they can edit coding-environment.toml
+        # before `alcatrazer start` if they want to change anything.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("coding-environment.toml", out)
+
+    def test_intro_panel_mentions_agents_cannot_push(self):
+        # Trust property — agents commit but only the user pushes to
+        # remotes. Stating it once in the intro avoids surprise later.
+        out = self._capture(start._print_init_intro).lower()
+        self.assertIn("cannot push", out)
+
+    # --- Per-section banners + context ---------------------------------
+
+    def test_promotion_identity_has_banner_and_promote_context(self):
+        with patch.object(start, "read_git_identity", return_value=("A", "a@e")):
+            out = self._capture_with_inputs(
+                lambda: start.ask_promotion_identity(Path("/")),
+                [""],
+            )
+        self.assertIn("=== Promotion identity ===", out)
+        # Banner sentence references the term defined in the intro panel.
+        self.assertIn("promote", out.lower())
+
+    def test_languages_has_banner_and_baked_context(self):
+        # Three inputs cover: languages list, version, manager (empty).
+        out = self._capture_with_inputs(start.ask_languages, ["python", "3.12", ""])
+        self.assertIn("=== Languages ===", out)
+        self.assertIn("baked", out.lower())
+        self.assertIn("coding-environment.toml", out)
+
+    def test_os_packages_has_banner_and_baked_context(self):
+        out = self._capture_with_inputs(start.ask_os_packages, [""])
+        self.assertIn("=== System packages", out)
+        self.assertIn("baked", out.lower())
+
+    def test_startup_commands_has_banner_and_every_boot_context(self):
+        out = self._capture_with_inputs(start.ask_startup_commands, [""])
+        self.assertIn("=== Startup commands", out)
+        self.assertIn("every time", out.lower())
+        # Explicit contrast with the baked sections above.
+        self.assertIn("NOT baked", out)
+
+
 class WriteCodingEnvironmentTomlTests(unittest.TestCase):
     """Step 3e: coding-environment.toml writer — agent-visible, zero branding."""
 
@@ -2080,6 +2174,47 @@ class CmdInitIntegrationTests(unittest.TestCase):
         self.mocks["ask_coding_environment"].return_value = coding_env
         self._run()
         self.prison.generate_prison.assert_called_once_with(coding_env)
+
+    # --- Phase 1.2.1: wizard self-explanation wiring + closing scrub ----
+
+    def test_intro_panel_printed_before_writing_configuration(self):
+        """The intro must appear before any other cmd_init output so its
+        terms (`promote`, `Alcatraz`) are defined before `Use for promoted
+        commits?` is asked. The integration test mocks the ask_* functions
+        so they don't print; whatever phrases land on stdout BEFORE
+        'Writing configuration...' come from the intro and must match."""
+        _, out = self._run_capturing(host_has_creds=True)
+        intro_idx = out.find("your repo")
+        writing_idx = out.find("Writing configuration")
+        self.assertGreater(intro_idx, -1, "intro panel not printed by cmd_init")
+        self.assertGreater(writing_idx, intro_idx, "intro must precede 'Writing configuration'")
+
+    def test_closing_with_creds_uses_alcatraz_vocabulary(self):
+        """Replaces the old 'mounted into the workspace' / 'launch the
+        workspace' phrasing with Alcatraz-native wording."""
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        self.assertGreater(closing_start, -1)
+        closing = out[closing_start:]
+        self.assertIn("they will be used by Alcatraz", closing)
+        self.assertIn("build Alcatraz and run it with own git", closing)
+
+    def test_closing_with_creds_drops_container_terms(self):
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:].lower()
+        self.assertNotIn("workspace", closing)
+        self.assertNotIn("the image", closing)
+
+    def test_closing_without_creds_uses_alcatraz_vocabulary(self):
+        """The API-key branch's trailing 'run alcatrazer start' line gets
+        the same Alcatraz-vocabulary rewrite as the with-creds branch."""
+        _, out = self._run_capturing(host_has_creds=False)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("build Alcatraz and run it with own git", closing)
+        self.assertNotIn("the image", closing.lower())
+        self.assertNotIn("the workspace", closing.lower())
 
     def test_workspace_name_flows_into_exclude(self):
         self.mocks["generate_workspace_dir_name"].return_value = ".devspace-zzzz"
