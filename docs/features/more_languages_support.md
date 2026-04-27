@@ -1003,6 +1003,265 @@ Estimated ~1 hour of code time once the empirical verification
 above) is in the bag. Most of the time goes to the test methods and
 README subsection, not the implementation itself.
 
+### Phase 1.2.3 — Wizard ergonomics: reuse-prompt + every-language version_tip
+
+Two themes — reusing existing `coding-environment.toml` on re-init,
+and making `version_tip` more useful — bundled because they're both
+small UX-polish items that touch the same wizard code paths.
+
+#### Theme A — reuse-prompt for existing alcatrazer-generated config
+
+**Today's behavior:** re-running `alcatrazer init` against a project
+that already has a `coding-environment.toml` writes a NEW file with
+a hex suffix (`coding-environment-a3f7.toml`), orphaning the
+original. That's correct when the existing file is user-authored
+(we mustn't clobber); wrong when it's alcatrazer-generated. Common
+scenario: user committed their config to git, deleted `.alcatrazer/`
++ workspace, ran `init` again — they get an orphan plus a
+near-duplicate.
+
+**Fix:** detect alcatrazer-generated files via header markers, ask
+the user whether to reuse, skip the languages/os/startup wizard
+when they agree.
+
+**Detection — schema-version-dependent header markers.** v1 schema
+files (today's only) carry both header lines emitted by
+`_render_coding_environment` via `_CODING_ENVIRONMENT_HEADER`:
+- `# Coding environment definition for this repository.`
+- `# Sections follow dependency order: OS -> languages -> startup.`
+
+Both must appear at the top of the file for the file to be
+recognized as v1 alcatrazer-generated. When v2 introduces
+`[provision]` (deferred to Phase 2), the header text will likely
+change too — so the detection logic stores markers in a dict keyed
+by `schema_version`, and consults the file's declared version
+before deciding. v2 just adds a new entry; the detection function
+stays one place.
+
+```python
+_GENERATED_MARKERS_BY_SCHEMA: dict[int, tuple[str, ...]] = {
+    1: (
+        "# Coding environment definition for this repository.",
+        "# Sections follow dependency order: OS -> languages -> startup.",
+    ),
+    # Future: 2: (...) when [provision] header text is finalized.
+}
+```
+
+This explicitly captures the "markers depend on schema_version"
+contract that the user flagged. Adding v2 support is a one-line
+change to this dict, not a refactor of the detection logic.
+
+**Prompt (printed mid-wizard, after the Promotion identity section
+and before Languages):**
+
+```text
+Detected existing coding-environment.toml from a previous alcatrazer
+install. Reuse it as-is? [Y/n]
+```
+
+- **Y / Enter** → load and use the file; skip
+  `ask_coding_environment` entirely; print `Reusing
+  coding-environment.toml.`
+- **n** → run the languages/os/startup wizard fresh. Then before
+  writing, confirm overwrite: `Overwrite existing
+  coding-environment.toml? [y/N]`. If `n`, fall back to today's
+  hex-suffix.
+
+**Failure-mode analysis.** Asymmetric, in our favor:
+
+- *False positive* (treats user-authored file as alcatrazer-generated,
+  offers to reuse) — user accidentally Enters → we use their file →
+  the wizard would have written their inputs anyway → no real harm.
+- *False negative* (misses an alcatrazer file, falls back to hex
+  suffix) — today's behavior, annoying but recoverable.
+
+So conservative threshold (require BOTH header markers) is the
+safer default.
+
+#### Theme B — every language gets a `version_tip`
+
+Currently only `java` declares one. Other languages ship without
+version examples or default-version guidance, so users facing
+`Version for dotnet:` don't know what format is expected.
+
+**Plan: extend each entry with a `version_tip` string.** Wording
+leads with "Version examples:" (per user direction):
+
+| Lang   | Proposed `version_tip`                                                                                                                                                |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| python | `Version examples: 3.11, 3.12, 3.13. Pin a concrete release; "latest" is rejected.`                                                                                   |
+| node   | `Version examples: 18, 20, 22. LTS lines (even-numbered) are recommended for production.`                                                                             |
+| rust   | `Version examples: 1.75, 1.83. Pin a concrete release.`                                                                                                               |
+| go     | `Version examples: 1.22, 1.23. Pin a concrete release.`                                                                                                               |
+| dotnet | `Version examples: 8.0.404 (LTS), 10.0.100 (current LTS). Pin to major.minor.patch.`                                                                                  |
+| java   | `Version examples: 17, 21. Defaults to Eclipse Temurin. Prefix for alternatives, e.g. "corretto-21", "zulu-21", "graalvm-21". See README for the full list.`          |
+
+Java's existing tip ("Defaults to Eclipse Temurin…") is rewritten
+to lead with version examples — same content, different ordering,
+matches the rest.
+
+#### Theme C — layout: tip BEFORE the upcoming prompt
+
+**Today's `_ask_version`** prints the tip then a blank line then
+the prompt:
+
+```text
+  Version for dotnet: 10.0.100
+  Tip: …
+
+  Version for java:
+```
+
+The tip is FOR `Version for java:`, but the blank line separates
+the tip from `java:` and visually groups it with `Version for
+dotnet:` instead. Wrong.
+
+**Fix:** swap blank line position — tip groups with the *upcoming*
+prompt, not the previous answer:
+
+```text
+  Version for dotnet: 10.0.100
+
+  Tip: Version examples: 17, 21. Defaults to Eclipse Temurin…
+  Version for java:
+```
+
+One-line move in `_ask_version` — the `print()` swaps from after
+the tip to before it.
+
+#### Theme D — tip lands in the generated `coding-environment.toml`
+
+**Today's `_render_coding_environment`** emits each language's
+section bare:
+
+```toml
+[languages.java]
+version = "21"
+```
+
+After the change, the same `version_tip` is rendered as a comment
+block above `version =`:
+
+```toml
+[languages.java]
+# Version examples: 17, 21. Defaults to Eclipse Temurin. Prefix for
+# alternatives, e.g. "corretto-21", "zulu-21", "graalvm-21". See README
+# for the full list.
+version = "21"
+```
+
+DRY: one source string in `SUPPORTED_LANGUAGES`, two consumers
+(wizard prompt + TOML comment). Users editing the file later see
+the same guidance the wizard gave them — no need to re-run init or
+read the README.
+
+**Bonus simplification:** today's `_EXAMPLE_LANGUAGE_BLOCKS["java"]`
+hand-writes the distribution-prefix comment as a multi-line list.
+Once `_render_coding_environment` auto-emits the tip as comments,
+the example block goes back to the standard 2-line shape:
+`# [languages.java]` + `# version = "21"`. Less duplication, the
+generated comment is the single source of truth.
+
+#### Concrete code touches
+
+- `src/alcatrazer/languages.py`
+  - Add `version_tip` field to python, node, rust, go, dotnet
+    entries.
+  - Rewrite java's `version_tip` to lead with "Version examples:
+    17, 21." (same content as today, reordered).
+- `src/alcatrazer/start.py`
+  - `_ask_version` — move the `print()` blank from after the tip
+    to before it.
+  - `_render_coding_environment` — for each language section, render
+    the language's `version_tip` as a comment block above the
+    `version =` line, using `textwrap.fill` with `# ` line prefix
+    and a sensible width (~76 cols).
+  - `_EXAMPLE_LANGUAGE_BLOCKS["java"]` — simplify back to the
+    standard 2-line shape now that the tip is auto-emitted.
+  - New module-level `_GENERATED_MARKERS_BY_SCHEMA` dict (keyed by
+    `schema_version`) holding the header-line markers per schema.
+  - New helper `_load_existing_alcatrazer_config(project_dir) -> dict | None`
+    — reads `coding-environment.toml` if present, applies the
+    schema-version-aware marker check, returns the parsed dict on
+    match or `None` otherwise.
+  - `cmd_init` — before `ask_coding_environment`, check for an
+    existing alcatrazer-generated file. If found, print the reuse
+    prompt; on Y, skip the wizard and use the parsed dict; on n,
+    fall through to the wizard and gate the write behind an
+    overwrite-confirmation.
+  - `write_coding_environment_toml` — accepts a new optional
+    parameter (`overwrite_confirmed: bool = False`). If the target
+    exists AND looks alcatrazer-generated AND `overwrite_confirmed`
+    is False, raise / signal back so the caller knows to prompt.
+- `src/alcatrazer/tests/test_start.py`:
+  - Per-language: `test_python_declares_version_tip`,
+    `test_node_declares_version_tip`, `test_rust_declares_version_tip`,
+    `test_go_declares_version_tip`, `test_dotnet_declares_version_tip`.
+    Each asserts non-empty tip starting with "Version examples:".
+  - **Delete** `test_other_languages_have_no_version_tip` (now
+    obsolete: every language declares one).
+  - `test_java_version_tip_starts_with_version_examples` — explicit
+    assertion on the rewritten leading words.
+  - `test_ask_version_prints_blank_before_tip` — captures stdout,
+    asserts a blank line precedes the `Tip:` line and no blank
+    line separates the tip from the prompt.
+  - `test_render_coding_environment_emits_version_tip_as_comment` —
+    asserts each declared language's tip appears in the generated
+    TOML as comment lines above its `version =`.
+  - `test_render_coding_environment_wraps_long_tips` — long tips
+    (java's) wrapped at the chosen width with `# ` prefix per line.
+  - `test_init_reuses_existing_alcatrazer_generated_config` —
+    pre-create an alcatrazer-style file, run cmd_init with patched
+    input "y" for reuse, assert `ask_coding_environment` was NOT
+    called.
+  - `test_init_offers_overwrite_when_user_declines_reuse` — same
+    setup, "n" then "y" to overwrite.
+  - `test_init_falls_back_to_hex_suffix_when_user_declines_overwrite` —
+    same setup, "n" then "n", asserts hex-suffix file created and
+    original preserved.
+  - `test_init_uses_hex_suffix_for_user_authored_config` —
+    pre-create a TOML without the alcatrazer header markers, run
+    cmd_init, assert hex-suffix file created and NO reuse prompt
+    appeared (existing-today behavior preserved for non-alcatrazer
+    files).
+  - `test_generated_markers_table_has_entry_for_current_schema` —
+    sanity guard: `_GENERATED_MARKERS_BY_SCHEMA[CODING_ENV_SCHEMA_VERSION]`
+    exists, so a future schema bump can't silently lose detection.
+- `README.md` — minor edit in the "Java distributions" subsection
+  noting the wizard tip is also visible later as comments in the
+  generated `coding-environment.toml`. No major rewrites — the
+  table already lives there.
+
+#### What Phase 1.2.3 does NOT do
+
+- Does **not** pre-fill wizard answers from existing values when
+  the user declines reuse. That "interactive update" feature
+  requires changing every `ask_*` to accept defaults and emit
+  "current value, press Enter to keep" prompts. Worth doing,
+  defer to a follow-up phase.
+- Does **not** change the schema (`schema_version` stays at `1`).
+  Detection markers are schema-version-aware to ease the v2
+  transition; until v2 ships, only v1 markers are checked.
+- Does **not** add a `--no-prompt` / non-interactive mode for the
+  new prompts. CI / scripted use cases need future flag work.
+- Does **not** introduce a `tip` field for other prompts (managers,
+  OS packages, startup commands). The pattern is generalizable but
+  YAGNI for now — `version_tip` is the only one with concrete
+  user-confusion evidence behind it.
+- Does **not** revisit prior phases' tests. Phase 1.2.2's
+  `test_other_languages_have_no_version_tip` gets deleted because
+  every language now has one — that's a contract change, not a
+  refactor.
+
+#### Phase 1.2.3 independence
+
+Independent of all earlier phases (1.1, 1.2, 1.2.1, 1.2.2 all
+landed). Touches `start.py` heavily and `languages.py` lightly.
+Estimated ~2 hours of code: ~30 min for tip extension across
+languages + layout fix, ~30 min for tip-as-TOML-comment rendering,
+~1 hour for the reuse-prompt logic + tests.
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -1063,28 +1322,42 @@ To keep scope tight:
    string — no schema field. Bun and Deno deliberately NOT added —
    `[startup].commands` is the canonical path for languages that
    need no root-time install.
+5. **Wizard ergonomics (Phase 1.2.3).** Reuse-prompt for existing
+   alcatrazer-generated `coding-environment.toml` (schema-version-
+   aware header detection, Y reuses + skips wizard / n offers
+   overwrite + falls back to hex suffix). Every language gets a
+   `version_tip` (leading "Version examples: …") covering format +
+   default. Layout fix: blank line moves to BEFORE the tip so it
+   visually groups with the upcoming prompt. Tip is also emitted
+   as comments above each `version =` in the generated TOML, so
+   the same guidance reaches users editing the file later.
 
 **Phase 2 — v2 refactor (deferred):**
 
-5. Validate the empty-stage-3 path on the current container — confirm
+6. Validate the empty-stage-3 path on the current container — confirm
    `apt-get` works at provision time and `curl | bash` works as agent.
-6. Sketch the `Alcatraz` port interface under the two-method contract
+7. Sketch the `Alcatraz` port interface under the two-method contract
    (`provision`, `start`). Verify `DockerPrison` can implement it
    without regression. Sketch a hypothetical `FirecrackerPrison` for
    the same methods — surface any axis we missed.
-7. Implement `[provision]` as a v2 TOML section. Bump
-   `schema_version` to `2`.
-8. Make existing `[os].packages` and `[languages.*]` desugar into
+8. Implement `[provision]` as a v2 TOML section. Bump
+   `schema_version` to `2`. **NOTE:** the
+   `_GENERATED_MARKERS_BY_SCHEMA` dict from Phase 1.2.3 needs a v2
+   entry here so `init`'s reuse-prompt detection keeps working
+   across the v1→v2 transition. Header text emitted by v2's
+   `_render_coding_environment` is what the v2 marker tuple should
+   match.
+9. Make existing `[os].packages` and `[languages.*]` desugar into
    `[provision]` lists in the config loader (still under v1 schema for
    backcompat; v2 schema decides whether to keep or remove the sugar).
-9. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
-   `WIZARD_SUGGESTIONS` or similar).
-10. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
+10. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+    `WIZARD_SUGGESTIONS` or similar).
+11. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
     other Tier B/C/D languages added cleanly under v2 — either as raw
     `[provision]` bash, or as suggestions (curated wizard menu, no
     longer a gate). Distribution-conscious Java users who want SDKMAN!
     or jenv instead of mise can also do it via raw `[provision]`.
-11. Documentation pass — README "Supported languages" section becomes
+12. Documentation pass — README "Supported languages" section becomes
     "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
