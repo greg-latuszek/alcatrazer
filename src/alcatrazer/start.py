@@ -37,6 +37,53 @@ from alcatrazer.daemon_lifecycle import (
 )
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
+# --- Coding-environment schema version --------------------------------------
+#
+# Bumped when the structure of `coding-environment.toml` changes in an
+# incompatible way. Files written before this field existed are treated as
+# version 1 (backwards compat). An older alcatrazer encountering a newer
+# schema raises UnsupportedSchemaVersionError rather than silently
+# misreading.
+
+CODING_ENV_SCHEMA_VERSION = 1
+
+
+class UnsupportedSchemaVersionError(Exception):
+    """coding-environment.toml declares a schema_version this alcatrazer
+    cannot parse — almost always means the user needs to upgrade."""
+
+
+def _validate_coding_env_schema_version(data: dict) -> None:
+    """Reject coding-environment.toml configs we can't safely parse.
+
+    - field absent → OK (treated as CODING_ENV_SCHEMA_VERSION; backwards compat)
+    - positive int ≤ CODING_ENV_SCHEMA_VERSION → OK
+    - everything else → UnsupportedSchemaVersionError
+
+    The bool branch is explicit because bool is a subclass of int in Python
+    (`isinstance(True, int)` is True), and `schema_version = true` should not
+    silently slip through as `1`.
+    """
+    if "schema_version" not in data:
+        return
+    value = data["schema_version"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml: schema_version must be an integer, "
+            f"got {value!r} ({type(value).__name__})."
+        )
+    if value < 1:
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml: schema_version must be >= 1, got {value}."
+        )
+    if value > CODING_ENV_SCHEMA_VERSION:
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml declares schema_version={value}, but "
+            f"this alcatrazer only supports up to {CODING_ENV_SCHEMA_VERSION}. "
+            f"Upgrade alcatrazer (e.g. `uv tool upgrade alcatrazer` or "
+            f"`pipx upgrade alcatrazer`)."
+        )
+
 
 def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer start` — build (if needed) and run the workspace container.
@@ -196,11 +243,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
         prison = DockerPrison(project_dir)
 
     alcatrazer_dir = project_dir / ".alcatrazer"
-    with open(alcatrazer_dir / "config.toml", "rb") as f:
-        config = tomllib.load(f)
-    coding_env_name = config.get("coding_environment_file", "coding-environment.toml")
-    with open(project_dir / coding_env_name, "rb") as f:
-        coding_env = tomllib.load(f)
+    coding_env = _load_coding_environment(project_dir)
 
     workspace_name = identity.load_workspace_dir(str(alcatrazer_dir))
 
@@ -426,6 +469,12 @@ _CODING_ENVIRONMENT_HEADER = [
     "# and get installed by [startup] commands or by agents at runtime.",
 ]
 
+_SCHEMA_VERSION_COMMENT = [
+    "# File-format version. Bumped when the structure of this file changes",
+    "# in an incompatible way. Older tooling refuses newer schemas rather",
+    "# than silently misreading them. Leave at 1 unless you know why.",
+]
+
 _OS_SECTION_COMMENT = [
     "# System packages installed when the workspace is built.",
     "# Typical uses: compilation toolchains, shared libraries for native modules,",
@@ -469,6 +518,11 @@ def _render_coding_environment(data: dict) -> str:
     term that survives a future podman/sysbox/VM backend).
     """
     lines: list[str] = [*_CODING_ENVIRONMENT_HEADER, ""]
+
+    # --- schema_version (top-level field, must precede any [section]) ---
+    lines += _SCHEMA_VERSION_COMMENT
+    lines.append(f"schema_version = {CODING_ENV_SCHEMA_VERSION}")
+    lines.append("")
 
     # --- [os] -----------------------------------------------------------
     lines += _OS_SECTION_COMMENT
@@ -862,13 +916,21 @@ def save_env_snapshot(project_dir: Path) -> Path | None:
 
 
 def _load_coding_environment(project_dir: Path) -> dict:
-    """Read config.toml pointer + parse the current coding-environment file."""
+    """Read config.toml pointer + parse + validate the coding-environment file.
+
+    Schema version is checked via _validate_coding_env_schema_version so that
+    a newer config never gets silently misread by an older alcatrazer. Files
+    without an explicit schema_version field are accepted (treated as v1) so
+    configs written before Phase 1.1 keep working unchanged.
+    """
     alcatrazer_dir = project_dir / ".alcatrazer"
     with open(alcatrazer_dir / "config.toml", "rb") as f:
         config = tomllib.load(f)
     source = project_dir / config.get("coding_environment_file", "coding-environment.toml")
     with open(source, "rb") as f:
-        return tomllib.load(f)
+        data = tomllib.load(f)
+    _validate_coding_env_schema_version(data)
+    return data
 
 
 def cmd_selftest(project_dir: Path) -> int:
