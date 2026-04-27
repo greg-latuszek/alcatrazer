@@ -1262,6 +1262,200 @@ Estimated ~2 hours of code: ~30 min for tip extension across
 languages + layout fix, ~30 min for tip-as-TOML-comment rendering,
 ~1 hour for the reuse-prompt logic + tests.
 
+### Phase 1.2.4 — Manager always written; bundled vs installable; `manager_tip`
+
+Surfaced by a real-user observation while testing Java in Alcatraz:
+the wizard accepted `[maven]` as default, but the generated
+`coding-environment.toml` had no `manager =` line and the image
+shipped without Maven. Three intertwined defects all stem from one
+data-model conflation:
+
+1. **TOML omits `manager`** when the user accepts the default.
+   Result: the file is silent about a meaningful choice, so users
+   editing later have no anchor to switch managers without re-init
+   or reading docs.
+2. **`default_manager` conflates "wizard hint" with "what mise
+   installs".** `_render_mise_uses` only emits `mise use --global
+   <manager>` when the user *overrode* the default. This worked for
+   python/node/rust/go/dotnet by accident — their default managers
+   ship with the runtime (pip with Python, npm with Node, cargo with
+   Rust, dotnet IS the runtime). Java is the first language where
+   the default manager (Maven) is *not* bundled with the runtime, so
+   accepting the default leaves the user without their build tool.
+3. **No wizard tip for the manager prompt** (parallel gap to
+   `version_tip` before Phase 1.2.3). Users see
+   `Package manager for X? [maven] / gradle:` with no inline guide
+   on what each option means or how it'd land in their image.
+
+Fix: separate the three concepts cleanly, and apply the same
+self-documentation pattern Phase 1.2.3 used for `version_tip`.
+
+#### Theme A — always emit `manager =` in generated TOML
+
+Today's `_render_coding_environment` skips the line unless `manager`
+is in the dict. Phase 1.2.4 always emits it, with the resolved value
+(user-picked or language default). Symmetric with `version`: required
+field, always shown, never silently defaulted.
+
+```toml
+[languages.java]
+# Version examples: 17, 21. Defaults to Eclipse Temurin. Prefix for
+# alternatives, e.g. "corretto-21", "zulu-21", "graalvm-21". See README
+# for the full list.
+version = "21"
+# Default: maven. Alternative: gradle. Both auto-install via mise.
+manager = "maven"
+```
+
+Self-documenting at the line a user would edit, no need to re-run
+init or read README. Same DRY principle as `version_tip`: one source
+in `SUPPORTED_LANGUAGES`, two consumers (wizard prompt + TOML
+comment).
+
+#### Theme B — separate "default" from "bundled"
+
+Add a `bundled_managers: tuple[str, ...]` field on every
+`SUPPORTED_LANGUAGES` entry. It captures the install-time semantics
+that `default_manager` previously over-served:
+
+| Lang | default_manager | bundled_managers | What changes? |
+| ---- | --------------- | ---------------- | ------------- |
+| python | pip | `("pip",)` | pip stays bundled with CPython; not installed by mise. uv / poetry / pipenv install via mise when picked. |
+| node | npm | `("npm",)` | npm stays bundled with Node. pnpm / yarn install via mise when picked. |
+| rust | cargo | `("cargo",)` | cargo stays bundled with rustc. |
+| go | go | `("go",)` | the manager IS the runtime. |
+| dotnet | dotnet | `("dotnet",)` | the manager IS the runtime. |
+| **java** | **maven** | **`()`** | **NOTHING is bundled — mise installs whatever's picked, including default `maven`**. |
+
+`_render_mise_uses` becomes:
+
+```python
+manager = cfg.get("manager") or SUPPORTED_LANGUAGES[lang]["default_manager"]
+if manager not in SUPPORTED_LANGUAGES[lang]["bundled_managers"]:
+    uses.append(manager)
+```
+
+Two-line change, exact behavior we want:
+- Java + no `manager` declared → mise installs `maven`. ✓
+- Python + no `manager` → `pip` is bundled, mise skips. ✓
+- Python + `manager = "uv"` → uv not bundled, mise installs. ✓
+- Java + `manager = "gradle"` → gradle not bundled, mise installs. ✓
+
+#### Theme C — `manager_tip` parallel to `version_tip`
+
+Add an optional `manager_tip: str` field. Wizard prints it before
+the manager prompt (when there are multiple managers — single-manager
+languages skip the prompt entirely, but the tip still ends up in the
+TOML as a comment). `_render_coding_environment` emits it as a
+comment block above the `manager =` line.
+
+Proposed wording (per-language):
+
+| Lang | Proposed `manager_tip` |
+| --- | --- |
+| python | `Default: pip (bundled with Python). Alternatives: uv (fast, Rust-based), poetry, pipenv. Non-default options install via mise.` |
+| node | `Default: npm (bundled with Node). Alternatives: pnpm (fast, disk-efficient), yarn. Non-default options install via mise.` |
+| rust | `Default: cargo (bundled with the Rust toolchain). Single canonical manager.` |
+| go | `Default: go (the manager is the runtime). Single canonical manager.` |
+| dotnet | `Default: dotnet (the SDK CLI; uses NuGet under the hood). Single canonical manager.` |
+| java | `Default: maven. Alternative: gradle. Both auto-install via mise.` |
+
+Single-manager languages still get a tip — useful as a self-
+documenting comment in the TOML even though no prompt fires.
+
+#### Concrete code touches
+
+- `src/alcatrazer/languages.py`
+  - Every entry gains `bundled_managers: tuple[str, ...]` (empty
+    tuple where nothing is bundled — currently only java).
+  - Every entry gains `manager_tip: str` (single-line nudge).
+  - Module docstring documents both new fields.
+- `src/alcatrazer/start.py`
+  - `_ask_manager` always returns the resolved manager string
+    (never `None`). Single-manager case returns the lone option;
+    multi-manager case returns the user's pick (or default if Enter).
+  - `_ask_manager` prints `manager_tip` before the prompt (when
+    multi-manager). For single-manager languages the tip is silent
+    in the wizard but still lands in the TOML as a comment.
+  - `ask_languages` always stores `manager` in the entry dict.
+  - `_render_coding_environment`:
+    - Always emit `manager =` line (no more `if "manager" in cfg`).
+    - Emit `manager_tip` as `# `-prefixed comment block above the
+      `manager =` line, parallel to how `version_tip` lands above
+      `version =`.
+- `src/alcatrazer/docker_prison.py`
+  - `_render_mise_uses` resolves the manager (user pick or default)
+    and installs it iff it's NOT in `bundled_managers`. Two-line
+    change inside the existing per-language loop.
+- `src/alcatrazer/tests/test_start.py`
+  - Per-language: `test_<lang>_declares_bundled_managers`,
+    `test_<lang>_declares_manager_tip`.
+  - `test_python_pip_is_bundled_other_managers_are_not` — explicit
+    contract: `bundled_managers == ("pip",)` and
+    `"uv" not in bundled_managers`.
+  - `test_java_has_empty_bundled_managers` — explicit contract.
+  - `test_ask_manager_always_returns_resolved_value` — single-manager
+    case returns the manager (not None); default-accepted case
+    returns the default name.
+  - `test_ask_manager_prints_tip_before_multi_manager_prompt` —
+    `manager_tip` shows in wizard for python/node/java, with blank
+    BEFORE (same layout convention as `version_tip`).
+  - `test_render_coding_environment_always_emits_manager_line` —
+    every declared language has `manager = "X"` in the generated
+    TOML, regardless of whether user picked a non-default value.
+  - `test_render_coding_environment_emits_manager_tip_as_comment` —
+    same DRY pattern as `version_tip` rendering.
+- `src/alcatrazer/tests/test_docker_prison.py`
+  - `test_default_manager_for_java_installs_via_mise` — Java with
+    no `manager` declared → rendered Dockerfile contains
+    `mise use --global maven`. Closes the user-reported bug.
+  - `test_default_manager_for_python_does_not_install_via_mise` —
+    Python with no `manager` declared → rendered Dockerfile does
+    NOT contain `mise use --global pip` (pip is bundled).
+  - `test_user_picked_manager_installs_via_mise` — overriding still
+    works (e.g. `manager = "uv"` for python emits the install line).
+  - `test_bundled_manager_skipped_even_when_explicitly_chosen` —
+    user explicitly types `manager = "pip"` for python → still
+    skipped (it's bundled either way).
+- Existing wizard tests need updating: today's tests assert that
+  accepting the default omits `manager` from the result dict. Under
+  Phase 1.2.4 the `manager` key is always present. Affected tests:
+  `test_single_language_default_manager_omits_field`,
+  `test_explicit_default_manager_name_still_omits_field`,
+  `test_rust_single_manager_skips_manager_prompt`,
+  `test_dotnet_single_manager_skips_manager_prompt`,
+  `test_java_manager_prompt_offers_maven_default_and_gradle`. Each
+  needs its expected dict updated to include the resolved manager.
+- README minor update: "Java distributions" subsection notes that
+  Maven now installs by default; add a brief note in the
+  "Configuration" example that `manager` is always written.
+
+#### What Phase 1.2.4 does NOT do
+
+- Does **not** introduce a separate `manager_version` field. mise
+  picks a sensible recent version when you say `mise use --global
+  maven`. Pinning specific manager versions can be a follow-up if a
+  user ever asks (today nobody has).
+- Does **not** change the user-facing TOML schema. `schema_version`
+  stays at `1`. The new fields (`bundled_managers`, `manager_tip`)
+  live in Python `SUPPORTED_LANGUAGES`, not in user-edited TOML.
+- Does **not** revisit Phase 1.2.3's `version_tip` plumbing. The two
+  features are intentionally parallel — same wrapping, same
+  comment-emit shape, same blank-line layout — but each ship
+  independently.
+- Does **not** install ant or sbt. Those stay deferred until a user
+  asks.
+
+#### Phase 1.2.4 independence
+
+Independent of all earlier phases (1.1, 1.2, 1.2.1, 1.2.2, 1.2.3
+all landed). Touches `languages.py` (data), `start.py` (wizard +
+TOML render), `docker_prison.py` (install render), tests in two
+files. Estimated ~1.5 hours: ~30 min for the language-data extension
++ tests, ~30 min for `_ask_manager` + `_render_coding_environment`
+changes + tests, ~30 min for `_render_mise_uses` change + tests +
+existing-test updates.
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -1331,33 +1525,44 @@ To keep scope tight:
    visually groups with the upcoming prompt. Tip is also emitted
    as comments above each `version =` in the generated TOML, so
    the same guidance reaches users editing the file later.
+6. **Manager always written; bundled vs installable; `manager_tip`
+   (Phase 1.2.4).** `_render_coding_environment` always emits
+   `manager =` (resolved value, default or override) — symmetric
+   with `version`. New `bundled_managers` field separates "default"
+   from "ships with runtime"; `_render_mise_uses` installs the
+   manager iff it's not bundled (fixes the user-reported bug where
+   accepting Java's default `[maven]` left Maven uninstalled). New
+   `manager_tip` field surfaces in the wizard before the manager
+   prompt and as a TOML comment above `manager =`, parallel to
+   `version_tip`. Existing wizard tests' "default omits field"
+   expectations updated.
 
 **Phase 2 — v2 refactor (deferred):**
 
-6. Validate the empty-stage-3 path on the current container — confirm
+7. Validate the empty-stage-3 path on the current container — confirm
    `apt-get` works at provision time and `curl | bash` works as agent.
-7. Sketch the `Alcatraz` port interface under the two-method contract
+8. Sketch the `Alcatraz` port interface under the two-method contract
    (`provision`, `start`). Verify `DockerPrison` can implement it
    without regression. Sketch a hypothetical `FirecrackerPrison` for
    the same methods — surface any axis we missed.
-8. Implement `[provision]` as a v2 TOML section. Bump
+9. Implement `[provision]` as a v2 TOML section. Bump
    `schema_version` to `2`. **NOTE:** the
    `_GENERATED_MARKERS_BY_SCHEMA` dict from Phase 1.2.3 needs a v2
    entry here so `init`'s reuse-prompt detection keeps working
    across the v1→v2 transition. Header text emitted by v2's
    `_render_coding_environment` is what the v2 marker tuple should
    match.
-9. Make existing `[os].packages` and `[languages.*]` desugar into
-   `[provision]` lists in the config loader (still under v1 schema for
-   backcompat; v2 schema decides whether to keep or remove the sugar).
-10. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+10. Make existing `[os].packages` and `[languages.*]` desugar into
+    `[provision]` lists in the config loader (still under v1 schema for
+    backcompat; v2 schema decides whether to keep or remove the sugar).
+11. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
     `WIZARD_SUGGESTIONS` or similar).
-11. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
+12. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
     other Tier B/C/D languages added cleanly under v2 — either as raw
     `[provision]` bash, or as suggestions (curated wizard menu, no
     longer a gate). Distribution-conscious Java users who want SDKMAN!
     or jenv instead of mise can also do it via raw `[provision]`.
-12. Documentation pass — README "Supported languages" section becomes
+13. Documentation pass — README "Supported languages" section becomes
     "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
