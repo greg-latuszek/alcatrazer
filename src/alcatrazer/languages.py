@@ -18,6 +18,11 @@ Per-entry fields:
   languages run on what Ubuntu 24.04's minimal base provides; .NET is the
   first that needs anything (libicu, for ICU/globalization). Build-time apt
   is the right phase because the Alcatraz agent user has no runtime sudo.
+- ``version_tip`` (str, optional) — printed once by the wizard before the
+  ``Version for <lang>:`` prompt, when the language has version-string
+  conventions a typical user wouldn't guess (Java's distribution prefixes
+  like ``corretto-21`` are the first such case). Languages without it get
+  the bare prompt — the field is purely additive.
 """
 
 SUPPORTED_LANGUAGES: dict[str, dict] = {
@@ -54,5 +59,31 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
         # package" startup crash on Ubuntu 24.04. Empirically verified inside
         # a fresh Alcatraz container.
         "required_os_packages": ("libicu74",),
+    },
+    "java": {
+        "default_manager": "maven",
+        # Maven and Gradle both have core/aqua mise plugins that auto-install
+        # on first use; ant and sbt are asdf-only and deferred (they'd risk
+        # build-time failures without a `requires_plugin_install` flag we
+        # deliberately avoided for dotnet).
+        "managers": ("maven", "gradle"),
+        # `2>&1` is load-bearing: java prints `-version` output to stderr,
+        # and the verify block's chained `&&` only captures stdout in the
+        # docker-build log. Without the redirect, the version line is lost.
+        "version_check": "java -version 2>&1",
+        # JDK binary distributions (Temurin by default in mise) link only
+        # against Ubuntu 24.04's libc / libstdc++. Verified empirically in
+        # a fresh Alcatraz: `mise use --global java@21` installs OpenJDK
+        # 21.0.2 cleanly, no apt extras needed.
+        "required_os_packages": (),
+        # Java is the first language with multiple shipped distributions
+        # (Temurin / Corretto / Zulu / Liberica / GraalVM) reachable via
+        # the same mise key. The wizard surfaces the prefix syntax mid-
+        # prompt so distribution-conscious users don't miss the option.
+        "version_tip": (
+            "Defaults to Eclipse Temurin. Prefix for alternatives, "
+            'e.g. "corretto-21", "zulu-21", "graalvm-21". '
+            "See README for the full list."
+        ),
     },
 }

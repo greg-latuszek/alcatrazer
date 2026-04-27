@@ -369,6 +369,21 @@ def ask_promotion_identity(project_dir: Path) -> tuple[str, str]:
 
 
 def _ask_version(language: str) -> str:
+    tip = SUPPORTED_LANGUAGES[language].get("version_tip")
+    if tip:
+        # Wrap to a comfortable terminal width with hanging indent so
+        # continuation lines align under the first character of the tip.
+        import textwrap
+
+        print(
+            textwrap.fill(
+                tip,
+                width=72,
+                initial_indent="  Tip: ",
+                subsequent_indent="       ",
+            )
+        )
+        print()
     while True:
         version = input(f"  Version for {language}: ").strip()
         if not version:
@@ -507,6 +522,12 @@ _EXAMPLE_LANGUAGE_BLOCKS: dict[str, list[str]] = {
     "rust": ["# [languages.rust]", '# version = "1.75"'],
     "go": ["# [languages.go]", '# version = "1.22"'],
     "dotnet": ["# [languages.dotnet]", '# version = "10.0.100"'],
+    "java": [
+        "# [languages.java]",
+        '# version = "21"  # default: Eclipse Temurin. Prefix for alternatives:',
+        "#                 # corretto-21, zulu-21, graalvm-21, liberica-21,",
+        '#                 # or pin a build like "temurin-21.0.5".',
+    ],
 }
 
 _CODING_ENVIRONMENT_HEADER = [
