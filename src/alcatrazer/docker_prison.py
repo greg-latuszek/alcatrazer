@@ -142,12 +142,21 @@ def _render_dockerfile(data: dict) -> str:
         "USER agent",
     ]
 
-    os_block = _render_apt_install(data.get("os", {}).get("packages", []))
+    languages = data.get("languages", {})
+    user_pkgs = data.get("os", {}).get("packages", [])
+    # Union user-declared packages with every declared language's
+    # required_os_packages (deps that the runtime needs at startup, e.g.
+    # .NET → libicu74). Sorted + deduped so reordering [os].packages or
+    # [languages.*] never churns the rendered Dockerfile.
+    lang_pkgs: list[str] = []
+    for name in languages:
+        lang_pkgs.extend(SUPPORTED_LANGUAGES[name].get("required_os_packages", ()))
+    all_pkgs = sorted(set(user_pkgs) | set(lang_pkgs))
+    os_block = _render_apt_install(all_pkgs)
     if os_block:
         dev_stage.append("")
         dev_stage.append(os_block.rstrip())
 
-    languages = data.get("languages", {})
     mise_block = _render_mise_uses(languages)
     if mise_block:
         dev_stage.append("")
