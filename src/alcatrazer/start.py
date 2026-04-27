@@ -484,20 +484,48 @@ def _ask_version(language: str) -> str:
         return version
 
 
-def _ask_manager(language: str) -> str | None:
-    """Return the chosen manager, or None when it is the language default."""
+def _ask_manager(language: str) -> str:
+    """Return the chosen manager — always a string, never None.
+
+    Phase 1.2.4: previously returned None for default-accepted or
+    single-manager cases, which left `manager` out of the result dict
+    and therefore out of the generated TOML AND out of mise install
+    decisions. Now the resolved value is always returned, so the wizard
+    output always carries the manager that downstream code (TOML write,
+    mise install) needs to see.
+
+    Single-manager case: skip the prompt, return the lone option.
+    Multi-manager case: print `manager_tip` (if declared, blank line
+    BEFORE — same layout convention as `_ask_version`), then prompt;
+    empty input returns the language default.
+    """
     lang = SUPPORTED_LANGUAGES[language]
     managers = lang["managers"]
     default = lang["default_manager"]
     if len(managers) == 1:
-        return None
+        return managers[0]
+
+    tip = lang.get("manager_tip")
+    if tip:
+        import textwrap
+
+        print()
+        print(
+            textwrap.fill(
+                tip,
+                width=72,
+                initial_indent="  Tip: ",
+                subsequent_indent="       ",
+            )
+        )
+
     options = " / ".join(f"[{m}]" if m == default else m for m in managers)
     while True:
         choice = input(f"  Package manager for {language}? {options}: ").strip()
         if not choice:
-            return None
+            return default
         if choice in managers:
-            return None if choice == default else choice
+            return choice
         print(f"    Unknown manager '{choice}' for {language}.")
 
 
@@ -527,10 +555,9 @@ def ask_languages() -> dict[str, dict]:
     for name in names:
         version = _ask_version(name)
         manager = _ask_manager(name)
-        entry: dict = {"version": version}
-        if manager is not None:
-            entry["manager"] = manager
-        result[name] = entry
+        # Phase 1.2.4: `manager` is always a string now (the resolved
+        # value, default or override). Always store it.
+        result[name] = {"version": version, "manager": manager}
     return result
 
 
@@ -699,17 +726,18 @@ def _render_coding_environment(data: dict) -> str:
     languages = data.get("languages", {})
     for lang, cfg in languages.items():
         lines.append(f"[languages.{lang}]")
+        lang_meta = SUPPORTED_LANGUAGES.get(lang, {})
         # Phase 1.2.3: render the same `version_tip` the wizard prints
         # as a comment block above `version =`. DRY — one source string
         # in SUPPORTED_LANGUAGES, two consumers (wizard + this TOML).
         # Users editing the file later see the same guidance the wizard
         # gave them.
-        tip = SUPPORTED_LANGUAGES.get(lang, {}).get("version_tip")
-        if tip:
+        version_tip = lang_meta.get("version_tip")
+        if version_tip:
             import textwrap
 
             lines += textwrap.wrap(
-                tip,
+                version_tip,
                 width=76,
                 initial_indent="# ",
                 subsequent_indent="# ",
@@ -717,8 +745,25 @@ def _render_coding_environment(data: dict) -> str:
                 break_on_hyphens=False,
             )
         lines.append(f"version = {_format_toml_string(cfg['version'])}")
-        if "manager" in cfg:
-            lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
+        # Phase 1.2.4: same DRY pattern for `manager_tip` — comment block
+        # above `manager =`. The `manager` line itself is now ALWAYS
+        # emitted (resolved value: user pick or language default), no
+        # longer gated on whether the user overrode the default.
+        manager_tip = lang_meta.get("manager_tip")
+        if manager_tip:
+            import textwrap
+
+            lines += textwrap.wrap(
+                manager_tip,
+                width=76,
+                initial_indent="# ",
+                subsequent_indent="# ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        manager = cfg.get("manager") or lang_meta.get("default_manager")
+        if manager:
+            lines.append(f"manager = {_format_toml_string(manager)}")
         lines.append("")
     # One commented syntax-reference block for a language the user DIDN'T
     # pick. If they picked all four, fall back to python as a generic

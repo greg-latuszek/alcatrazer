@@ -123,14 +123,23 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 
 
 def _render_mise_uses(languages: dict) -> str:
-    """Render the `mise use --global` block covering runtimes + non-default managers."""
+    """Render the `mise use --global` block covering runtimes + non-bundled managers.
+
+    Phase 1.2.4: install rule changed from "non-default manager" to
+    "non-bundled manager". `bundled_managers` (per-language tuple of
+    managers that ship with the runtime — `("pip",)` for python, etc.)
+    drives the decision. Empty tuple (java) means EVERY picked manager
+    installs separately, including the default `maven`. Fixes the bug
+    where accepting Java's default left Maven uninstalled.
+    """
     if not languages:
         return ""
     uses: list[str] = []
     for lang, cfg in languages.items():
         uses.append(f"{lang}@{cfg['version']}")
-        if "manager" in cfg:
-            uses.append(cfg["manager"])
+        manager = cfg.get("manager") or SUPPORTED_LANGUAGES[lang]["default_manager"]
+        if manager not in SUPPORTED_LANGUAGES[lang].get("bundled_managers", ()):
+            uses.append(manager)
     commands = [f"mise use --global {u}" for u in uses]
     return "RUN " + " && \\\n    ".join(commands) + "\n"
 

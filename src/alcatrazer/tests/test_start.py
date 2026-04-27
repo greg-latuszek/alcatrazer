@@ -920,7 +920,9 @@ class AskCodingEnvironmentTests(unittest.TestCase):
                 "os": {"packages": ["build-essential", "libpq-dev"]},
                 "languages": {
                     "python": {"version": "3.12", "manager": "uv"},
-                    "node": {"version": "22"},
+                    # Phase 1.2.4: default-accepted manager is now stored
+                    # in the dict (resolved value).
+                    "node": {"version": "22", "manager": "npm"},
                 },
                 "startup": {"commands": ["uv sync", "npm install"]},
             },
@@ -929,7 +931,12 @@ class AskCodingEnvironmentTests(unittest.TestCase):
     def test_minimal_python_only_omits_empty_sections(self):
         inputs = ["python", "3.12", "", "", ""]
         result = _run_wizard(start.ask_coding_environment, inputs)
-        self.assertEqual(result, {"languages": {"python": {"version": "3.12"}}})
+        # Phase 1.2.4: python with default manager accepted now stores
+        # the resolved `pip` value.
+        self.assertEqual(
+            result,
+            {"languages": {"python": {"version": "3.12", "manager": "pip"}}},
+        )
 
     def test_sections_ordered_os_languages_startup(self):
         # All three sections non-empty; insertion order must be canonical.
@@ -1069,7 +1076,9 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         self.assertEqual(parsed["languages"]["python"]["version"], "3.12")
         self.assertEqual(parsed["languages"]["python"]["manager"], "uv")
         self.assertEqual(parsed["languages"]["node"]["version"], "22")
-        self.assertNotIn("manager", parsed["languages"]["node"])
+        # Phase 1.2.4: even when caller omits `manager`, the writer fills
+        # it with the language default — so node lands as `npm` here.
+        self.assertEqual(parsed["languages"]["node"]["manager"], "npm")
         self.assertEqual(parsed["startup"]["commands"], ["uv sync", "npm install"])
 
     def test_zero_alcatrazer_branding_in_output(self):
@@ -1270,7 +1279,7 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
             # Some kernel of the tip's content must surface in the
             # comment block (avoids matching against the wrong tip).
             kernel = "pip" if lang == "python" else "maven"
-            self.assertIn(f"# ", block, f"missing manager_tip comment for {lang}")
+            self.assertIn("# ", block, f"missing manager_tip comment for {lang}")
             self.assertIn(kernel, block)
             # The tip itself shouldn't be unused in this assertion path.
             self.assertTrue(tip)
