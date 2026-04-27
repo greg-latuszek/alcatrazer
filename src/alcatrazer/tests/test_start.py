@@ -2638,6 +2638,292 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.mocks["save_env_snapshot"].assert_not_called()
 
 
+class LoadExistingAlcatrazerConfigTests(unittest.TestCase):
+    """Phase 1.2.3: detection helper for an alcatrazer-generated
+    coding-environment.toml — used by cmd_init to ask the user whether
+    to reuse the existing file rather than orphan it with a hex-suffix
+    duplicate.
+
+    The detection is deliberately conservative (require BOTH header
+    markers): a false positive lets an already-good user file be
+    "reused" with no real harm; a false negative reverts to today's
+    hex-suffix behavior — annoying but never destroys content.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.target = self.project_dir / "coding-environment.toml"
+
+    def _alcatrazer_v1_content(self) -> str:
+        # Reuse the writer to get a guaranteed-real alcatrazer-generated
+        # file, so the test doesn't drift from `_render_coding_environment`
+        # output and break invisibly on a future header tweak.
+        return start._render_coding_environment({"languages": {"python": {"version": "3.12"}}})
+
+    def test_returns_none_when_file_missing(self):
+        # No coding-environment.toml — no decision to make.
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_parsed_dict_for_alcatrazer_generated_v1_file(self):
+        self.target.write_text(self._alcatrazer_v1_content())
+        result = start._load_existing_alcatrazer_config(self.project_dir)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(result["languages"]["python"]["version"], "3.12")
+
+    def test_returns_none_for_user_authored_file_without_markers(self):
+        # User wrote their own TOML — looks valid but has no alcatrazer
+        # header. Helper must return None so cmd_init falls back to
+        # today's hex-suffix behavior (never clobber user content).
+        self.target.write_text('schema_version = 1\n[languages.python]\nversion = "3.12"\n')
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_when_only_one_header_marker_present(self):
+        # Conservative threshold — both markers required. A single
+        # matching line could happen by chance; both lines together is
+        # a strong enough signal of alcatrazer authorship.
+        self.target.write_text(
+            "# Coding environment definition for this repository.\n"
+            "# … but not the other marker line …\n"
+            "schema_version = 1\n"
+            '[languages.python]\nversion = "3.12"\n'
+        )
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_for_unknown_schema_version(self):
+        # File claims schema_version = 99 — we don't have markers for
+        # that schema, so we can't safely identify it as ours. Treat as
+        # "don't recognize, fall back to current behavior" rather than
+        # try to apply v1 markers and possibly misread.
+        content = self._alcatrazer_v1_content().replace(
+            "schema_version = 1",
+            "schema_version = 99",
+        )
+        self.target.write_text(content)
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_treats_missing_schema_version_as_v1(self):
+        # Files predating Phase 1.1 carry no schema_version field; the
+        # validator treats them as v1, and detection should follow that
+        # convention — old alcatrazer-generated files are still "ours".
+        content = self._alcatrazer_v1_content().replace(
+            "schema_version = 1\n",
+            "",
+        )
+        self.target.write_text(content)
+        self.assertIsNotNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_for_invalid_toml(self):
+        # Garbage in the file — don't crash, just bail to None so the
+        # caller falls back to the bare wizard.
+        self.target.write_text("this is { not valid toml = =\n")
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+
+class GeneratedMarkersTableTests(unittest.TestCase):
+    """Phase 1.2.3 detection-table guard: every supported schema_version
+    must have an entry in `_GENERATED_MARKERS_BY_SCHEMA`. When v2 lands
+    with [provision], adding `2: (...)` is the contract — without this
+    test, a future schema bump could silently lose detection."""
+
+    def test_current_schema_has_marker_entry(self):
+        self.assertIn(
+            start.CODING_ENV_SCHEMA_VERSION,
+            start._GENERATED_MARKERS_BY_SCHEMA,
+            f"_GENERATED_MARKERS_BY_SCHEMA must have an entry for the "
+            f"current schema version ({start.CODING_ENV_SCHEMA_VERSION}); "
+            f"otherwise reuse-prompt detection silently breaks.",
+        )
+
+    def test_v1_markers_match_actual_header_lines(self):
+        # The markers must literally appear in `_render_coding_environment`
+        # output — otherwise detection of our own files fails.
+        sample = start._render_coding_environment({"languages": {"python": {"version": "3.12"}}})
+        for marker in start._GENERATED_MARKERS_BY_SCHEMA[1]:
+            self.assertIn(marker, sample, f"v1 marker not in writer output: {marker!r}")
+
+
+class CmdInitReusePromptTests(unittest.TestCase):
+    """Phase 1.2.3: when an alcatrazer-generated coding-environment.toml
+    already exists, cmd_init asks the user whether to reuse it (default
+    Y, skip the languages/os/startup wizard) or run the wizard fresh
+    (then ask whether to overwrite or fall back to hex-suffix).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".git").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+
+        # Pre-create an alcatrazer-style coding-environment.toml so the
+        # reuse-prompt path triggers.
+        self.existing = self.project_dir / "coding-environment.toml"
+        self.existing.write_text(
+            start._render_coding_environment({"languages": {"python": {"version": "3.10"}}})
+        )
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "ask_promotion_identity", ("Alice", "alice@example.com")),
+            (start, "ask_coding_environment", {"languages": {"go": {"version": "1.22"}}}),
+            (start, "write_alcatrazer_config", None),
+            (start, "write_env_example", None),
+            (start, "write_git_exclude", None),
+            (start, "extract_package_source", None),
+            (start, "write_python_symlink", None),
+            (identity, "generate_workspace_dir_name", ".devspace-abcd"),
+            (identity, "store_workspace_dir", None),
+            (start, "_host_has_claude_creds", True),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def _run_with_inputs(self, inputs: list[str]) -> tuple[int, str]:
+        """Run cmd_init with patched input() returning the given answers.
+        Returns (exit code, captured stdout)."""
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter(inputs)),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue()
+
+    # --- Reuse path ------------------------------------------------------
+
+    def test_accept_reuse_skips_languages_os_startup_wizard(self):
+        # User answers "y" to "Reuse existing coding-environment.toml?"
+        # → ask_coding_environment is NOT called (the wizard's expensive
+        # part is skipped); the existing file's parsed content flows
+        # downstream instead.
+        rc, _ = self._run_with_inputs(["y"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_not_called()
+        # The existing file must still be there, untouched.
+        self.assertTrue(self.existing.is_file())
+
+    def test_accept_reuse_with_enter_default(self):
+        # Empty input == accept default (Y).
+        rc, _ = self._run_with_inputs([""])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_not_called()
+
+    def test_reuse_passes_parsed_existing_data_to_prison_generator(self):
+        # The recipe must be generated from the EXISTING config (python
+        # 3.10), not from the mock `ask_coding_environment` return value
+        # (go 1.22). Confirms we actually reuse the file rather than
+        # accept-and-discard.
+        self._run_with_inputs(["y"])
+        call = self.prison.generate_prison.call_args
+        coding_env = call.args[0]
+        self.assertIn("python", coding_env["languages"])
+        self.assertEqual(coding_env["languages"]["python"]["version"], "3.10")
+        # And the mock-supplied "go" was NOT used.
+        self.assertNotIn("go", coding_env["languages"])
+
+    # --- Decline reuse → overwrite path ----------------------------------
+
+    def test_decline_reuse_runs_wizard_and_overwrite_replaces_file(self):
+        # User says "n" to reuse → wizard runs → "y" to overwrite →
+        # canonical filename used; original content (python 3.10) is
+        # replaced by the wizard's mock output (go 1.22).
+        original_size = self.existing.stat().st_size
+        rc, _ = self._run_with_inputs(["n", "y"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # File still at canonical name, no hex suffix.
+        self.assertTrue(self.existing.is_file())
+        # And content has changed (python 3.10 → go 1.22 from the mock).
+        self.assertIn("[languages.go]", self.existing.read_text())
+        self.assertNotEqual(self.existing.stat().st_size, original_size)
+        # No hex-suffix file was created.
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(suffix_files, [])
+
+    # --- Decline reuse → decline overwrite → hex suffix ------------------
+
+    def test_decline_overwrite_falls_back_to_hex_suffix(self):
+        # User says "n" to reuse → wizard runs → "n" to overwrite →
+        # original file preserved; new content lands in
+        # coding-environment-XXXX.toml.
+        rc, _ = self._run_with_inputs(["n", "n"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # Original preserved.
+        self.assertIn("python", self.existing.read_text())
+        # Hex-suffixed file exists with the new content.
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(len(suffix_files), 1)
+        self.assertIn("[languages.go]", suffix_files[0].read_text())
+
+
+class CmdInitDoesNotPromptReuseForUserAuthoredConfigTests(unittest.TestCase):
+    """Phase 1.2.3 regression guard: when an existing
+    coding-environment.toml is user-authored (no alcatrazer header
+    markers), cmd_init must NOT show the reuse prompt and must fall
+    back to today's hex-suffix behavior — never overwrite user content
+    just because it happens to share the canonical filename."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".git").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Pre-create a user-authored TOML — no alcatrazer header.
+        self.user_file = self.project_dir / "coding-environment.toml"
+        self.user_file.write_text(
+            '# user\'s own config\nschema_version = 1\n[languages.python]\nversion = "3.10"\n'
+        )
+
+        self.prison = Mock(spec=Alcatraz)
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "ask_promotion_identity", ("Alice", "alice@example.com")),
+            (start, "ask_coding_environment", {"languages": {"go": {"version": "1.22"}}}),
+            (start, "write_alcatrazer_config", None),
+            (start, "write_env_example", None),
+            (start, "write_git_exclude", None),
+            (start, "extract_package_source", None),
+            (start, "write_python_symlink", None),
+            (identity, "generate_workspace_dir_name", ".devspace-abcd"),
+            (identity, "store_workspace_dir", None),
+            (start, "_host_has_claude_creds", True),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def test_no_reuse_prompt_for_user_authored_config(self):
+        # No reuse-prompt input is consumed here — if cmd_init asked
+        # for one, the empty iter would raise StopIteration and the
+        # test would error rather than just "pass without prompt".
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter([])),  # NO inputs available
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # User's original file stays untouched at canonical name.
+        self.assertIn("user's own config", self.user_file.read_text())
+        # New file lands at hex-suffixed name (today's behavior).
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(len(suffix_files), 1)
+
+
 class CmdStopTests(unittest.TestCase):
     """Step 5 + 5.7f: `alcatrazer stop` — freeze the Alcatraz, then
     tell the sync daemon to finalize. Ordering is non-negotiable:
