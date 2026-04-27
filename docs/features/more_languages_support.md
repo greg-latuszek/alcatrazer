@@ -713,8 +713,8 @@ encoding it in the whitelist documents Java as a first-class
 supported runtime, which materially affects the addressable
 population.
 
-**The dict entry — shape parallel to `dotnet`, with a multi-element
-`managers` tuple:**
+**The dict entry — adds an optional `version_tip` field used by the
+wizard to nudge users about Java's distribution choice:**
 
 ```python
 "java": {
@@ -724,9 +724,19 @@ population.
     # chained `&&` doesn't lose the output to the docker-build noise.
     "version_check": "java -version 2>&1",
     # JDK is self-contained on Ubuntu 24.04 base — no extra OS deps
-    # required for `java -version` / basic compilation. Verify
-    # empirically, see "Verification" below.
+    # required for `java -version` / basic compilation. Verified
+    # empirically inside a fresh Alcatraz.
     "required_os_packages": (),
+    # Printed once before the `Version for java:` prompt. Java is the
+    # first language with multiple shipped distributions (Temurin,
+    # Corretto, Zulu, …) reachable via the same mise key, so the
+    # wizard nudges users that the option exists. Other languages
+    # don't declare this field; the wizard treats it as optional.
+    "version_tip": (
+        "Defaults to Eclipse Temurin. Prefix for alternatives, "
+        'e.g. "corretto-21", "zulu-21", "graalvm-21". '
+        "See README for the full list."
+    ),
 },
 ```
 
@@ -756,14 +766,15 @@ can be added later if a real user asks; for now the canonical
 Java/Kotlin/Scala build tools are covered by `gradle`, and Maven is
 the obvious default.
 
-### Distribution choice — handled by the existing free-form version
+### Distribution choice — three touchpoints, one data-driven field
 
-Earlier we worried Java's distribution-choice question (Temurin vs
-Corretto vs Zulu vs Liberica vs GraalVM) would force a schema
-change. It doesn't. `version` is already a free-form string passed
-verbatim to `mise use --global java@<version>` (`docker_prison.py`
-`_render_mise_uses` does plain f-string interpolation), and mise's
-`java` plugin accepts distribution prefixes:
+Java is the first language Alcatrazer supports where the same mise
+key (`java@<version>`) maps to multiple shipped distributions:
+Eclipse Temurin (default), Amazon Corretto, Azul Zulu, BellSoft
+Liberica, GraalVM. mise resolves the distribution from a prefix
+inside the version string, so the *schema* needs no new field —
+`version` is already a free-form string passed verbatim to
+`mise use --global java@<version>`:
 
 | User writes in TOML       | mise resolves to                                         |
 | ------------------------- | -------------------------------------------------------- |
@@ -773,23 +784,100 @@ verbatim to `mise use --global java@<version>` (`docker_prison.py`
 | `version = "zulu-21"`     | Azul Zulu 21                                             |
 | `version = "graalvm-21"`  | GraalVM 21                                               |
 
-So users who care about distribution write the prefix; users who
-don't care get a sane default (Temurin) automatically. No schema
-field, no wizard branching, no maintenance burden on us.
+What the schema *does* need is **discovery** — the prefix syntax is
+invisible if a user doesn't know it exists. We surface the option at
+three independent touchpoints, each catching a different audience:
 
-The wizard's example block emits `version = "21"` (plain LTS, no
-prefix), which is what most users want. Distribution-conscious users
-edit `coding-environment.toml` after `alcatrazer init` — same
+| Touchpoint | When user encounters it | Content |
+| ---------- | ----------------------- | ------- |
+| **README** ("Configuration → Java distributions") | Researching alcatrazer before `init`; or later when switching distribution | Comprehensive table of supported prefixes |
+| **Wizard tip** (printed before `Version for java:` prompt) | Mid-wizard, picking the version | One-line nudge with 1-2 examples + "see README" pointer |
+| **Generated TOML comment** (in `_EXAMPLE_LANGUAGE_BLOCKS["java"]`) | After `init`, hand-editing `coding-environment.toml` | Inline reference at the exact line they're editing |
+
+The wizard tip is plumbed through a new optional `version_tip` field
+on `SUPPORTED_LANGUAGES` entries — symmetric with `required_os_packages`
+(both optional, both per-language data, both consumed by code outside
+`languages.py` without `if language == "java"` ladders). `_ask_version`
+prints `cfg["version_tip"]` before the prompt when present, otherwise
+prints nothing. Other current languages don't declare it; future
+languages with similar nudges (Ruby's "use 3.x; 2.x is EOL", Python's
+"3.10+ recommended") get the same plumbing for free.
+
+### What the touchpoints look like
+
+**README** — new "Java distributions" subsection under Configuration:
+
+```markdown
+### Java distributions
+
+mise's java plugin defaults to Eclipse Temurin. Override by
+prefixing the version string in `[languages.java].version`:
+
+| TOML                 | Distribution                          |
+| -------------------- | ------------------------------------- |
+| `"21"`               | Eclipse Temurin (default)             |
+| `"temurin-21.0.5"`   | Temurin, pinned build                 |
+| `"corretto-21"`      | Amazon Corretto                       |
+| `"zulu-21"`          | Azul Zulu                             |
+| `"liberica-21"`      | BellSoft Liberica                     |
+| `"graalvm-21"`       | GraalVM (incl. native-image)          |
+
+Pick the distribution your project / employer requires; the choice
+is opaque to alcatrazer — mise installs whatever the version string
+asks for, and the runtime is binary-compatible across distributions
+for standard Java workloads.
+```
+
+**Wizard tip** — printed by `_ask_version` when the language entry
+declares a non-empty `version_tip`:
+
+```text
+  Tip: defaults to Eclipse Temurin. Prefix for alternatives,
+       e.g. "corretto-21", "zulu-21", "graalvm-21".
+       See README for the full list.
+
+  Version for java: ▮
+```
+
+**Generated TOML comment** — in `_EXAMPLE_LANGUAGE_BLOCKS["java"]`,
+the block landing in users' generated `coding-environment.toml`:
+
+```toml
+# [languages.java]
+# version = "21"  # default: Eclipse Temurin. Prefix for alternatives:
+#                 # corretto-21, zulu-21, graalvm-21, liberica-21,
+#                 # or pin a build like "temurin-21.0.5".
+```
+
+The wizard's runtime example block emits `version = "21"` (plain LTS,
+no prefix), which is what most users want. Distribution-conscious
+users edit `coding-environment.toml` after `alcatrazer init` — same
 escape-hatch contract Phase 1.1 captured ("you can edit before
 `alcatrazer start` to tweak").
 
 ### Concrete code touches
 
-- `src/alcatrazer/languages.py` — add the `java` entry. No new
-  fields; `required_os_packages = ()` follows the default.
-- `src/alcatrazer/start.py` `_EXAMPLE_LANGUAGE_BLOCKS` — add
-  `"java": ["# [languages.java]", '# version = "21"']`.
-- `src/alcatrazer/tests/test_start.py`:
+- `src/alcatrazer/languages.py`
+  - Add the `java` entry with `version_tip` (the new optional field)
+    plus the standard fields.
+  - Update the module docstring to document `version_tip` alongside
+    `required_os_packages` — same shape (optional, per-language data,
+    consumed by code outside this module).
+- `src/alcatrazer/start.py`
+  - `_ask_version` — before the version prompt, if the language's
+    entry declares `version_tip` (non-empty), print it indented to
+    match the prompt's two-space prefix. Languages without the field
+    behave exactly as today.
+  - `_EXAMPLE_LANGUAGE_BLOCKS` — add a multi-line `java` block:
+    ```python
+    "java": [
+        "# [languages.java]",
+        '# version = "21"  # default: Eclipse Temurin. Prefix for alternatives:',
+        "#                 # corretto-21, zulu-21, graalvm-21, liberica-21,",
+        '#                 # or pin a build like "temurin-21.0.5".',
+    ],
+    ```
+- `src/alcatrazer/tests/test_start.py`
   - Extend `test_supported_language_set` to include `"java"`.
   - `test_java_default_manager_is_maven_with_alternatives` — asserts
     `default_manager == "maven"` and `gradle` is in `managers`.
@@ -799,8 +887,21 @@ escape-hatch contract Phase 1.1 captured ("you can edit before
     the chained `&&` verify block in stdout-driven log capture).
   - `test_java_has_no_required_os_packages` — keeps the "JDK is
     self-contained on Ubuntu 24.04 base" claim under test.
+  - `test_java_declares_distribution_version_tip` — asserts the tip
+    is non-empty and mentions Temurin + at least one alternative
+    (`corretto`, `zulu`, or `graalvm`) + the word `README`.
+  - `test_other_languages_have_no_version_tip` — keeps the field
+    optional. The other four (python/node/rust/go/dotnet) declare no
+    `version_tip`; only Java does, for now.
+  - `test_ask_version_prints_tip_when_present` — patches input,
+    captures stdout for `_ask_version("java")`, asserts the tip
+    appears before the input prompt and the captured input still
+    flows back as the chosen version.
+  - `test_ask_version_prints_no_tip_when_absent` — same shape but
+    for python (no `version_tip` declared); captured output contains
+    no tip, only the bare prompt.
   - The existing `test_other_languages_have_no_required_os_packages`
-    needs `java` added to its scope (the test currently asserts
+    needs `java` added to its scope (test currently asserts
     `python/node/rust/go` are empty; with java in the whitelist it
     becomes `python/node/rust/go/java`).
 - `src/alcatrazer/tests/test_docker_prison.py` — no new tests
@@ -808,53 +909,62 @@ escape-hatch contract Phase 1.1 captured ("you can edit before
   (regression guard for per-language `required_os_packages`) already
   covers the "java doesn't pull libicu74" case implicitly because
   java declares no required_os_packages.
-- `README.md` — extend the "Supported" line (currently
-  `python, node, rust, go, dotnet`) to include `java` with a
-  parenthetical "JVM — Maven / Gradle".
+- `README.md`
+  - Extend the "Supported" line (currently `python, node, rust, go,
+    dotnet`) to include `java` with a parenthetical
+    "JVM — Maven / Gradle".
+  - Add a new "Java distributions" subsection under Configuration
+    with the prefix table shown earlier.
 
-### Verification — must run inside a fresh Alcatraz before merging
+### Verification — completed
 
 The dotnet experience taught us that "looks fine on paper" can mask
 runtime OS deps (libicu74 was invisible until `dotnet --version`
-crashed). Same probe-then-merge discipline for Java:
+crashed). Same probe-then-merge discipline applied here, and the
+result was clean. Run inside a fresh Alcatraz, as the agent user:
 
 ```bash
-docker exec -it -u agent -w /workspace workspace bash
-mise use --global java@21
-java -version 2>&1
-javac -version 2>&1
+agent@…:/workspace$ mise use --global java@21
+agent@…:/workspace$ java -version 2>&1
+openjdk version "21.0.2" 2024-01-16
+OpenJDK Runtime Environment (build 21.0.2+13-58)
+OpenJDK 64-Bit Server VM (build 21.0.2+13-58, mixed mode, sharing)
+agent@…:/workspace$ javac -version 2>&1
+javac 21.0.2
 ```
 
-- **Both succeed cleanly:** ship the entry with
-  `required_os_packages = ()`. This is the expected outcome — JDK
-  binary distributions are self-contained and Ubuntu 24.04's base
-  has the libc / libstdc++ they link against.
-- **Either errors with a missing-library message:** add the package
-  to `required_os_packages = (...)`, exactly the way libicu74 was
-  added for dotnet. No runtime sudo, no fix-by-hand — root work
-  goes in image build.
+- ✅ `mise use --global java@21` succeeded as agent (no sudo).
+- ✅ JDK is self-contained — no missing-library crash, no apt
+  packages needed. `required_os_packages = ()` is empirically
+  correct.
+- ✅ `java -version 2>&1` is the right `version_check` — output
+  captured cleanly via stderr redirect.
+- ✅ `javac -version 2>&1` also works (compiler bundled, no
+  separate dep surface).
+- ✅ Build signature `21.0.2+13-58` matches Eclipse Temurin's
+  upstream build, confirming mise's default distribution
+  resolution.
 
-Worth probing both `java -version` AND `javac -version` because the
-runtime and the compiler can diverge in their dependency surface
-(rare on JDK distributions but cheap to confirm).
-
-If the user picks `manager = "gradle"`, also probe:
+If a future user picks `manager = "gradle"`, the multi-manager
+wizard path can be probed similarly:
 
 ```bash
 mise use --global gradle
 gradle --version
 ```
 
-This validates the multi-manager wizard path produces a working
-build environment, not just a working JVM.
+That probe is cheap and worth running before merge alongside the
+test suite, but the JDK itself is the load-bearing surface and
+that's confirmed.
 
 ### What Phase 1.2.2 does NOT do
 
 To keep scope tight:
 
-- Does **not** add a `distribution` schema field. The free-form
-  version string already covers Temurin / Corretto / Zulu / Liberica
-  / GraalVM via mise's plugin syntax.
+- Does **not** add a `distribution` field to the user-facing TOML
+  schema. The version-string prefix (`temurin-21`, `corretto-21`,
+  …) already covers it; users edit `[languages.java].version`, not
+  a separate `distribution`. `schema_version` stays at `1`.
 - Does **not** include `ant` or `sbt` in `managers`. Both can be
   added later if a user asks, after empirical verification that
   mise auto-installs the relevant plugins. Sticking to Maven + Gradle
@@ -867,16 +977,31 @@ To keep scope tight:
   picking a distribution, it's mise's existing convention.
 - Does **not** auto-install anything beyond the JDK + selected build
   tool — the whole point is that Java fits the existing pattern. No
-  new render path, no new conditional logic.
+  new render path, no new conditional logic in `docker_prison.py`.
+- Does **not** print `version_tip` for languages that don't declare
+  one. Other languages get the same prompt they have today; only
+  Java's prompt is extended (until/unless other languages declare a
+  tip later — Ruby being the most likely candidate).
 
 ### Phase 1.2.2 independence
 
 Independent of Phase 1.2.1 (wizard self-explanation) and Phase 1.2
 (dotnet entry) — both predecessors landed already. Phase 1.2.2 is
-purely additive: one new `SUPPORTED_LANGUAGES` entry, one new
-example block, four new tests, three lines in the README. Estimated
-~30 minutes of code time once the `mise use --global java@21` smoke
-test confirms `required_os_packages = ()` is empirically correct.
+purely additive on top:
+
+- New optional `version_tip` field in `SUPPORTED_LANGUAGES` schema.
+- One new entry (`java`) using all the existing fields plus the new
+  `version_tip`.
+- Two new lines in `_ask_version` to print the tip when present.
+- One new multi-line block in `_EXAMPLE_LANGUAGE_BLOCKS`.
+- ~7 new test methods + extending 2 existing ones for `java`.
+- One new README subsection ("Java distributions") + one supported-
+  list edit.
+
+Estimated ~1 hour of code time once the empirical verification
+(`mise use --global java@21` already ran clean — see "Verification"
+above) is in the bag. Most of the time goes to the test methods and
+README subsection, not the implementation itself.
 
 ### Independence and ordering
 
