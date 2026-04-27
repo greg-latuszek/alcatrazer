@@ -412,9 +412,11 @@ the version string in `[languages.java].version`:
 Pick whichever your project or employer requires; the choice is opaque
 to alcatrazer — mise installs whatever the version string asks for, and
 the JDKs are binary-compatible across distributions for standard Java
-workloads. The `alcatrazer init` wizard nudges you about this when you
-pick `java`, and the same hint lives as a comment on the generated
-`# [languages.java]` block in `coding-environment.toml`.
+workloads. The `alcatrazer init` wizard prints the same hint when you
+pick `java`, and it's also rendered as a comment block above each
+language's `version =` line in your generated `coding-environment.toml`,
+so the guidance reaches you whether you're at the prompt or hand-editing
+the file later.
 
 ### `.alcatrazer/config.toml` — gitignored, per-developer
 
