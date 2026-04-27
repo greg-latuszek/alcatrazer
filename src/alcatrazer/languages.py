@@ -30,23 +30,32 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
         "default_manager": "pip",
         "managers": ("pip", "uv", "poetry", "pipenv"),
         "version_check": "python --version",
+        "version_tip": (
+            'Version examples: 3.11, 3.12, 3.13. Pin a concrete release; "latest" is rejected.'
+        ),
     },
     "node": {
         "default_manager": "npm",
         "managers": ("npm", "pnpm", "yarn"),
         "version_check": "node --version",
+        "version_tip": (
+            "Version examples: 18, 20, 22. "
+            "LTS lines (even-numbered) are recommended for production."
+        ),
     },
     "rust": {
         "default_manager": "cargo",
         "managers": ("cargo",),
         # `rustc` is the compiler binary; `rust` is not a command.
         "version_check": "rustc --version",
+        "version_tip": "Version examples: 1.75, 1.83. Pin a concrete release.",
     },
     "go": {
         "default_manager": "go",
         "managers": ("go",),
         # `go version` is a subcommand — go's CLI does not accept --version.
         "version_check": "go version",
+        "version_tip": "Version examples: 1.22, 1.23. Pin a concrete release.",
     },
     "dotnet": {
         "default_manager": "dotnet",
@@ -59,6 +68,9 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
         # package" startup crash on Ubuntu 24.04. Empirically verified inside
         # a fresh Alcatraz container.
         "required_os_packages": ("libicu74",),
+        "version_tip": (
+            "Version examples: 8.0.404 (LTS), 10.0.100 (current LTS). Pin to major.minor.patch."
+        ),
     },
     "java": {
         "default_manager": "maven",
@@ -80,7 +92,10 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
         # (Temurin / Corretto / Zulu / Liberica / GraalVM) reachable via
         # the same mise key. The wizard surfaces the prefix syntax mid-
         # prompt so distribution-conscious users don't miss the option.
+        # Phase 1.2.3 rewrote the leading words to match the rest of the
+        # language tips ("Version examples: …" prefix).
         "version_tip": (
+            "Version examples: 17, 21. "
             "Defaults to Eclipse Temurin. Prefix for alternatives, "
             'e.g. "corretto-21", "zulu-21", "graalvm-21". '
             "See README for the full list."

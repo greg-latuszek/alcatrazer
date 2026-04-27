@@ -373,8 +373,12 @@ def _ask_version(language: str) -> str:
     if tip:
         # Wrap to a comfortable terminal width with hanging indent so
         # continuation lines align under the first character of the tip.
+        # Blank line goes BEFORE the tip (Phase 1.2.3): visually groups
+        # the tip with the upcoming `Version for X:` prompt rather than
+        # orphaning it to the previous prompt's answer.
         import textwrap
 
+        print()
         print(
             textwrap.fill(
                 tip,
@@ -383,7 +387,6 @@ def _ask_version(language: str) -> str:
                 subsequent_indent="       ",
             )
         )
-        print()
     while True:
         version = input(f"  Version for {language}: ").strip()
         if not version:
@@ -522,12 +525,7 @@ _EXAMPLE_LANGUAGE_BLOCKS: dict[str, list[str]] = {
     "rust": ["# [languages.rust]", '# version = "1.75"'],
     "go": ["# [languages.go]", '# version = "1.22"'],
     "dotnet": ["# [languages.dotnet]", '# version = "10.0.100"'],
-    "java": [
-        "# [languages.java]",
-        '# version = "21"  # default: Eclipse Temurin. Prefix for alternatives:',
-        "#                 # corretto-21, zulu-21, graalvm-21, liberica-21,",
-        '#                 # or pin a build like "temurin-21.0.5".',
-    ],
+    "java": ["# [languages.java]", '# version = "21"'],
 }
 
 _CODING_ENVIRONMENT_HEADER = [
@@ -615,6 +613,23 @@ def _render_coding_environment(data: dict) -> str:
     languages = data.get("languages", {})
     for lang, cfg in languages.items():
         lines.append(f"[languages.{lang}]")
+        # Phase 1.2.3: render the same `version_tip` the wizard prints
+        # as a comment block above `version =`. DRY — one source string
+        # in SUPPORTED_LANGUAGES, two consumers (wizard + this TOML).
+        # Users editing the file later see the same guidance the wizard
+        # gave them.
+        tip = SUPPORTED_LANGUAGES.get(lang, {}).get("version_tip")
+        if tip:
+            import textwrap
+
+            lines += textwrap.wrap(
+                tip,
+                width=76,
+                initial_indent="# ",
+                subsequent_indent="# ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
         lines.append(f"version = {_format_toml_string(cfg['version'])}")
         if "manager" in cfg:
             lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
