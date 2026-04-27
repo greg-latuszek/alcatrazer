@@ -85,6 +85,64 @@ def _validate_coding_env_schema_version(data: dict) -> None:
         )
 
 
+# --- Detection of alcatrazer-generated coding-environment.toml --------------
+#
+# Used by `cmd_init` to recognize a `coding-environment.toml` produced by a
+# previous run of the wizard, so the user can reuse it instead of orphaning
+# it with a hex-suffix duplicate. Detection is schema-version-aware: each
+# schema's `_render_coding_environment` may emit different header text, and
+# we need to match what the file's declared `schema_version` actually wrote.
+#
+# When v2 lands with `[provision]`, add a `2: (...)` entry alongside the v1
+# tuple — the dict is the single source of truth, no detection-logic refactor
+# required. The `GeneratedMarkersTableTests.test_current_schema_has_marker_entry`
+# guard catches a missing entry at test time.
+
+_GENERATED_MARKERS_BY_SCHEMA: dict[int, tuple[str, ...]] = {
+    1: (
+        "# Coding environment definition for this repository.",
+        "# Sections follow dependency order: OS -> languages -> startup.",
+    ),
+}
+
+
+def _load_existing_alcatrazer_config(project_dir: Path) -> dict | None:
+    """Return parsed `coding-environment.toml` if it looks alcatrazer-
+    generated, None otherwise.
+
+    Detection: read the file (if present), parse it, look up its
+    `schema_version` (defaulting to v1 to match the validator's
+    backwards-compat semantics), then require BOTH header markers from
+    `_GENERATED_MARKERS_BY_SCHEMA[version]` to appear in the file. Any
+    failure along the way (missing file, invalid TOML, unknown version,
+    markers absent) returns None — the caller falls back to today's
+    hex-suffix behavior, which never clobbers user content.
+
+    Conservative threshold (require both markers) is deliberate. False
+    positives let an already-good file be "reused" with no real harm;
+    false negatives revert to hex-suffix fallback — annoying but never
+    destructive.
+    """
+    target = project_dir / "coding-environment.toml"
+    if not target.exists():
+        return None
+    try:
+        with open(target, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError:
+        return None
+    version = data.get("schema_version", CODING_ENV_SCHEMA_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    markers = _GENERATED_MARKERS_BY_SCHEMA.get(version)
+    if markers is None:
+        return None
+    content = target.read_text()
+    if not all(marker in content for marker in markers):
+        return None
+    return data
+
+
 def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer start` — build (if needed) and run the workspace container.
 
@@ -192,7 +250,28 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     name, email = ask_promotion_identity(project_dir)
 
     # 3d — coding environment (languages, OS packages, startup commands).
-    coding_env = ask_coding_environment()
+    # Phase 1.2.3: if a previous-run alcatrazer-generated config still
+    # exists in the repo, offer to reuse it (skip the wizard, leave the
+    # file untouched) rather than orphan it with a hex-suffix duplicate.
+    # User-authored files are detected as "not ours" and bypass this
+    # branch, preserving today's never-clobber-user-content guarantee.
+    existing = _load_existing_alcatrazer_config(project_dir)
+    reuse_existing = False
+    overwrite_existing = False
+    if existing is not None:
+        print()
+        print("Detected existing coding-environment.toml from a previous alcatrazer install.")
+        answer = input("Reuse it as-is? [Y/n] ").strip().lower()
+        if answer in ("", "y", "yes"):
+            print("Reusing coding-environment.toml.")
+            coding_env = existing
+            reuse_existing = True
+        else:
+            coding_env = ask_coding_environment()
+            answer = input("Overwrite existing coding-environment.toml? [y/N] ").strip().lower()
+            overwrite_existing = answer in ("y", "yes")
+    else:
+        coding_env = ask_coding_environment()
 
     # 3f — workspace dir name + .git/info/exclude patterns. (Pulled ahead
     # of 3e config writes so `.env.example`'s marker block can embed the
@@ -204,7 +283,14 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # 3e — config files.
     print()
     print("Writing configuration...")
-    coding_env_path = write_coding_environment_toml(project_dir, coding_env)
+    if reuse_existing:
+        # Reuse path: don't re-render; the existing file is the source
+        # of truth. Point the alcatrazer config at it by name.
+        coding_env_path = project_dir / "coding-environment.toml"
+    else:
+        coding_env_path = write_coding_environment_toml(
+            project_dir, coding_env, overwrite=overwrite_existing
+        )
     write_alcatrazer_config(project_dir, name, email, coding_env_file=coding_env_path.name)
     write_env_example(project_dir, workspace_name)
     print(f"  {coding_env_path.name}  (commit to git — your team's workspace recipe)")
@@ -658,10 +744,18 @@ def _render_coding_environment(data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_coding_environment_toml(project_dir: Path, data: dict) -> Path:
-    """Write coding-environment.toml at repo root; append hex suffix on collision."""
+def write_coding_environment_toml(project_dir: Path, data: dict, overwrite: bool = False) -> Path:
+    """Write coding-environment.toml at repo root.
+
+    Default: append a hex suffix if the canonical filename already exists,
+    so user-authored content is never clobbered. Phase 1.2.3 added the
+    `overwrite=True` opt-in: when `cmd_init` has confirmed the existing
+    file is alcatrazer-generated AND the user accepted overwrite, we
+    write to the canonical name instead. Reuse-path (user accepted "reuse
+    as-is") doesn't go through this function at all.
+    """
     target = project_dir / "coding-environment.toml"
-    if target.exists():
+    if target.exists() and not overwrite:
         suffix = secrets.token_hex(2)
         target = project_dir / f"coding-environment-{suffix}.toml"
     target.write_text(_render_coding_environment(data))
