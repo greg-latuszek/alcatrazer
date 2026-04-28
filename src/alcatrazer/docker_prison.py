@@ -15,6 +15,7 @@ step that first needs it:
 """
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -479,4 +480,34 @@ class DockerPrison(Alcatraz):
             ["docker", "rm", "-f", self.container_name],
             capture_output=True,
             check=True,
+        )
+
+    def shell(self) -> None:
+        """Open an interactive bash as agent inside the running container.
+
+        Phase 1.2.5. Implementation uses ``os.execvp`` so the alcatrazer
+        Python process is replaced by ``docker exec``; signals (Ctrl+C,
+        Ctrl+D) flow through and the user's exit status is whatever bash
+        exits with — same as if they'd typed the docker command directly.
+
+        Raises ``PrisonStartError`` when not running. Never returns on
+        success.
+        """
+        if not self.is_running():
+            raise PrisonStartError(
+                "Alcatraz is not running.",
+            )
+        os.execvp(
+            "docker",
+            [
+                "docker",
+                "exec",
+                "-it",
+                "-u",
+                "agent",
+                "-w",
+                "/workspace",
+                self.container_name,
+                "bash",
+            ],
         )

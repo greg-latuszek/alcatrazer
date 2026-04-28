@@ -312,14 +312,16 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     print()
     if _host_has_claude_creds():
         print("Claude credentials found on host — they will be used by Alcatraz.")
-        print("Next: run `alcatrazer start` to build Alcatraz and run it with own git.")
+        print("Next: run `alcatrazer start` to build Alcatraz and run it with own git,")
+        print("then `alcatrazer visit` to step inside.")
     else:
         print("Claude credentials not found at ~/.claude/.credentials.json.")
         print("Before running `alcatrazer start`, either:")
         print("  (a) run `claude` on your host to authenticate, or")
         print("  (b) copy .env.example to .env and fill in ANTHROPIC_API_KEY.")
         print()
-        print("Then run `alcatrazer start` to build Alcatraz and run it with own git.")
+        print("Then run `alcatrazer start` to build Alcatraz and run it with own git,")
+        print("then `alcatrazer visit` to step inside.")
     return 0
 
 
@@ -389,7 +391,8 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
         save_env_snapshot(project_dir)
         launch_daemon_and_print(project_dir)
         print()
-        print("Ready.")
+        # Phase 1.2.5: point users at the new way to step inside.
+        print("Ready. To enter the Alcatraz: alcatrazer visit")
     return rc
 
 
@@ -1173,6 +1176,45 @@ def cmd_selftest(project_dir: Path) -> int:
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
+
+
+def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """`alcatrazer visit` — open an interactive shell as agent inside the
+    running Alcatraz.
+
+    Phase 1.2.5. Replaces the old README incantation
+    ``docker exec -it -u agent -w /workspace workspace bash``, which
+    stopped working when per-repo container names landed.
+
+    Errors explicitly when:
+
+    - ``.alcatrazer/`` is missing → user hasn't run ``alcatrazer init``.
+    - The Alcatraz isn't running → user must run ``alcatrazer start``
+      first. No auto-start: that would hide rebuilds and daemon launches
+      under what should be a fast "drop me in" command.
+
+    On success ``prison.shell()`` replaces this Python process via
+    ``os.execvp`` and never returns; the explicit ``return 0`` below is
+    unreachable but keeps the type checker happy.
+    """
+    if not (project_dir / ".alcatrazer").exists():
+        print(
+            "No alcatrazer setup in this repository — run `alcatrazer init` first.",
+            file=sys.stderr,
+        )
+        return 1
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+    if not prison.is_running():
+        print(
+            "Alcatraz is not running — run `alcatrazer start` first.",
+            file=sys.stderr,
+        )
+        return 1
+    prison.shell()  # replaces the process via execvp; never returns
+    return 0
 
 
 def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:

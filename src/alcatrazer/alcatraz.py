@@ -138,3 +138,21 @@ class Alcatraz(ABC):
     @abstractmethod
     def remove(self) -> None:
         """Remove the workspace container (stop first if running). No-op if absent."""
+
+    @abstractmethod
+    def shell(self) -> None:
+        """Open an interactive shell as agent inside the running sandbox.
+
+        Replaces the calling process via execvp (or its backend equivalent)
+        — never returns normally on success; signals (Ctrl+C, Ctrl+D) and
+        the eventual exit status flow through to the user's terminal as if
+        they'd run a shell directly.
+
+        Raises ``PrisonStartError`` when the sandbox isn't running. The
+        caller (``cmd_visit``) catches this and prints a friendly message
+        rather than expecting auto-start.
+
+        Backend-agnostic — DockerPrison implements via ``docker exec -it``;
+        future backends (FirecrackerPrison, VMPrison, …) implement via
+        whatever their interactive-attach mechanism is.
+        """
