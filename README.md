@@ -318,16 +318,21 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ### 5. Attach to the container
 
-`alcatrazer start` leaves the container running detached. Open a shell
-inside it as the `agent` user:
+`alcatrazer start` leaves the container running detached. Step inside it
+as the `agent` user:
 
 ```bash
-docker exec -it -u agent -w /workspace workspace bash
+alcatrazer visit
 ```
 
+`visit` opens an interactive bash inside the running Alcatraz, working
+directory set to `/workspace`. Errors cleanly if the Alcatraz isn't
+running (no auto-start — explicit by design).
+
 All tools declared in `coding-environment.toml` are available
-(Python / Node / Rust / Go plus any `[os]` packages), along with the
-always-on security baseline: git, mise, Claude Code CLI, gosu.
+(Python / Node / Rust / Go / .NET / Java plus any `[os]` packages),
+along with the always-on security baseline: git, mise, Claude Code CLI,
+gosu.
 
 ### 6. Watch promotion (optional)
 
@@ -556,6 +561,25 @@ branches = ["main", "feature/*"]    # branch names and glob patterns
 Inside the container agents can use `mise` to layer additional
 runtimes on top; those stay local to the writable layer.
 
+### Per-repo names
+
+Image tag and container name are derived from the repo's canonical
+absolute path: `alcatraz-workspace:<basename>-<hash12>` and
+`workspace-<basename>-<hash12>` (e.g. `workspace-myrepo-7c4a92b14f3e`).
+Two alcatrazers on different repos run simultaneously without
+collision; `docker ps` lists them with recognizable names. Use
+`alcatrazer visit` to step inside without typing the hash.
+
+> **Upgrading from pre-Phase 1.2.5 alcatrazer?** The old shared names
+> (`alcatraz-workspace:local`, container `workspace`) won't match the
+> new derived names; do a one-time cleanup:
+>
+> ```bash
+> docker rm -f workspace 2>/dev/null
+> docker rmi alcatraz-workspace:local 2>/dev/null
+> alcatrazer start   # rebuilds under per-repo names
+> ```
+
 ### Entrypoint behavior
 
 The container starts as root to fix ownership of the mounted
@@ -599,8 +623,7 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
 2. `alcatrazer start` — build the image if needed, snapshot your main
    branch into the workspace, start the container, run `[startup]`
    commands, and launch the promotion daemon.
-3. `docker exec -it -u agent -w /workspace workspace bash` — attach a
-   shell as the agent user.
+3. `alcatrazer visit` — step inside as the agent user.
 4. Agents inside the container write code, run tests, commit
    incrementally. They may use branches, delegate to sub-agents, and
    merge.
