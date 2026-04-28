@@ -32,6 +32,12 @@ ALCATRAZ_OPERATIONS = frozenset(
         # via `docker exec -it`, future backends do whatever their
         # interactive-attach equivalent is.
         "shell",
+        # Phase 1.2.6: identity of the recipe the adapter would build
+        # right now (used by cmd_start to know what hash to expect from
+        # the running image), and the corresponding "is the running
+        # image built from THIS recipe?" check.
+        "recipe_hash",
+        "image_matches",
     }
 )
 

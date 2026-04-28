@@ -59,11 +59,11 @@ class CmdStartGuardTests(unittest.TestCase):
 
 
 class CmdStartRoutingTests(unittest.TestCase):
-    """cmd_start routes to first-run when EITHER the image OR the
-    Alcatraz workspace is missing. Image and workspace have independent
-    lifetimes (clear preserves both, image prune removes image only,
-    `rm -rf .devspace-xxx` removes workspace only), so routing on just
-    one signal misses legitimate recovery scenarios."""
+    """cmd_start routes to first-run when EITHER the image is stale
+    (Phase 1.2.6: image_matches=False, includes "image missing" and
+    "image built from older config") OR the Alcatraz workspace is
+    missing. Image and workspace have independent lifetimes so
+    routing on just one signal misses legitimate recovery scenarios."""
 
     WORKSPACE_NAME = ".devspace-routing"
 
@@ -73,6 +73,14 @@ class CmdStartRoutingTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        # Phase 1.2.6: cmd_start now loads coding-environment.toml to
+        # compute the recipe hash. Provide minimal valid contents.
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\nmanager = "pip"\n'
+        )
         self.addCleanup(self.tmp.cleanup)
 
     def _make_workspace_ready(self) -> None:
@@ -81,15 +89,22 @@ class CmdStartRoutingTests(unittest.TestCase):
         workspace = self.project_dir / self.WORKSPACE_NAME
         (workspace / ".git").mkdir(parents=True)
 
-    def _prison(self, image_exists: bool) -> Mock:
+    def _prison(self, image_matches: bool) -> Mock:
+        # Phase 1.2.6: routing now consults image_matches (was image_exists).
+        # recipe_hash is also called by cmd_start to know what to expect.
         p = Mock(spec=Alcatraz)
-        p.image_exists.return_value = image_exists
+        p.recipe_hash.return_value = "expected_hash_123"
+        p.image_matches.return_value = image_matches
         return p
 
-    def test_no_image_routes_to_first_run(self):
-        """Primary first-run trigger: image needs building."""
+    def test_stale_image_routes_to_first_run(self):
+        """Primary first-run trigger: image needs (re)building. After
+        Phase 1.2.6, "needs building" includes "image's config_hash
+        label doesn't match current recipe" — covers the user-reported
+        bug where `rm -rf .alcatrazer/ + init` left an old image in
+        place that today's `image_exists=True` check trusted blindly."""
         self._make_workspace_ready()
-        prison = self._prison(image_exists=False)
+        prison = self._prison(image_matches=False)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -99,14 +114,12 @@ class CmdStartRoutingTests(unittest.TestCase):
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_missing_workspace_routes_to_first_run_even_when_image_exists(self):
-        """Self-heal: user deleted `.devspace-xxx/` manually (or a stale
-        image from a prior install is left over against a fresh
-        project_dir). Image exists but workspace doesn't — go to
-        first-run so workspace gets recreated. Without this branch the
-        daemon would launch against a non-existent workspace and fail."""
+    def test_missing_workspace_routes_to_first_run_even_when_image_matches(self):
+        """Self-heal: user deleted `.devspace-xxx/` manually. Image is
+        current but workspace doesn't exist — go to first-run so
+        workspace gets recreated."""
         # Workspace dir NOT created → workspace_ready = False.
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -120,7 +133,7 @@ class CmdStartRoutingTests(unittest.TestCase):
         """Pointer file itself missing — even weirder state, but same
         recovery path applies."""
         (self.alcatraz_dir / "workspace-dir").unlink()
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -130,11 +143,12 @@ class CmdStartRoutingTests(unittest.TestCase):
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_image_and_workspace_both_present_routes_to_subsequent_run(self):
-        """Normal steady-state path — drift detection in subsequent_run
-        decides what (if anything) needs doing."""
+    def test_current_image_and_workspace_present_routes_to_subsequent_run(self):
+        """Normal steady-state path — image_matches=True AND workspace
+        ready, so drift detection in subsequent_run decides what (if
+        anything) needs doing."""
         self._make_workspace_ready()
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -146,10 +160,24 @@ class CmdStartRoutingTests(unittest.TestCase):
 
     def test_routing_propagates_handler_return_code(self):
         self._make_workspace_ready()
-        prison = self._prison(image_exists=False)
+        prison = self._prison(image_matches=False)
         with patch.object(start, "_first_run_after_init", return_value=7):
             rc = start.cmd_start(self.project_dir, prison=prison)
         self.assertEqual(rc, 7)
+
+    def test_recipe_hash_is_passed_to_image_matches(self):
+        """Sanity check: the recipe hash returned by `recipe_hash` is
+        what gets passed to `image_matches`. This wires together what
+        cmd_start's two port calls communicate about."""
+        self._make_workspace_ready()
+        prison = self._prison(image_matches=True)
+        prison.recipe_hash.return_value = "specifichash00ab"
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0),
+            patch.object(start, "_subsequent_run", return_value=0),
+        ):
+            start.cmd_start(self.project_dir, prison=prison)
+        prison.image_matches.assert_called_once_with("specifichash00ab")
 
 
 class CliVersionFlagTests(unittest.TestCase):
@@ -2770,9 +2798,12 @@ class FirstRunAfterInitTests(unittest.TestCase):
 
         self.prison = Mock(spec=Alcatraz)
         self.prison.exec.return_value = 0
-        # Default: image doesn't exist yet — first_run builds it. Tests
-        # that exercise the "image already present" branch override.
-        self.prison.image_exists.return_value = False
+        # Phase 1.2.6: first_run uses image_matches(recipe_hash) instead
+        # of bare image_exists(). Default: image is stale (or absent) →
+        # first_run builds it. Tests exercising the "image already
+        # current" branch override `image_matches.return_value = True`.
+        self.prison.recipe_hash.return_value = "current_hash_abcd"
+        self.prison.image_matches.return_value = False
 
         self.mocks: dict[str, Mock] = {}
         to_patch: list[tuple[object, str, object]] = [
@@ -2862,20 +2893,24 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self._run()
         self.mocks["launch_daemon_and_print"].assert_not_called()
 
-    def test_build_skipped_when_image_already_exists(self):
+    def test_build_skipped_when_image_is_current(self):
         """_first_run_after_init is called from two routing paths now
-        (no image OR no workspace). When only the workspace is missing,
-        rebuilding the image is wasted work — skip it."""
-        self.prison.image_exists.return_value = True
+        (stale/missing image OR no workspace). When only the workspace
+        is missing AND the image's config_hash matches the current
+        recipe, rebuilding the image is wasted work — skip it."""
+        self.prison.image_matches.return_value = True
         self._run()
         self.prison.build.assert_not_called()
         # Workspace still gets created + container still starts.
         self.mocks["create_workspace"].assert_called_once()
         self.prison.start.assert_called_once()
 
-    def test_build_runs_when_image_missing(self):
-        """Sanity-lock the original path: no image → build once."""
-        self.prison.image_exists.return_value = False
+    def test_build_runs_when_image_is_stale(self):
+        """Phase 1.2.6: stale image → rebuild. Covers both the
+        "no image" original case and the new "image present but
+        built from older config" case the user reported (rm -rf
+        .alcatrazer/ + init left a stale image visible)."""
+        self.prison.image_matches.return_value = False
         self._run()
         self.prison.build.assert_called_once()
 

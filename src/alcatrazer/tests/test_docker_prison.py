@@ -1135,5 +1135,198 @@ class DockerPrisonShellTests(unittest.TestCase):
             DockerPrison(self.project_dir).shell()
 
 
+class DockerfileConfigHashLabelTests(unittest.TestCase):
+    """Phase 1.2.6: rendered Dockerfile carries an
+    `alcatrazer.config_hash` LABEL on stage 3 so the running image
+    can be matched against the current recipe later. The hash is the
+    SHA-256 (first 16 hex chars) of the Dockerfile body excluding the
+    LABEL line itself (avoids chicken-and-egg)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _render(self, data: dict) -> str:
+        DockerPrison(self.project_dir).generate_prison(data)
+        return (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
+
+    def _extract_label(self, content: str) -> str:
+        """Return the value of the alcatrazer.config_hash LABEL, or '' if
+        the LABEL is absent."""
+        import re
+
+        m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', content)
+        return m.group(1) if m else ""
+
+    def test_rendered_dockerfile_emits_config_hash_label(self):
+        content = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        self.assertRegex(content, r'LABEL alcatrazer\.config_hash="[0-9a-f]{16}"')
+
+    def test_label_appears_in_dev_stage_after_dev_marker(self):
+        # LABEL must apply to stage 3 (the final image), so it must
+        # follow `FROM ai-base AS dev`. If it leaks into dev-base, the
+        # base would carry a stale label.
+        content = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        idx_dev = content.find("FROM ai-base AS dev")
+        idx_label = content.find("LABEL alcatrazer.config_hash")
+        self.assertGreater(idx_dev, -1)
+        self.assertGreater(idx_label, idx_dev)
+
+    def test_same_input_yields_same_hash(self):
+        a = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        self.assertEqual(self._extract_label(a), self._extract_label(b))
+        self.assertNotEqual(self._extract_label(a), "")
+
+    def test_different_inputs_yield_different_hashes(self):
+        a = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = self._render({"languages": {"python": {"version": "3.13", "manager": "pip"}}})
+        self.assertNotEqual(self._extract_label(a), self._extract_label(b))
+
+    def test_different_os_packages_yield_different_hashes(self):
+        # Sanity: hash is over the whole Dockerfile body, not just the
+        # `[languages]` section. A different `[os]` section must
+        # produce a different hash.
+        a = self._render(
+            {
+                "os": {"packages": ["libpq-dev"]},
+                "languages": {"python": {"version": "3.12", "manager": "pip"}},
+            }
+        )
+        b = self._render(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"python": {"version": "3.12", "manager": "pip"}},
+            }
+        )
+        self.assertNotEqual(self._extract_label(a), self._extract_label(b))
+
+
+class DockerPrisonRecipeHashTests(unittest.TestCase):
+    """Phase 1.2.6: `prison.recipe_hash(coding_env)` returns the same
+    16-hex hash that ends up in the rendered Dockerfile's LABEL. cmd_start
+    uses this to know what to expect from the running image's label."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_returns_16_hex_char_string(self):
+        h = DockerPrison(self.project_dir).recipe_hash(
+            {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        )
+        self.assertRegex(h, r"^[0-9a-f]{16}$")
+
+    def test_is_deterministic(self):
+        prison = DockerPrison(self.project_dir)
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        self.assertEqual(prison.recipe_hash(data), prison.recipe_hash(data))
+
+    def test_changes_with_input(self):
+        prison = DockerPrison(self.project_dir)
+        a = prison.recipe_hash({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = prison.recipe_hash({"languages": {"python": {"version": "3.13", "manager": "pip"}}})
+        self.assertNotEqual(a, b)
+
+    def test_matches_label_in_rendered_dockerfile(self):
+        # The hash returned by recipe_hash MUST equal the hash baked
+        # into the LABEL, otherwise image_matches would never agree
+        # with anything `recipe_hash` produces.
+        prison = DockerPrison(self.project_dir)
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        prison.generate_prison(data)
+        dockerfile = (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
+        import re
+
+        m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', dockerfile)
+        self.assertIsNotNone(m)
+        self.assertEqual(prison.recipe_hash(data), m.group(1))
+
+
+class DockerPrisonImageMatchesTests(unittest.TestCase):
+    """Phase 1.2.6: `prison.image_matches(expected_hash)` reports whether
+    the running image carries an `alcatrazer.config_hash` LABEL equal to
+    the expected hash. Returns False on missing image, missing label, or
+    label mismatch (so older alcatrazer-built images automatically
+    trigger one rebuild after upgrade)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_returns_false_when_image_missing(self):
+        with patch.object(DockerPrison, "image_exists", return_value=False):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_false_when_label_absent(self):
+        # docker inspect with --format on a missing label returns "".
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_false_when_label_mismatches(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="differenthash00\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_true_when_label_matches_exactly(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="a3f7c9e2deadbeef\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertTrue(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_invokes_docker_inspect_with_format_flag(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="a3f7c9e2deadbeef\n", stderr=""
+                ),
+            ) as mock_run,
+        ):
+            prison = DockerPrison(self.project_dir)
+            prison.image_matches("a3f7c9e2deadbeef")
+        cmd = mock_run.call_args.args[0]
+        # Tag is path-derived (Phase 1.2.5).
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:3], ["docker", "inspect", expected_tag])
+        # Format extracts the alcatrazer.config_hash label value.
+        self.assertIn("--format", cmd)
+        format_idx = cmd.index("--format")
+        self.assertIn("alcatrazer.config_hash", cmd[format_idx + 1])
+
+
 if __name__ == "__main__":
     unittest.main()
