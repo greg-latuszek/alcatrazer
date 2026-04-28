@@ -196,8 +196,15 @@ def _render_verify_block(languages: dict) -> str:
     return "RUN " + " && \\\n    ".join(commands) + "\n"
 
 
-def _render_dockerfile(data: dict) -> str:
-    """Build the full three-stage Dockerfile text."""
+def _render_dockerfile_body(data: dict) -> str:
+    """Render the Dockerfile WITHOUT the alcatrazer.config_hash LABEL.
+
+    Phase 1.2.6: this is the canonical body used both as the input for
+    `_compute_config_hash` (avoids chicken-and-egg with the LABEL line)
+    AND as the body of the final Dockerfile. The public
+    `_render_dockerfile` calls this, computes the hash, and appends the
+    LABEL.
+    """
     parts: list[str] = [
         _DOCKERFILE_DEV_BASE.rstrip(),
         _DOCKERFILE_AI_BASE.rstrip(),
@@ -247,6 +254,35 @@ def _render_dockerfile(data: dict) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+def _compute_config_hash(data: dict) -> str:
+    """Phase 1.2.6: SHA-256 of the Dockerfile body (sans LABEL) — first
+    16 hex chars. Baked into the rendered Dockerfile via a LABEL so the
+    running image carries its own identity, and recomputed at start time
+    to detect when the on-disk recipe has drifted from what built the
+    image (covers `rm -rf .alcatrazer/` recovery and similar)."""
+    body = _render_dockerfile_body(data)
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def _render_dockerfile(data: dict) -> str:
+    """Build the full Dockerfile text — body + alcatrazer.config_hash LABEL.
+
+    The LABEL is appended to stage 3 (the dev stage) by string-splicing
+    just before `_DOCKERFILE_ENTRYPOINT_TAIL` so it lands inside the
+    final image's metadata. Computed via `_compute_config_hash` so the
+    running image's label matches what `recipe_hash` would return for
+    the same input."""
+    body = _render_dockerfile_body(data)
+    config_hash = _compute_config_hash(data)
+    label_line = f'\nLABEL alcatrazer.config_hash="{config_hash}"\n'
+    # Insert the LABEL between the dev stage and the entrypoint tail
+    # (which starts with "# Back to root for entrypoint"). This places
+    # the LABEL inside stage 3 just before the USER root switch.
+    entrypoint_marker = "# Back to root for entrypoint"
+    insert_at = body.index(entrypoint_marker)
+    return body[:insert_at] + label_line.lstrip("\n") + "\n" + body[insert_at:]
+
+
 # --- Adapter -----------------------------------------------------------------
 
 
@@ -284,6 +320,43 @@ class DockerPrison(Alcatraz):
         if not dockerfile.exists():
             return True
         return _render_dockerfile(coding_environment) != dockerfile.read_text()
+
+    def recipe_hash(self, coding_environment: dict) -> str:
+        """Return the alcatrazer.config_hash that this adapter would bake
+        into a freshly-built image for the given coding_environment.
+
+        Phase 1.2.6: paired with `image_matches` so cmd_start can ask
+        "is the running image built from the same recipe I'd build now?"
+        without the caller knowing the underlying hash basis (Dockerfile
+        body for DockerPrison; whatever a future backend's recipe is)."""
+        return _compute_config_hash(coding_environment)
+
+    def image_matches(self, expected_hash: str) -> bool:
+        """True iff the running image carries an `alcatrazer.config_hash`
+        LABEL equal to `expected_hash`.
+
+        Returns False on missing image, missing label (older alcatrazer
+        builds — triggers a one-time rebuild after upgrade), or any
+        mismatch. The label is set by `_render_dockerfile` at build
+        time and read here via `docker inspect --format`.
+        """
+        if not self.image_exists():
+            return False
+        result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                self.image_tag,
+                "--format",
+                '{{ index .Config.Labels "alcatrazer.config_hash" }}',
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        actual_hash = result.stdout.strip()
+        return actual_hash == expected_hash
 
     def build(self) -> None:
         """Run `docker build` with the generated Dockerfile.

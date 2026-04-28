@@ -156,3 +156,27 @@ class Alcatraz(ABC):
         future backends (FirecrackerPrison, VMPrison, …) implement via
         whatever their interactive-attach mechanism is.
         """
+
+    @abstractmethod
+    def recipe_hash(self, coding_environment: dict) -> str:
+        """Hash of the recipe the adapter would build right now for
+        ``coding_environment``.
+
+        Phase 1.2.6: paired with ``image_matches`` so ``cmd_start`` can
+        decide whether the running image is current without knowing
+        what kind of recipe the adapter uses (Dockerfile, VM cloud-init,
+        snapshot config, …). DockerPrison hashes the Dockerfile body;
+        future backends hash whatever they bake.
+        """
+
+    @abstractmethod
+    def image_matches(self, expected_hash: str) -> bool:
+        """Whether the running image was built from the recipe whose
+        hash equals ``expected_hash``.
+
+        Phase 1.2.6 staleness detection: closes the gap where today's
+        ``image_exists()`` returns True for an image built from an
+        older config (e.g. user wiped ``.alcatrazer/`` and re-ran init).
+        Returns False on: missing image, image without the
+        adapter's identity label, label-vs-expected mismatch.
+        """

@@ -183,7 +183,17 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         workspace_name is not None and (project_dir / workspace_name / ".git").is_dir()
     )
     try:
-        if not prison.image_exists() or not workspace_ready:
+        # Phase 1.2.6: route on `image_matches(recipe_hash)` instead of
+        # bare `image_exists()`. Catches stale-image scenarios that
+        # today's "image present → reuse" check trusts blindly (e.g.
+        # `rm -rf .alcatrazer/` left an old image in place; the new
+        # init regenerates the Dockerfile but the running image still
+        # carries the OLD config_hash label). The schema validator can
+        # also raise UnsupportedSchemaVersionError when loading the
+        # coding-environment, so all of this lives inside the try.
+        coding_env = _load_coding_environment(project_dir)
+        current_hash = prison.recipe_hash(coding_env)
+        if not prison.image_matches(current_hash) or not workspace_ready:
             return _first_run_after_init(project_dir, prison=prison)
         return _subsequent_run(project_dir, prison=prison)
     except UnsupportedSchemaVersionError as e:
@@ -345,12 +355,15 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
 
     workspace_name = identity.load_workspace_dir(str(alcatrazer_dir))
 
-    # Skip build when the image is already there — `cmd_start` may route
-    # here just because the WORKSPACE is missing (user ran
-    # `rm -rf .devspace-xxx`, or a fresh project-dir shares a docker
-    # daemon with a prior install). Idempotent build semantics make
-    # that path cheap.
-    if not prison.image_exists():
+    # Phase 1.2.6: skip build only when the image carries the
+    # alcatrazer.config_hash matching the current recipe. Bare
+    # `image_exists()` would trust an older image left over from a
+    # different config — the bug reported by users who'd done
+    # `rm -rf .alcatrazer/` and re-run `init`. `image_matches` answers
+    # the right question ("is this image current?") instead of
+    # "is there any image?".
+    current_hash = prison.recipe_hash(coding_env)
+    if not prison.image_matches(current_hash):
         print("Building Alcatraz image...")
         try:
             prison.build()
