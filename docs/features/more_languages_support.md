@@ -1456,6 +1456,514 @@ files. Estimated ~1.5 hours: ~30 min for the language-data extension
 changes + tests, ~30 min for `_render_mise_uses` change + tests +
 existing-test updates.
 
+### Phase 1.2.5 — Per-repo deterministic naming + `alcatrazer visit`
+
+Surfaced by a "would two alcatrazers on one laptop coexist?"
+investigation: today they don't. `DockerPrison` hardcodes
+`image_tag = "alcatraz-workspace:local"` and
+`container_name = "workspace"` (line 215-216), and every caller uses
+the defaults. So if a user runs `alcatrazer init && start` in their
+python repo, then `cd`s to a java repo and runs the same commands:
+
+1. **Container-name collision** — `docker run --name workspace …`
+   fails with `Conflict. The container name "/workspace" is already
+   in use`. The second alcatraz never starts.
+2. **Image-tag silently overwritten** — past collision 1 (the user
+   removes the python container), the java build retags
+   `alcatraz-workspace:local` to point at the new image. The python
+   alcatraz's saved Dockerfile no longer reflects what
+   `image_exists()` resolves to. Stale-image bug from Phase 1.2.6's
+   ancestor reappears as a cross-repo problem.
+
+The fix is per-repo naming derived from a stable, collision-free
+identifier. The natural choice is a SHA-256 hash of the repo's
+canonical absolute path (12 hex chars, ~48 bits — birthday bound at
+~16M repos on one laptop, effectively never collides). Combined with
+the repo's basename (sanitized for Docker's tag format), `docker ps`
+becomes glance-readable: `workspace-python_repo-7c4a92b14f3e` and
+`workspace-java_repo-9bd1a2c7e83f` instead of two competing
+`workspace`s.
+
+This change creates a UX problem: the README's
+`docker exec -it -u agent -w /workspace workspace bash` examples no
+longer work, and the new container name isn't memorable enough to
+type by hand. Phase 1.2.5 ships a companion command —
+**`alcatrazer visit`** — that opens an interactive shell inside the
+running Alcatraz without the user having to know the underlying
+container name.
+
+#### Theme A — path-hash naming for images and containers
+
+**Identity function.** New `_identity_for_project(project_dir)` in
+`docker_prison.py`:
+
+```python
+def _identity_for_project(project_dir: Path) -> str:
+    """Return `<sanitized-basename>-<12-hex-hash>` derived from the
+    canonical absolute path. Stable across runs of init/clear/start;
+    different repos at different paths get different identifiers
+    deterministically.
+    """
+    canonical = str(project_dir.resolve())
+    sanitized = _sanitize_basename(project_dir.resolve().name)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+    return f"{sanitized}-{digest}"
+```
+
+**Basename sanitization.** Docker tags allow only `[a-z0-9._-]`
+(lowercase). The sanitizer:
+
+- Lowercases.
+- Replaces any character outside `[a-z0-9.-]` with `-`.
+- Collapses runs of `-` into a single `-`.
+- Trims leading / trailing `-` / `.`.
+- Falls back to `"repo"` if the result is empty.
+
+Examples: `MyRepo` → `myrepo`, `My Project (work)` → `my-project-work`,
+`__weird___` → `repo`.
+
+**Naming.** `DockerPrison.__init__` no longer hardcodes
+`alcatraz-workspace:local` and `workspace`. Defaults are derived:
+
+```python
+ident = _identity_for_project(project_dir)
+self.image_tag = image_tag or f"alcatraz-workspace:{ident}"
+self.container_name = container_name or f"workspace-{ident}"
+```
+
+Optional constructor params kept for tests that want to override
+explicitly.
+
+**Migration.** None. Alcatrazer is pre-v1 (no PyPI release with the
+old naming as a stable contract); existing alcatrazers built before
+1.2.5 will mismatch the new tag/container names and need a one-time
+`docker rmi alcatraz-workspace:local && docker rm -f workspace`
+cleanup. Documented in the README upgrade note. No
+auto-detect-and-rename code on our side.
+
+#### Theme B — `alcatrazer visit`
+
+New CLI subcommand: opens an interactive `bash` as the agent user
+inside the running Alcatraz. Replaces every
+`docker exec -it -u agent -w /workspace workspace bash` instruction
+in the docs.
+
+**Semantics:**
+
+- Errors cleanly when Alcatraz isn't running:
+  `Alcatraz is not running — run \`alcatrazer start\` first.`
+  Exit code 1. **Explicit, no auto-start** — auto-starting would
+  hide rebuilds and daemon launches under what should be a fast
+  "drop me in" command.
+- Always opens interactive bash. **No command pass-through** for
+  Phase 1.2.5 — running one-off commands is a separate need that
+  belongs in a future `alcatrazer errand "<cmd>"` (out of scope
+  here; mentioned for the future).
+- Pure passthrough: `os.execvp` so signals (Ctrl+C, Ctrl+D) flow
+  through and the process replaces the alcatrazer wrapper. Exit
+  status is whatever bash exits with.
+
+**Backend abstraction.** New abstract method on the `Alcatraz` port:
+
+```python
+class Alcatraz(ABC):
+    @abstractmethod
+    def shell(self) -> None:
+        """Open an interactive shell as agent inside the running sandbox.
+        Replaces the calling process via execvp — never returns normally
+        on success. Raises PrisonStartError if the sandbox isn't running."""
+```
+
+`DockerPrison.shell()` implements via `docker exec`:
+
+```python
+def shell(self) -> None:
+    if not self.is_running():
+        raise PrisonStartError("Alcatraz is not running.")
+    os.execvp("docker", [
+        "docker", "exec", "-it",
+        "-u", "agent",
+        "-w", "/workspace",
+        self.container_name,
+        "bash",
+    ])
+```
+
+Future `FirecrackerPrison.shell()`, `VMPrison.shell()`, etc.
+implement via whatever their interactive-attach mechanism is. The
+caller never says "docker" — that's the contract.
+
+**`cmd_visit` in `start.py`.** Thin wrapper:
+
+```python
+def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    if not (project_dir / ".alcatrazer").exists():
+        print("No alcatrazer setup in this repository — run `alcatrazer init` first.",
+              file=sys.stderr)
+        return 1
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+        prison = DockerPrison(project_dir)
+    if not prison.is_running():
+        print("Alcatraz is not running — run `alcatrazer start` first.",
+              file=sys.stderr)
+        return 1
+    prison.shell()  # never returns on success
+    return 0  # unreachable, but keeps type-checker happy
+```
+
+**`cli.py` registration.** New subparser:
+
+```python
+subparsers.add_parser(
+    "visit",
+    help="Step inside the running Alcatraz (interactive shell as agent)",
+)
+```
+
+Routing: `elif args.command == "visit": sys.exit(start_module.cmd_visit(Path.cwd()))`.
+
+#### Theme C — post-success messages mention `visit`
+
+Two surfaces gain a one-line pointer to the new command:
+
+**`cmd_start`** — replace today's bare `Ready.` with:
+
+```text
+Ready. To enter the Alcatraz: alcatrazer visit
+```
+
+**`cmd_init`** — append to the post-init guidance:
+
+```text
+Claude credentials found on host — they will be used by Alcatraz.
+Next: run `alcatrazer start` to build Alcatraz and run it with own git,
+then `alcatrazer visit` to step inside.
+```
+
+(the without-creds branch gets the analogous `Then run …` rewrite —
+same `then \`alcatrazer visit\` to step inside.` tail).
+
+#### Concrete code touches
+
+- `src/alcatrazer/docker_prison.py`
+  - New `_sanitize_basename(name: str) -> str` helper.
+  - New `_identity_for_project(project_dir: Path) -> str` helper.
+  - `DockerPrison.__init__` defaults now derive `image_tag` and
+    `container_name` from the identity.
+  - New `DockerPrison.shell() -> None` implementation.
+- `src/alcatrazer/alcatraz.py`
+  - New abstract `Alcatraz.shell() -> None` method on the port.
+- `src/alcatrazer/start.py`
+  - New `cmd_visit(project_dir, prison=None)` function.
+  - `cmd_start`'s post-success print: `Ready. To enter the Alcatraz:
+    alcatrazer visit`.
+  - `cmd_init`'s closing block: trailing `then \`alcatrazer visit\` to
+    step inside.` on the post-recipe-generation lines (both
+    has-creds and no-creds branches).
+- `src/alcatrazer/cli.py`
+  - New `visit` subparser; routing entry calls `cmd_visit`.
+- `src/alcatrazer/tests/test_docker_prison.py`
+  - `test_identity_is_stable_across_calls` — same path → same ident.
+  - `test_identity_resolves_symlinks` — `/var/symlink-to-repo` and
+    the resolved path produce the same ident.
+  - `test_identity_differs_for_different_paths` — distinct paths →
+    distinct idents (modulo astronomically improbable collisions).
+  - `test_sanitize_basename_handles_uppercase_and_specials` —
+    `MyRepo` → `myrepo`, `My Project (work)` → `my-project-work`.
+  - `test_sanitize_basename_falls_back_when_empty` — `_______` →
+    `repo`.
+  - `test_image_tag_uses_path_identity` — `DockerPrison(p)` for
+    a repo at `/tmp/myproj` produces `image_tag` matching
+    `^alcatraz-workspace:myproj-[0-9a-f]{12}$`.
+  - `test_container_name_uses_path_identity` — same shape,
+    `^workspace-myproj-[0-9a-f]{12}$`.
+  - `test_two_projects_get_different_image_tags_and_container_names`
+    — two `DockerPrison`s pointed at different paths produce
+    distinct names.
+  - `test_shell_calls_docker_exec_with_container_name_and_bash` —
+    patch `os.execvp`, assert it was called with
+    `["docker", "exec", "-it", "-u", "agent", "-w", "/workspace",
+    self.container_name, "bash"]`.
+  - `test_shell_raises_when_not_running` — `is_running()` False →
+    `PrisonStartError`.
+- `src/alcatrazer/tests/test_start.py`
+  - New `CmdVisitTests` class:
+    - `test_errors_when_no_alcatrazer_dir` — fresh repo with no
+      `.alcatrazer/` → exit 1, stderr mentions `alcatrazer init`.
+    - `test_errors_when_alcatraz_not_running` — alcatrazer dir
+      present, prison.is_running() False → exit 1, stderr mentions
+      `alcatrazer start`.
+    - `test_calls_prison_shell_when_running` — mocked prison with
+      is_running=True → `prison.shell()` called once.
+  - `cmd_start` post-success message tests:
+    - `test_start_post_success_mentions_alcatrazer_visit` — captured
+      stdout contains `Ready. To enter the Alcatraz: alcatrazer visit`.
+  - `cmd_init` closing-message tests (extending existing
+    `CmdInitIntegrationTests`):
+    - `test_closing_with_creds_includes_visit_hint` — appended
+      `then \`alcatrazer visit\` to step inside.`
+    - `test_closing_without_creds_includes_visit_hint` — same hint
+      on the API-key branch.
+- `src/alcatrazer/tests/test_alcatraz.py`
+  - `test_shell_is_an_abstract_method` — instantiating the bare
+    `Alcatraz` class fails because `shell` is abstract.
+- `README.md`
+  - Replace every `docker exec -it -u agent -w /workspace workspace bash`
+    instruction with `alcatrazer visit`.
+  - "Container Details" subsection mentions per-repo naming with a
+    one-line note: image and container names are derived from the
+    repo path so multiple alcatrazers can coexist on one machine.
+  - One-time upgrade note for users on pre-1.2.5 alcatrazer:
+    `docker rmi alcatraz-workspace:local; docker rm -f workspace`
+    to clean up the old shared names, then re-run `alcatrazer start`.
+
+#### Existing tests that need updating
+
+Several tests construct `DockerPrison(self.project_dir)` and assume
+the hardcoded names. These now inherit per-repo names. Search-and-
+update for tests that:
+
+- Assert specific image tag literal `alcatraz-workspace:local` —
+  rewrite to assert the regex shape, or instantiate with explicit
+  `image_tag=` to keep the assertion stable.
+- Assert specific container name literal `workspace` — same rewrite.
+- Mock `docker run` / `docker stop` / `docker rm` calls and check
+  argv — needs to use the actual derived name (which is determined
+  by the test's tempdir path).
+
+Most tests that use the Mock `Alcatraz` spec (`Mock(spec=Alcatraz)`)
+are unaffected because they don't care about the real names.
+
+#### What Phase 1.2.5 does NOT do
+
+- Does **not** address single-repo staleness (the
+  `rm -rf .alcatrazer/` recovery scenario). That stays as Phase
+  1.2.6 (image-hash label baked into the image).
+- Does **not** introduce `alcatrazer errand "<cmd>"` for one-off
+  commands inside the Alcatraz. `visit` is interactive-only;
+  `errand` is a future phase if real demand surfaces.
+- Does **not** auto-start when `visit` is called against a stopped
+  alcatraz. Explicit error, user runs `start` themselves.
+- Does **not** introduce a migration path for existing alcatrazers
+  built with the old naming. Pre-v1; documented manual cleanup.
+- Does **not** enrich `docker ps` output with anything beyond the
+  basename + hash. Future `alcatrazer roll-call` (from the
+  brainstorm) is its own phase.
+
+#### Phase 1.2.5 independence
+
+Independent of all earlier phases (1.1, 1.2, 1.2.1, 1.2.2, 1.2.3,
+1.2.4 all landed). Touches `docker_prison.py` (naming + shell),
+`alcatraz.py` (port method), `start.py` (cmd_visit + post-success
+messages), `cli.py` (subparser), tests in three files, README.
+Estimated ~2.5 hours: ~30 min for identity + sanitization + tests,
+~30 min for the port method + DockerPrison.shell + tests, ~30 min
+for cmd_visit + cli wiring + tests, ~30 min for cmd_start /
+cmd_init post-success messages + tests, ~30 min for README scrub
+of `docker exec` instructions and existing-test fixups.
+
+### Phase 1.2.6 — Image-identity label for stale-image detection
+
+Surfaced twice during testing: real users hit "stale Docker image"
+states that `alcatrazer start`'s rebuild detection fails to catch.
+After Phase 1.2.5 (per-repo image tags) lands, the cross-repo
+manifestation is largely moot — each repo has its own tag, no
+silent overwrites. But the within-repo bug remains:
+
+1. **Saved Dockerfile out-of-band update.** `cmd_start`'s
+   `prison.needs_rebuild(coding_env)` compares the *saved*
+   `.alcatrazer/Dockerfile` to the *would-be-rendered* one. If they
+   match, no rebuild. The implicit assumption is "saved Dockerfile
+   reflects what built the running image" — but anything that
+   regenerates the saved Dockerfile without rebuilding the image
+   breaks it: cross-repo shared `alcatraz-workspace:local` tag, an
+   alcatrazer upgrade that re-renders the file, etc.
+2. **`.alcatrazer/` wiped and recreated.** User does
+   `rm -rf .alcatrazer/ <workspace>/`, leaves
+   `coding-environment.toml`, runs `alcatrazer init`. Init writes a
+   fresh Dockerfile from the (current) TOML. `alcatrazer start`
+   then sees `image_exists() == True` and routes to
+   `_first_run_after_init`, which has the simpler check:
+
+   ```python
+   if not prison.image_exists():
+       prison.build()
+   ```
+
+   Old image silently reused. `needs_rebuild` is never even
+   consulted on this path.
+
+Common root cause: there's no anchor on disk to **what built the
+running image**. Every disk-based proxy (saved Dockerfile, .last
+snapshot) can be wiped or regenerated independently of the image.
+The only thing that knows what built the image is the image itself.
+
+#### The fix — bake a content hash into the image as a LABEL
+
+`_render_dockerfile` emits a `LABEL` in stage 3 carrying a hash of
+the Dockerfile's own content (minus the LABEL line itself, to avoid
+chicken-and-egg):
+
+```dockerfile
+# Stage 3: dev — language runtimes and project bits …
+FROM ai-base AS dev
+…
+LABEL alcatrazer.config_hash="a3f7c9e2…"
+```
+
+`docker inspect alcatraz-workspace:local --format '{{ index .Config.Labels "alcatrazer.config_hash" }}'`
+reads the value back at any time. The label is welded into the
+image's metadata at build time — host-side edits to
+`.alcatrazer/Dockerfile` cannot change it, and a different
+configuration's image carries a different hash.
+
+#### How `cmd_start` consumes the label
+
+New port method `Alcatraz.image_matches(expected_hash) -> bool`:
+
+- Returns `False` if the image doesn't exist.
+- Returns `False` if the image exists but has no
+  `alcatrazer.config_hash` label (older alcatrazer-built image —
+  treat as stale; first start after upgrade rebuilds, then
+  subsequent starts are stable).
+- Returns `False` if the label exists but doesn't match.
+- Returns `True` only if image exists AND label matches.
+
+`cmd_start` and `_first_run_after_init` swap their bare
+`image_exists()` checks for `image_matches(current_hash)`:
+
+```python
+current_hash = _compute_config_hash(coding_env)
+if not prison.image_matches(current_hash) or not workspace_ready:
+    return _first_run_after_init(project_dir, prison=prison)
+```
+
+```python
+# inside _first_run_after_init
+if not prison.image_matches(current_hash):
+    print("Alcatraz image is stale (config changed) — rebuilding.")
+    prison.build()
+else:
+    print("Alcatraz image already present — skipping build.")
+```
+
+`needs_rebuild` (in `_subsequent_run`) also consults the image
+hash — saved-Dockerfile-vs-rendering match is necessary but no
+longer sufficient. If saved == rendered but the image's hash
+mismatches the current rendering's hash, we still rebuild.
+
+#### What this catches that today's logic doesn't
+
+| Scenario | Today | After 1.2.6 |
+| -------- | ----- | ----------- |
+| `coding-environment.toml` edited, no init re-run | needs_rebuild detects (saved vs rendered diff) ✓ | needs_rebuild ∨ image-hash mismatch ✓ |
+| `rm -rf .alcatrazer/` + new TOML + init + start | **stale image silently reused** | image-hash mismatch → rebuild ✓ |
+| Cross-repo shared image tag (mooted by 1.2.5) | one repo's rebuild silently affects others | n/a — 1.2.5 already gives each repo its own tag |
+| User upgrades alcatrazer (render logic changes) | depends on whether saved Dockerfile content drifts | rendered hash changes → rebuild ✓ |
+| User manually edits `.alcatrazer/Dockerfile` | needs_rebuild trusts the edited file | image hash baked at build, edit doesn't change it → rebuild ✓ |
+| First start after upgrading to 1.2.6 (image lacks label) | n/a | absence of label treated as stale; one-time clean rebuild |
+
+#### Concrete code touches
+
+- `src/alcatrazer/start.py`
+  - New `_compute_config_hash(coding_environment: dict) -> str` —
+    renders the Dockerfile via `_render_dockerfile_for_hashing`
+    (the regular renderer minus the LABEL line, to avoid chicken-
+    and-egg), SHA-256 hashes the result, returns first 16 hex chars
+    (~64 bits — plenty of collision space for a per-repo signal).
+  - `cmd_start` swaps the routing condition from
+    `not prison.image_exists() or not workspace_ready` to
+    `not prison.image_matches(current_hash) or not workspace_ready`.
+  - `_first_run_after_init` swaps its bare `image_exists()` for
+    `image_matches(current_hash)`. Print message on the staleness
+    path mentions "config changed" so the user understands why a
+    rebuild is firing.
+  - `_subsequent_run` `needs_rebuild` consults the image hash too:
+    rebuild fires if saved-vs-rendering disagree OR image-hash
+    mismatches current rendering.
+- `src/alcatrazer/docker_prison.py`
+  - `_render_dockerfile` emits `LABEL alcatrazer.config_hash="<hash>"`
+    as the last line of stage 3 (just before the entrypoint tail).
+    Hash value comes from `_compute_config_hash(coding_environment)`.
+  - New `DockerPrison.image_matches(expected_hash: str) -> bool` —
+    runs `docker inspect <image> --format '{{ index .Config.Labels
+    "alcatrazer.config_hash" }}'`, returns whether the result equals
+    `expected_hash`. Handles missing-image and missing-label cases
+    by returning False.
+- `src/alcatrazer/alcatraz.py`
+  - `Alcatraz` port gains `image_matches(expected_hash) -> bool`
+    abstract method. Backend-agnostic — future `FirecrackerPrison`
+    etc. would implement via whatever metadata mechanism its
+    snapshots support (VM cloud-init labels, etc.).
+- `src/alcatrazer/tests/test_start.py`
+  - `test_compute_config_hash_is_deterministic` — same input
+    → same output across calls.
+  - `test_compute_config_hash_changes_with_input` — different
+    `coding_environment` → different hash. Both
+    `[languages]` and `[os]` changes are captured (full Dockerfile
+    is hashed, not just languages).
+  - `test_compute_config_hash_excludes_label_line` — the hash of
+    the Dockerfile minus the LABEL line is what gets baked, so
+    re-rendering doesn't infinite-loop hash → label → hash.
+  - `test_first_run_after_init_rebuilds_when_image_hash_mismatches`
+    — stale-image scenario the user reported: image exists,
+    workspace doesn't (or fresh init), `image_matches` returns
+    False, `prison.build()` is called.
+  - `test_first_run_after_init_skips_build_when_image_hash_matches`
+    — the happy path: image up-to-date, no rebuild.
+  - `test_subsequent_run_rebuilds_when_image_hash_mismatches_even_if_saved_dockerfile_matches`
+    — the cross-repo / upgrade scenario.
+- `src/alcatrazer/tests/test_docker_prison.py`
+  - `test_dev_stage_includes_alcatrazer_config_hash_label` — the
+    rendered Dockerfile contains a LABEL with the alcatrazer.config_hash
+    key whose value is the result of `_compute_config_hash`.
+  - `test_image_matches_returns_false_when_image_missing` — mocks
+    `docker inspect` to return non-zero / empty, asserts False.
+  - `test_image_matches_returns_false_when_label_absent` — mocks
+    inspect to return empty label value, asserts False (handles
+    older alcatrazer-built images cleanly — they trigger a one-time
+    rebuild after upgrade).
+  - `test_image_matches_returns_true_only_on_exact_match` — mocks
+    inspect to return the expected hash, asserts True; mocks any
+    other value, asserts False.
+- README — minor: "Container Details → Base image and tools" gains a
+  one-line note that the image carries an `alcatrazer.config_hash`
+  label so `alcatrazer start` can detect when the image is stale
+  relative to the current `coding-environment.toml`. No UX change
+  for users — `clear` semantics stay "image kept"; staleness
+  detection is now self-healing.
+
+#### What Phase 1.2.6 does NOT do
+
+- Does **not** remove the image as part of `cmd_clear`. The
+  contract stays "clear keeps the image" — the staleness detection
+  is what changes, not the clear semantics.
+- Does **not** introduce a `--rebuild` / `--hard` flag on `start`
+  or `clear`. With self-healing detection in place there's nothing
+  to opt into.
+- Does **not** change tag naming — that's Phase 1.2.5's job and is
+  presumed already landed by the time 1.2.6 starts.
+- Does **not** bake the alcatrazer version into the hash. The
+  rendered-Dockerfile content already changes when alcatrazer's
+  render logic changes (because `_render_dockerfile` produces
+  different output), so the hash naturally captures upgrades. No
+  separate version field needed.
+- Does **not** support multi-stage hashing (per-stage labels). Only
+  the final image's stage 3 carries the label; the multi-stage
+  build's intermediate stages don't.
+
+#### Phase 1.2.6 independence
+
+Depends on Phase 1.2.5 landing first (per-repo image tags), since
+the image-hash story makes most sense when each repo already has
+its own tag. Touches `start.py` (hash + check), `docker_prison.py`
+(LABEL emit + `image_matches` impl), `alcatraz.py` (port method),
+tests in two files. Estimated ~2 hours: ~30 min for the hash logic
++ unit tests, ~30 min for the LABEL emission + render tests, ~45 min
+for the port method + cmd_start integration + integration tests,
+~15 min for README + doc updates.
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -1536,33 +2044,54 @@ To keep scope tight:
    prompt and as a TOML comment above `manager =`, parallel to
    `version_tip`. Existing wizard tests' "default omits field"
    expectations updated.
+7. **Per-repo deterministic naming + `alcatrazer visit`
+   (Phase 1.2.5).** `DockerPrison`'s hardcoded
+   `alcatraz-workspace:local` and `workspace` are replaced by
+   per-repo names: `alcatraz-workspace:<sanitized-basename>-<hash12>`
+   and `workspace-<sanitized-basename>-<hash12>`, where the hash is
+   SHA-256 of `Path.resolve()` truncated to 12 hex chars. Two
+   alcatrazers on one machine coexist without collision. New
+   `alcatrazer visit` subcommand opens an interactive bash inside
+   via a new `Alcatraz.shell()` port method (DockerPrison
+   implements via `os.execvp` on `docker exec -it -u agent`). No
+   migration (pre-v1 tooling); manual `docker rmi
+   alcatraz-workspace:local && docker rm -f workspace` on upgrade.
+   `cmd_start`'s closing line becomes
+   `Ready. To enter the Alcatraz: alcatrazer visit`; `cmd_init`'s
+   closing appends `then \`alcatrazer visit\` to step inside.`.
+8. **Image-identity label for stale-image detection (Phase 1.2.6).**
+   `_render_dockerfile` emits `LABEL alcatrazer.config_hash="<hash>"`
+   so stale images become self-detectable. Closes the
+   `rm -rf .alcatrazer/` recovery scenario where today's
+   `image_exists()` returns True for a stale image. Depends on
+   Phase 1.2.5 landing first.
 
 **Phase 2 — v2 refactor (deferred):**
 
-7. Validate the empty-stage-3 path on the current container — confirm
+9. Validate the empty-stage-3 path on the current container — confirm
    `apt-get` works at provision time and `curl | bash` works as agent.
-8. Sketch the `Alcatraz` port interface under the two-method contract
-   (`provision`, `start`). Verify `DockerPrison` can implement it
-   without regression. Sketch a hypothetical `FirecrackerPrison` for
-   the same methods — surface any axis we missed.
-9. Implement `[provision]` as a v2 TOML section. Bump
-   `schema_version` to `2`. **NOTE:** the
-   `_GENERATED_MARKERS_BY_SCHEMA` dict from Phase 1.2.3 needs a v2
-   entry here so `init`'s reuse-prompt detection keeps working
-   across the v1→v2 transition. Header text emitted by v2's
-   `_render_coding_environment` is what the v2 marker tuple should
-   match.
-10. Make existing `[os].packages` and `[languages.*]` desugar into
+10. Sketch the `Alcatraz` port interface under the two-method contract
+    (`provision`, `start`). Verify `DockerPrison` can implement it
+    without regression. Sketch a hypothetical `FirecrackerPrison` for
+    the same methods — surface any axis we missed.
+11. Implement `[provision]` as a v2 TOML section. Bump
+    `schema_version` to `2`. **NOTE:** the
+    `_GENERATED_MARKERS_BY_SCHEMA` dict from Phase 1.2.3 needs a v2
+    entry here so `init`'s reuse-prompt detection keeps working
+    across the v1→v2 transition. Header text emitted by v2's
+    `_render_coding_environment` is what the v2 marker tuple should
+    match.
+12. Make existing `[os].packages` and `[languages.*]` desugar into
     `[provision]` lists in the config loader (still under v1 schema for
     backcompat; v2 schema decides whether to keep or remove the sugar).
-11. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
+13. Demote `SUPPORTED_LANGUAGES` from gate to suggestion (rename to
     `WIZARD_SUGGESTIONS` or similar).
-12. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
+14. Kotlin / Scala / Erlang+Elixir / PHP / Lua / Zig / Dart and the
     other Tier B/C/D languages added cleanly under v2 — either as raw
     `[provision]` bash, or as suggestions (curated wizard menu, no
     longer a gate). Distribution-conscious Java users who want SDKMAN!
     or jenv instead of mise can also do it via raw `[provision]`.
-13. Documentation pass — README "Supported languages" section becomes
+15. Documentation pass — README "Supported languages" section becomes
     "Curated convenience languages — and how to add anything else."
 
 ## Open questions for the next pass
