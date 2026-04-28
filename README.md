@@ -580,6 +580,22 @@ collision; `docker ps` lists them with recognizable names. Use
 > alcatrazer start   # rebuilds under per-repo names
 > ```
 
+### Stale-image self-healing
+
+Each built image carries an `alcatrazer.config_hash` LABEL whose value
+is a SHA-256 of the recipe (Dockerfile body) that built it. On
+`alcatrazer start`, the running image's label is compared against the
+hash of the recipe alcatrazer would build right now; on mismatch, the
+image is rebuilt automatically. This catches scenarios that bare "is
+there an image?" checks miss — `rm -rf .alcatrazer/` followed by
+`alcatrazer init` regenerates the Dockerfile but leaves the old image
+in place; the LABEL mismatch then forces a clean rebuild.
+
+`alcatrazer clear` semantics are unchanged (image kept across
+`stop`/`clear`/`start` cycles when the recipe hasn't changed). Images
+built before this LABEL existed are treated as stale and trigger one
+rebuild after upgrade.
+
 ### Entrypoint behavior
 
 The container starts as root to fix ownership of the mounted
