@@ -27,6 +27,11 @@ ALCATRAZ_OPERATIONS = frozenset(
         "exec",
         "query",
         "remove",
+        # Phase 1.2.5: open an interactive shell as agent inside the
+        # running sandbox. Backend-agnostic — DockerPrison implements
+        # via `docker exec -it`, future backends do whatever their
+        # interactive-attach equivalent is.
+        "shell",
     }
 )
 

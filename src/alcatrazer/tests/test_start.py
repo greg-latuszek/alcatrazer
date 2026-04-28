@@ -2701,6 +2701,24 @@ class CmdInitIntegrationTests(unittest.TestCase):
         self.assertNotIn("the image", closing.lower())
         self.assertNotIn("the workspace", closing.lower())
 
+    # --- Phase 1.2.5: closing message points at `alcatrazer visit` -------
+
+    def test_closing_with_creds_includes_visit_hint(self):
+        # After Phase 1.2.5, both closing branches mention `alcatrazer
+        # visit` so users know the next step after start completes.
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("`alcatrazer visit`", closing)
+        self.assertIn("step inside", closing)
+
+    def test_closing_without_creds_includes_visit_hint(self):
+        _, out = self._run_capturing(host_has_creds=False)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("`alcatrazer visit`", closing)
+        self.assertIn("step inside", closing)
+
     def test_workspace_name_flows_into_exclude(self):
         self.mocks["generate_workspace_dir_name"].return_value = ".devspace-zzzz"
         self._run()
@@ -2773,6 +2791,13 @@ class FirstRunAfterInitTests(unittest.TestCase):
     def _run(self) -> int:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return start._first_run_after_init(self.project_dir, prison=self.prison)
+
+    def _run_capturing(self) -> tuple[int, str]:
+        """Capture stdout for tests that assert on post-success output."""
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            rc = start._first_run_after_init(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue()
 
     def test_happy_path_returns_zero(self):
         self.assertEqual(self._run(), 0)
@@ -2874,6 +2899,17 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.mocks["run_startup_commands"].assert_not_called()
         self.mocks["save_coding_environment_snapshot"].assert_not_called()
         self.mocks["save_env_snapshot"].assert_not_called()
+
+    # --- Phase 1.2.5: post-success message points at `alcatrazer visit` --
+
+    def test_post_success_message_directs_user_to_alcatrazer_visit(self):
+        # After _first_run_after_init's happy path, the closing line
+        # tells the user how to enter the running Alcatraz. The
+        # phrasing "Ready. To enter the Alcatraz: alcatrazer visit"
+        # ties to the readme's "step inside" diagram vocabulary.
+        rc, out = self._run_capturing()
+        self.assertEqual(rc, 0)
+        self.assertIn("Ready. To enter the Alcatraz: alcatrazer visit", out)
 
 
 class LoadExistingAlcatrazerConfigTests(unittest.TestCase):
@@ -3160,6 +3196,57 @@ class CmdInitDoesNotPromptReuseForUserAuthoredConfigTests(unittest.TestCase):
         # New file lands at hex-suffixed name (today's behavior).
         suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
         self.assertEqual(len(suffix_files), 1)
+
+
+class CmdVisitTests(unittest.TestCase):
+    """Phase 1.2.5: `alcatrazer visit` — open an interactive shell as agent
+    inside the running Alcatraz. Wraps the new `Alcatraz.shell()` port
+    method; errors explicitly when no alcatrazer setup exists or the
+    Alcatraz isn't running. No auto-start, no command pass-through."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, prison) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_visit(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_errors_when_no_alcatrazer_dir(self):
+        # No `.alcatrazer/` → user hasn't run `init`. Friendly message,
+        # exit 1, no prison interaction.
+        prison = Mock(spec=Alcatraz)
+        rc, _, err = self._run(prison)
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer init", err)
+        prison.shell.assert_not_called()
+
+    def test_errors_when_alcatraz_not_running(self):
+        # `.alcatrazer/` present but no running container. Explicit error
+        # ("run `alcatrazer start` first") rather than auto-starting —
+        # auto-start would hide rebuilds and daemon launches under what
+        # should be a fast "drop me in" command.
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = False
+        rc, _, err = self._run(prison)
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer start", err)
+        prison.shell.assert_not_called()
+
+    def test_calls_prison_shell_when_running(self):
+        # Happy path: running alcatraz, `cmd_visit` delegates to
+        # `prison.shell()`. The real shell() never returns (execvp), but
+        # the mock returns None — code path tolerates both.
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.shell.assert_called_once()
 
 
 class CmdStopTests(unittest.TestCase):

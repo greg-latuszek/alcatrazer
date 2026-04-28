@@ -1085,5 +1085,55 @@ class DockerPrisonNeedsRebuildTests(unittest.TestCase):
         self.assertTrue(DockerPrison(self.project_dir).needs_rebuild(changed))
 
 
+class DockerPrisonShellTests(unittest.TestCase):
+    """Phase 1.2.5: `DockerPrison.shell()` opens an interactive bash inside
+    the running container as the agent user. Implementation uses os.execvp
+    so signals (Ctrl+C, Ctrl+D) flow through and the alcatrazer Python
+    process is replaced — never returns on success."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_calls_execvp_with_docker_exec_argv(self):
+        # Container running → shell() invokes os.execvp with the right
+        # docker-exec command. Patching execvp because the real call would
+        # replace this Python process.
+        with (
+            patch.object(DockerPrison, "is_running", return_value=True),
+            patch("os.execvp") as mock_execvp,
+        ):
+            DockerPrison(self.project_dir).shell()
+        mock_execvp.assert_called_once()
+        args = mock_execvp.call_args.args
+        self.assertEqual(args[0], "docker")
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(
+            args[1],
+            [
+                "docker",
+                "exec",
+                "-it",
+                "-u",
+                "agent",
+                "-w",
+                "/workspace",
+                expected_container,
+                "bash",
+            ],
+        )
+
+    def test_raises_prison_start_error_when_not_running(self):
+        # User ran `alcatrazer visit` against a stopped/missing alcatraz —
+        # shell() must error explicitly rather than silently spawn nothing.
+        # cmd_visit catches this and prints a friendly message.
+        with (
+            patch.object(DockerPrison, "is_running", return_value=False),
+            self.assertRaises(PrisonStartError),
+        ):
+            DockerPrison(self.project_dir).shell()
+
+
 if __name__ == "__main__":
     unittest.main()
