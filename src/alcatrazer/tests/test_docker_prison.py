@@ -28,6 +28,133 @@ from alcatrazer.alcatraz import PrisonBuildError, PrisonStartError
 from alcatrazer.docker_prison import DockerPrison
 
 
+class SanitizeBasenameTests(unittest.TestCase):
+    """Phase 1.2.5: lowercases and reduces a path basename to Docker-tag-safe
+    characters (`[a-z0-9.-]`), so names like `MyRepo`, `My Project (work)`,
+    or `_____` produce stable, predictable identifiers we can safely
+    interpolate into image tags and container names."""
+
+    def test_lowercases(self):
+        self.assertEqual(docker_prison._sanitize_basename("MyRepo"), "myrepo")
+
+    def test_replaces_spaces_and_specials_with_hyphen(self):
+        self.assertEqual(
+            docker_prison._sanitize_basename("My Project (work)"),
+            "my-project-work",
+        )
+
+    def test_collapses_runs_of_hyphens(self):
+        self.assertEqual(docker_prison._sanitize_basename("a___b!!!c"), "a-b-c")
+
+    def test_strips_leading_and_trailing_hyphens_and_dots(self):
+        self.assertEqual(docker_prison._sanitize_basename("--foo--"), "foo")
+        self.assertEqual(docker_prison._sanitize_basename("..foo.."), "foo")
+        self.assertEqual(docker_prison._sanitize_basename(".-foo-."), "foo")
+
+    def test_falls_back_to_repo_when_empty(self):
+        # Pure-special basename collapses to nothing → use a stable
+        # fallback so tags / container names are never empty.
+        self.assertEqual(docker_prison._sanitize_basename("___"), "repo")
+        self.assertEqual(docker_prison._sanitize_basename("---"), "repo")
+        self.assertEqual(docker_prison._sanitize_basename(""), "repo")
+
+
+class IdentityForProjectTests(unittest.TestCase):
+    """Phase 1.2.5: `_identity_for_project(project_dir)` returns
+    `<sanitized-basename>-<12-hex-hash>` derived from the canonical
+    absolute path. Stable across runs of init/clear/start; collision-
+    free in any realistic per-laptop scenario (~16M-repo birthday bound
+    on 48 bits)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_format_is_basename_dash_12hex(self):
+        # Layout assertion — ident always matches `<text>-<12 hex chars>`.
+        # Test agnostic of the actual hash value (which depends on tempdir).
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertRegex(ident, r"^[a-z0-9.-]+-[0-9a-f]{12}$")
+
+    def test_is_stable_across_calls(self):
+        a = docker_prison._identity_for_project(self.project_dir)
+        b = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(a, b)
+
+    def test_resolves_symlinks(self):
+        # A symlink to the repo and the resolved repo must produce the
+        # same identity — otherwise users with different mountpoints
+        # for the same physical dir would get inconsistent alcatraz
+        # identities.
+        link = Path(self.tmp.name).parent / (Path(self.tmp.name).name + "-link")
+        try:
+            link.symlink_to(self.project_dir)
+            ident_real = docker_prison._identity_for_project(self.project_dir)
+            ident_via_link = docker_prison._identity_for_project(link)
+            self.assertEqual(ident_real, ident_via_link)
+        finally:
+            link.unlink(missing_ok=True)
+
+    def test_different_paths_yield_different_idents(self):
+        other_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(other_tmp.cleanup)
+        ident_a = docker_prison._identity_for_project(self.project_dir)
+        ident_b = docker_prison._identity_for_project(Path(other_tmp.name))
+        self.assertNotEqual(ident_a, ident_b)
+
+    def test_uses_basename_in_ident(self):
+        # The sanitized basename is the human-recognizable part of the
+        # ident (so `docker ps` reads naturally). We verify it appears
+        # by constructing a known basename via a child tempdir.
+        child = self.project_dir / "MyRepo"
+        child.mkdir()
+        ident = docker_prison._identity_for_project(child)
+        self.assertTrue(
+            ident.startswith("myrepo-"),
+            f"ident should start with sanitized basename 'myrepo-', got {ident!r}",
+        )
+
+
+class DockerPrisonPerRepoNamingTests(unittest.TestCase):
+    """Phase 1.2.5: DockerPrison's image_tag and container_name default to
+    per-repo names derived from `_identity_for_project`. Two alcatrazers
+    on different repos coexist without collision."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_image_tag_uses_path_identity(self):
+        prison = DockerPrison(self.project_dir)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(prison.image_tag, f"alcatraz-workspace:{ident}")
+
+    def test_container_name_uses_path_identity(self):
+        prison = DockerPrison(self.project_dir)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(prison.container_name, f"workspace-{ident}")
+
+    def test_two_projects_get_different_names(self):
+        other_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(other_tmp.cleanup)
+        prison_a = DockerPrison(self.project_dir)
+        prison_b = DockerPrison(Path(other_tmp.name))
+        self.assertNotEqual(prison_a.image_tag, prison_b.image_tag)
+        self.assertNotEqual(prison_a.container_name, prison_b.container_name)
+
+    def test_explicit_overrides_still_work(self):
+        # Tests that need stable assertions can still pass literal names.
+        prison = DockerPrison(
+            self.project_dir,
+            image_tag="custom-image:tag",
+            container_name="custom-name",
+        )
+        self.assertEqual(prison.image_tag, "custom-image:tag")
+        self.assertEqual(prison.container_name, "custom-name")
+
+
 class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
     """generate_prison renders a three-stage Dockerfile from the coding-
     environment dict."""
@@ -432,7 +559,9 @@ class DockerPrisonBuildTests(unittest.TestCase):
         self.assertIn("--build-arg", cmd)
         self.assertIn("USER_UID=1007", cmd)
         self.assertIn("-t", cmd)
-        self.assertIn("alcatraz-workspace:local", cmd)
+        # Phase 1.2.5: image tag is path-derived, not a hardcoded literal.
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertIn(expected_tag, cmd)
         self.assertIn("-f", cmd)
         self.assertIn(str(self.alcatraz_dir / "Dockerfile"), cmd)
         # Build context is tight (just .alcatrazer/), not the whole project.
@@ -502,7 +631,9 @@ class DockerPrisonQueryTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).query(["id"])
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        # Phase 1.2.5: container name is path-derived, not "workspace".
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", expected_container])
         self.assertEqual(cmd[5:], ["id"])
 
     def test_captures_stdout_and_stderr_as_text(self):
@@ -563,10 +694,11 @@ class DockerPrisonStartTests(unittest.TestCase):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             DockerPrison(self.project_dir).start()
         cmd = mock_run.call_args.args[0]
+        ident = docker_prison._identity_for_project(self.project_dir)
         self.assertEqual(cmd[:3], ["docker", "run", "-d"])
         self.assertIn("--name", cmd)
-        self.assertIn("workspace", cmd)
-        self.assertIn("alcatraz-workspace:local", cmd)
+        self.assertIn(f"workspace-{ident}", cmd)
+        self.assertIn(f"alcatraz-workspace:{ident}", cmd)
         self.assertEqual(cmd[-2:], ["sleep", "infinity"])
 
     def test_workspace_dir_bind_mounted_to_slash_workspace(self):
@@ -666,7 +798,8 @@ class DockerPrisonExecTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).exec(["bash", "-c", "uv sync"])
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", expected_container])
         self.assertEqual(cmd[5:], ["bash", "-c", "uv sync"])
 
     def test_returns_the_exit_code(self):
@@ -723,11 +856,12 @@ class DockerPrisonImageExistsTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).image_exists()
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd, ["docker", "image", "inspect", "alcatraz-workspace:local"])
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd, ["docker", "image", "inspect", expected_tag])
 
 
 class DockerPrisonIsRunningTests(unittest.TestCase):
-    """is_running() uses `docker ps --filter name=^workspace$ --filter status=running`."""
+    """is_running() uses `docker ps --filter name=^workspace-<ident>$ --filter status=running`."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -760,8 +894,11 @@ class DockerPrisonIsRunningTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).is_running()
         cmd_str = " ".join(mock_run.call_args.args[0])
-        # Anchored name filter so "workspace" doesn't match "my-workspace-2".
-        self.assertIn("name=^workspace$", cmd_str)
+        # Anchored name filter so e.g. "workspace-foo-…" doesn't match
+        # "my-workspace-foo-…2" (Phase 1.2.5: container name is now path-
+        # derived, but the exact-anchor invariant is what matters).
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn(f"name=^workspace-{ident}$", cmd_str)
         self.assertIn("status=running", cmd_str)
 
 
@@ -792,7 +929,8 @@ class DockerPrisonStopTests(unittest.TestCase):
         ):
             DockerPrison(self.project_dir).stop()
         mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", expected_container])
 
 
 class DockerPrisonResumeTests(unittest.TestCase):
@@ -817,7 +955,8 @@ class DockerPrisonResumeTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).resume()
         mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "start", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "start", expected_container])
 
     def test_raises_prison_start_error_on_failure(self):
         from alcatrazer.alcatraz import PrisonStartError
@@ -881,7 +1020,8 @@ class DockerPrisonExistsTests(unittest.TestCase):
         cmd_str = " ".join(args)
         self.assertNotIn("status=running", cmd_str)
         # Anchored name filter to avoid substring matches.
-        self.assertIn("name=^workspace$", cmd_str)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn(f"name=^workspace-{ident}$", cmd_str)
 
 
 class DockerPrisonRemoveTests(unittest.TestCase):
@@ -910,8 +1050,9 @@ class DockerPrisonRemoveTests(unittest.TestCase):
             ) as mock_run,
         ):
             DockerPrison(self.project_dir).remove()
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         # -f so running containers are also removed (belt + suspenders).
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "rm", "-f", "workspace"])
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "rm", "-f", expected_container])
 
 
 class DockerPrisonNeedsRebuildTests(unittest.TestCase):
