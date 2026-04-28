@@ -869,11 +869,14 @@ class DockerPrisonIsRunningTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_true_when_container_name_returned(self):
+        # Mocked `docker ps` echoes back the per-repo container name
+        # (Phase 1.2.5: no longer the literal "workspace").
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         with patch.object(
             docker_prison.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="workspace\n", stderr=""
+                args=[], returncode=0, stdout=f"{expected_container}\n", stderr=""
             ),
         ):
             self.assertTrue(DockerPrison(self.project_dir).is_running())
@@ -987,11 +990,12 @@ class DockerPrisonExistsTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_true_when_container_name_returned(self):
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         with patch.object(
             docker_prison.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="workspace\n", stderr=""
+                args=[], returncode=0, stdout=f"{expected_container}\n", stderr=""
             ),
         ):
             self.assertTrue(DockerPrison(self.project_dir).exists())

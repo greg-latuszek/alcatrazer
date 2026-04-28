@@ -14,6 +14,8 @@ step that first needs it:
 - `stop` — Step 5
 """
 
+import hashlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +23,47 @@ from pathlib import Path
 from alcatrazer import identity
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.languages import SUPPORTED_LANGUAGES
+
+# --- Per-repo identity (Phase 1.2.5) -----------------------------------------
+#
+# DockerPrison's image tag and container name are derived from the project's
+# canonical absolute path so multiple alcatrazers on one machine coexist
+# without collision (the previous hardcoded `alcatraz-workspace:local` and
+# `workspace` would clash across repos). The hash gives mathematical
+# uniqueness; the sanitized basename gives glance-readability in `docker ps`.
+
+_BASENAME_INVALID_CHARS = re.compile(r"[^a-z0-9.-]+")
+_BASENAME_RUNS_OF_HYPHENS = re.compile(r"-{2,}")
+
+
+def _sanitize_basename(name: str) -> str:
+    """Reduce a path basename to Docker-tag-safe characters.
+
+    Steps: lowercase → replace any non-`[a-z0-9.-]` with `-` → collapse
+    runs of `-` → strip leading/trailing `-` and `.` → fall back to
+    `repo` if the result is empty. Stable mapping; same input always
+    produces the same output.
+    """
+    out = _BASENAME_INVALID_CHARS.sub("-", name.lower())
+    out = _BASENAME_RUNS_OF_HYPHENS.sub("-", out)
+    out = out.strip("-.")
+    return out or "repo"
+
+
+def _identity_for_project(project_dir: Path) -> str:
+    """Return `<sanitized-basename>-<12-hex-hash>` for a project path.
+
+    The hash is SHA-256 of the canonical absolute path (resolves
+    symlinks), truncated to 12 hex chars (~48 bits — birthday bound at
+    ~16M repos on one laptop, effectively never collides). Used by
+    `DockerPrison` to derive image tag and container name so two
+    alcatrazers on different repos coexist without naming collision.
+    """
+    canonical = project_dir.resolve()
+    sanitized = _sanitize_basename(canonical.name)
+    digest = hashlib.sha256(str(canonical).encode()).hexdigest()[:12]
+    return f"{sanitized}-{digest}"
+
 
 # --- Dockerfile generation ---------------------------------------------------
 
@@ -212,12 +255,17 @@ class DockerPrison(Alcatraz):
     def __init__(
         self,
         project_dir: Path,
-        image_tag: str = "alcatraz-workspace:local",
-        container_name: str = "workspace",
+        image_tag: str | None = None,
+        container_name: str | None = None,
     ):
         super().__init__(project_dir)
-        self.image_tag = image_tag
-        self.container_name = container_name
+        # Phase 1.2.5: defaults derive from a path-hash identity so two
+        # alcatrazers on different repos get different image tags and
+        # container names. Tests that want stable literals can still
+        # pass explicit overrides.
+        ident = _identity_for_project(project_dir)
+        self.image_tag = image_tag if image_tag is not None else f"alcatraz-workspace:{ident}"
+        self.container_name = container_name if container_name is not None else f"workspace-{ident}"
 
     def generate_prison(self, coding_environment: dict) -> None:
         """Write `.alcatrazer/Dockerfile` + `.alcatrazer/entrypoint.sh` from
