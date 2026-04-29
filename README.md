@@ -52,6 +52,20 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 ---
 
+## ⚠️ Release 0.0.4 — DO NOT USE FOR REAL WORK
+
+> **A serious bug in the promotion machinery was uncovered during release-readiness testing for 0.0.4 and is NOT fixed in that release.** The default `mirror` mode rewrites your outer branch's history and leaves your working tree out of sync with `HEAD` every time the daemon promotes commits.
+>
+> **End users: wait for 0.0.5.** Do not run `alcatrazer start` against any repository whose history you care about with version 0.0.4.
+>
+> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md).
+>
+> 0.0.4 is published anyway to surface the language-onboarding work for review and to keep that change cleanly separated from the promotion rewrite landing in 0.0.5.
+
+> **Read the [CHANGELOG](CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
+
+---
+
 ## Purpose
 
 Alcatrazer is a secure development environment for AI-powered coding agents. It isolates agent work inside Docker containers, protecting your host machine from accidental or intentional credential leakage, while letting agents do their job: write code, commit, branch, merge, and talk to LLMs.
