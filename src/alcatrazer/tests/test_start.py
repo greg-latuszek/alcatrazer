@@ -1516,6 +1516,80 @@ class CmdStartHandlesUnsupportedSchemaVersionTests(unittest.TestCase):
         self.prison.start.assert_not_called()
 
 
+class CmdStartHandlesMalformedTomlTests(unittest.TestCase):
+    """Manual-test bug F/ERR 1: a typo in coding-environment.toml (e.g. a
+    table header commented out without commenting out its assignments)
+    surfaces as a raw Python traceback through tomllib. Symmetric to the
+    schema-version handler — config-file mistakes should look like
+    config-file mistakes, not tool crashes.
+
+    Same routing as the schema test: workspace_ready=False so cmd_start
+    runs _load_coding_environment, which in turn calls tomllib.load and
+    raises TOMLDecodeError before any other work happens.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.project_dir / ".git").mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        # Real-world shape of the bug: `[languages.node]` table header is
+        # commented out, but its `version =` and `manager =` assignments
+        # land back into the previous `[languages.python]` table where
+        # those keys were already set — tomllib refuses with "Cannot
+        # overwrite a value".
+        self.coding_env_path.write_text(
+            "[languages.python]\n"
+            'version = "3.12"\n'
+            'manager = "pip"\n'
+            "\n"
+            "# [languages.node]\n"
+            'version = "22"\n'
+            'manager = "yarn"\n'
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+
+    def _run(self) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_exit_code_one(self):
+        rc, _, _ = self._run()
+        self.assertEqual(rc, 1)
+
+    def test_stderr_names_the_config_file(self):
+        """The user needs to know which file to edit; bare 'Cannot
+        overwrite a value' wouldn't tell them."""
+        _, _, stderr = self._run()
+        self.assertIn("coding-environment.toml", stderr)
+
+    def test_stderr_includes_tomllib_diagnostic(self):
+        """tomllib already pinpoints the offending line + column —
+        surface it verbatim so the user can jump straight to the typo."""
+        _, _, stderr = self._run()
+        self.assertIn("Cannot overwrite a value", stderr)
+
+    def test_stderr_has_no_python_traceback(self):
+        _, _, stderr = self._run()
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("TOMLDecodeError", stderr)
+
+    def test_does_not_invoke_prison_build_or_start(self):
+        self._run()
+        self.prison.build.assert_not_called()
+        self.prison.start.assert_not_called()
+
+
 class WriteAlcatrazerConfigTests(unittest.TestCase):
     """Step 3e: .alcatrazer/config.toml writer — daemon defaults stay in template."""
 
