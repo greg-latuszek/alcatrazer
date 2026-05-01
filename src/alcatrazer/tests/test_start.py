@@ -2953,6 +2953,37 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self._run()
         self.prison.build.assert_called_once()
 
+    def test_stale_container_removed_before_start(self):
+        """Manual-test bug F/ERR 2: `rm -rf .alcatrazer/ .devspace-*/`
+        followed by `alcatrazer init && start` collides with a leftover
+        container from the prior session because the container name is
+        derived from the canonical project path (deterministic across
+        re-inits). 1.2.6 self-healed stale IMAGES via image_matches; the
+        symmetric fix here self-heals stale CONTAINERS by removing them
+        before docker run gets a chance to fail with `Conflict. The
+        container name "..." is already in use`."""
+        self.prison.exists.return_value = True
+        self._run()
+        self.prison.remove.assert_called_once()
+        self.prison.start.assert_called_once()
+        # Order matters: remove must precede start, otherwise docker run
+        # still hits the conflict.
+        prison_call_names = [c[0] for c in self.prison.mock_calls]
+        self.assertLess(
+            prison_call_names.index("remove"),
+            prison_call_names.index("start"),
+        )
+
+    def test_no_remove_when_no_stale_container(self):
+        """Default greenfield: no prior container exists, so we shouldn't
+        invoke remove (it's a no-op for absent containers, but skipping
+        it keeps the docker call count minimal and the trace easier to
+        read in failures)."""
+        self.prison.exists.return_value = False
+        self._run()
+        self.prison.remove.assert_not_called()
+        self.prison.start.assert_called_once()
+
     def test_build_failure_reports_and_returns_nonzero(self):
         self.prison.build.side_effect = PrisonBuildError(
             "docker build failed",
