@@ -2905,6 +2905,45 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.mocks["create_workspace"].assert_called_once()
         self.prison.start.assert_called_once()
 
+    def test_workspace_creation_skipped_when_workspace_already_populated(self):
+        """Manual-test bug B/ERR 1: editing coding-environment.toml after a
+        successful start routes back through _first_run_after_init (image
+        hash changed). The workspace dir from the prior run is still on
+        disk with its `.git/` populated — re-running create_workspace
+        crashes because `git init` exits 128 on a directory whose `.git/`
+        already contains files (often owned by the phantom agent UID from
+        the previous container run).
+
+        Image-rebuild and workspace-creation are independent concerns: when
+        only the image is stale, leave the existing workspace alone."""
+        # Workspace from the prior run — `.git/` already initialized.
+        (self.project_dir / ".devspace-abcd" / ".git").mkdir(parents=True)
+        # Image is stale (toml edit), workspace is fine.
+        self.prison.image_matches.return_value = False
+        self._run()
+        self.prison.build.assert_called_once()
+        self.mocks["create_workspace"].assert_not_called()
+        self.prison.start.assert_called_once()
+
+    def test_workspace_created_when_workspace_dir_absent(self):
+        """Symmetric to the previous test: when the workspace dir is
+        missing entirely (the `rm -rf .devspace-*` recovery scenario),
+        we DO need to recreate it. Default setUp leaves the dir absent
+        so this is just an explicit assertion of today's behavior."""
+        self.assertFalse((self.project_dir / ".devspace-abcd").exists())
+        self._run()
+        self.mocks["create_workspace"].assert_called_once()
+
+    def test_workspace_created_when_dir_exists_without_git(self):
+        """Half-broken state: the workspace dir exists but `.git/` was
+        wiped (or never finished initializing). Treat this as 'not
+        populated' — recreate. The check has to be the inner `.git/`,
+        not the workspace dir itself, because outer-side mkdir is
+        idempotent and would otherwise mask half-broken workspaces."""
+        (self.project_dir / ".devspace-abcd").mkdir()
+        self._run()
+        self.mocks["create_workspace"].assert_called_once()
+
     def test_build_runs_when_image_is_stale(self):
         """Phase 1.2.6: stale image → rebuild. Covers both the
         "no image" original case and the new "image present but
