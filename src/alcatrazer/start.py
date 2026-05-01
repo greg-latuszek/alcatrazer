@@ -381,8 +381,17 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     else:
         print("Alcatraz image already present — skipping build.")
 
-    print("Creating workspace snapshot...")
-    create_workspace(project_dir, workspace_name)
+    # _first_run_after_init runs for two distinct reasons (see cmd_start):
+    # stale image OR missing workspace. The image-rebuild reason leaves the
+    # existing workspace untouched — re-running create_workspace on a
+    # populated `.git/` crashes `git init` with exit 128 (dubious ownership
+    # on files the phantom agent UID wrote during the prior run).
+    workspace_dir = project_dir / workspace_name
+    if (workspace_dir / ".git").is_dir():
+        print("Workspace already present — keeping existing snapshot.")
+    else:
+        print("Creating workspace snapshot...")
+        create_workspace(project_dir, workspace_name)
 
     print("Starting Alcatraz...")
     try:
