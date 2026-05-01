@@ -393,6 +393,12 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
         print("Creating workspace snapshot...")
         create_workspace(project_dir, workspace_name)
 
+    # Symmetric to the 1.2.6 image self-heal: a leftover container from a
+    # prior session (path-deterministic name) collides with `docker run`.
+    # Removing it here keeps `rm -rf .alcatrazer/` recovery working.
+    if prison.exists():
+        prison.remove()
+
     print("Starting Alcatraz...")
     try:
         prison.start()
