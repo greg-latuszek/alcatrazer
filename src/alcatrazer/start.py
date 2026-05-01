@@ -218,6 +218,16 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         # config issue doesn't read like a tool crash.
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
+    except tomllib.TOMLDecodeError as e:
+        # Symmetric handler for syntax mistakes the user introduced
+        # while editing coding-environment.toml. tomllib's message
+        # already names the line and column, which is the actionable
+        # bit; we just add the filename so the user knows where to look.
+        print(
+            f"ERROR: coding-environment.toml is not valid TOML: {e}",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def _host_has_claude_creds() -> bool:
