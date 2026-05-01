@@ -48,6 +48,22 @@ from alcatrazer.languages import SUPPORTED_LANGUAGES
 CODING_ENV_SCHEMA_VERSION = 1
 
 
+def _workspace_ready(project_dir: Path, workspace_name: str | None) -> bool:
+    """Whether the inner workspace at `project_dir / workspace_name` is
+    populated enough to skip a fresh `create_workspace`.
+
+    Both `cmd_start` (routing decision: first-run vs subsequent-run) and
+    `_first_run_after_init` (whether to recreate the workspace inside its
+    own branch) need the same predicate. The criterion is the inner
+    `.git/` because `mkdir(exist_ok=True)` makes the workspace dir alone
+    a poor signal — half-initialized states (dir present, `.git/` not
+    written) must read as "not ready" so recovery rebuilds them.
+    """
+    if workspace_name is None:
+        return False
+    return (project_dir / workspace_name / ".git").is_dir()
+
+
 class UnsupportedSchemaVersionError(Exception):
     """coding-environment.toml declares a schema_version this alcatrazer
     cannot parse — almost always means the user needs to upgrade."""
@@ -179,9 +195,7 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     alcatraz_dir = project_dir / ".alcatrazer"
     workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
-    workspace_ready = (
-        workspace_name is not None and (project_dir / workspace_name / ".git").is_dir()
-    )
+    workspace_ready = _workspace_ready(project_dir, workspace_name)
     try:
         # Phase 1.2.6: route on `image_matches(recipe_hash)` instead of
         # bare `image_exists()`. Catches stale-image scenarios that
@@ -386,8 +400,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     # existing workspace untouched — re-running create_workspace on a
     # populated `.git/` crashes `git init` with exit 128 (dubious ownership
     # on files the phantom agent UID wrote during the prior run).
-    workspace_dir = project_dir / workspace_name
-    if (workspace_dir / ".git").is_dir():
+    if _workspace_ready(project_dir, workspace_name):
         print("Workspace already present — keeping existing snapshot.")
     else:
         print("Creating workspace snapshot...")
