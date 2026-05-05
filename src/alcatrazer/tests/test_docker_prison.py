@@ -281,6 +281,104 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         dev = self._slice(content, "FROM ai-base AS dev")
         self.assertIn("mise use --global uv", dev)
 
+    # --- Phase 1.2.7: uv attestation workaround ---------------------------
+
+    def test_uv_install_uses_attestation_workaround_env_prefix(self):
+        """Phase 1.2.7: aqua-registry expects a workflow-signed
+        build-provenance attestation but uv 0.11.x publishes a release-
+        type attestation signed by GitHub's release infrastructure. mise
+        rejects the mismatch and the install aborts. Disabling the aqua
+        attestation gate on this one line keeps mise's sha256 checksum
+        verification on (same trust as Astral's official install
+        script). Asserts the rendered uv install carries the
+        MISE_AQUA_GITHUB_ATTESTATIONS=false prefix in front of the
+        `mise use --global uv` command."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+
+    def test_uv_install_emits_attestation_workaround_comment(self):
+        """Per design_principles.md §Trust & Verification: any verification
+        layer being disabled must be visible in the artifact users read
+        (the generated .alcatrazer/Dockerfile). The comment block above
+        the uv RUN explains what's disabled, why, and points at the
+        design doc for full detail. Asserts the comment mentions
+        aqua-registry, sha256 checksum (the fallback), and the design-
+        doc anchor — so a reader who isn't following along can chase
+        the explanation themselves."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("aqua-registry", dev)
+        self.assertIn("sha256 checksum", dev)
+        self.assertIn("more_languages_support.md", dev)
+
+    def test_uv_install_lands_in_separate_run_block(self):
+        """Inline `#` comments inside a multi-line RUN are technically
+        valid but parser-fragile across builders. Splitting the uv
+        install into its own RUN keeps comment scope unambiguous: each
+        comment sits directly above its own RUN. Costs one extra Docker
+        layer (rounding-error). Asserts the line carrying
+        `MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv` is
+        preceded by its own `RUN` keyword, not chained off the main
+        mise-uses RUN via `&& \\`."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+
+    def test_non_misaligned_managers_emit_no_attestation_workaround(self):
+        """Surgical, not blanket: tools whose aqua attestation check
+        works as expected (or that don't go through aqua at all) must
+        render exactly as Phase 1.2.4 produces them — no env-var prefix,
+        no aqua-related comment block. Covers all current non-misaligned
+        manager picks across the supported languages."""
+        cases = [
+            ("python", "3.12", "pip"),
+            ("python", "3.12", "poetry"),
+            ("python", "3.12", "pipenv"),
+            ("node", "22", "npm"),
+            ("node", "22", "pnpm"),
+            ("node", "22", "yarn"),
+            ("java", "21", "maven"),
+            ("java", "21", "gradle"),
+        ]
+        for lang, version, manager in cases:
+            with self.subTest(language=lang, manager=manager):
+                content = self._generate(
+                    {"languages": {lang: {"version": version, "manager": manager}}}
+                )
+                dev = self._slice(content, "FROM ai-base AS dev")
+                self.assertNotIn("MISE_AQUA_GITHUB_ATTESTATIONS", dev)
+                self.assertNotIn("aqua-registry", dev)
+
+    def test_uv_workaround_does_not_break_coalesced_run_for_other_tools(self):
+        """When uv is mixed with another language, the non-misaligned
+        installs (python runtime, node runtime) keep coalescing in the
+        existing single RUN. Only uv splits off into its own RUN with
+        the workaround. Asserts both: the main RUN still chains
+        python@3.13 with node@22 via `&& \\`, AND a separate
+        `RUN MISE_AQUA_GITHUB_ATTESTATIONS=false …` line for uv exists
+        below it."""
+        content = self._generate(
+            {
+                "languages": {
+                    "python": {"version": "3.13", "manager": "uv"},
+                    "node": {"version": "22", "manager": "npm"},
+                }
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # The main RUN coalesces python and node runtimes.
+        self.assertRegex(
+            dev,
+            r"RUN mise use --global python@3\.13 && \\\n\s+mise use --global node@22",
+        )
+        # uv lives in its own RUN below.
+        self.assertIn("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+        # And the uv RUN appears AFTER the coalesced runtime RUN.
+        idx_main = dev.index("RUN mise use --global python@3.13")
+        idx_uv = dev.index("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv")
+        self.assertLess(idx_main, idx_uv)
+
     def test_node_default_npm_skipped_node_runtime_installed(self):
         # npm bundled with node — runtime installs but npm doesn't
         # need a separate line.

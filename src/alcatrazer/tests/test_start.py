@@ -673,6 +673,18 @@ class SupportedLanguagesTests(unittest.TestCase):
         self.assertIn("maven", tip)
         self.assertIn("gradle", tip)
 
+    def test_aqua_attestation_misaligned_includes_uv(self):
+        """Phase 1.2.7: uv is the first manager whose mise install fails
+        because aqua-registry expects a workflow-signed build-provenance
+        attestation while upstream publishes a release-type attestation
+        signed by GitHub's release infrastructure. AQUA_ATTESTATION_MISALIGNED
+        is the data anchor for the workaround in `_render_mise_uses`;
+        entries are removed when upstream's aqua-registry config catches
+        up. Locking the current state under test means a future "looks
+        fine, ship it" removal must update this test too — explicit
+        signal, not silent drift."""
+        self.assertIn("uv", languages.AQUA_ATTESTATION_MISALIGNED)
+
 
 def _run_wizard(func, inputs):
     """Call a wizard function with patched input() and captured stdout."""
