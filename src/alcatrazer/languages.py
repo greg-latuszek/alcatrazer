@@ -144,3 +144,24 @@ SUPPORTED_LANGUAGES: dict[str, dict] = {
         "manager_tip": "Default: maven. Alternative: gradle. Both auto-install via mise.",
     },
 }
+
+
+# Manager names whose mise install path currently fails because the
+# aqua-registry attestation config is misaligned with what upstream
+# publishes. Today: `uv`. aqua expects a workflow-signed build-provenance
+# attestation (cert SAN matching `astral-sh/uv/.github/workflows/release.yml`),
+# but uv 0.11.x publishes a release-type attestation signed by GitHub's
+# release infrastructure (cert SAN `dotcom.releases.github.com`,
+# predicateType `in-toto release/v0.2`). mise rejects the mismatch and
+# the install aborts.
+#
+# `_render_mise_uses` consumes this set: misaligned managers split off
+# into their own RUN line, prefixed with `MISE_AQUA_GITHUB_ATTESTATIONS=false`
+# and preceded by a comment block explaining the workaround.
+#
+# Removal path: when upstream's aqua-registry catches up (or uv's release
+# pipeline emits matching build-provenance attestations), remove the
+# entry, build a fresh alcatraz with that manager, confirm green, ship.
+# See docs/features/more_languages_support.md (Phase 1.2.7) for full
+# detail.
+AQUA_ATTESTATION_MISALIGNED: frozenset[str] = frozenset({"uv"})

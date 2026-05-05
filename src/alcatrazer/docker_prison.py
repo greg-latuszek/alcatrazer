@@ -23,7 +23,7 @@ from pathlib import Path
 
 from alcatrazer import identity
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
-from alcatrazer.languages import SUPPORTED_LANGUAGES
+from alcatrazer.languages import AQUA_ATTESTATION_MISALIGNED, SUPPORTED_LANGUAGES
 
 # --- Per-repo identity (Phase 1.2.5) -----------------------------------------
 #
@@ -166,26 +166,66 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
     return out
 
 
-def _render_mise_uses(languages: dict) -> str:
-    """Render the `mise use --global` block covering runtimes + non-bundled managers.
+# Phase 1.2.7: workaround surface for aqua-registry attestation drift.
+# AQUA_ATTESTATION_MISALIGNED (in languages.py) names the affected
+# managers; this module emits the disable env var and the explanatory
+# comment block when rendering their mise install lines. Comment is
+# load-bearing per design_principles.md §Trust & Verification: any
+# verification layer being disabled must be visible in the artifact
+# users read (here, .alcatrazer/Dockerfile).
+_AQUA_ATTESTATION_DISABLE_ENV = "MISE_AQUA_GITHUB_ATTESTATIONS=false"
 
-    Phase 1.2.4: install rule changed from "non-default manager" to
-    "non-bundled manager". `bundled_managers` (per-language tuple of
-    managers that ship with the runtime — `("pip",)` for python, etc.)
-    drives the decision. Empty tuple (java) means EVERY picked manager
-    installs separately, including the default `maven`. Fixes the bug
-    where accepting Java's default left Maven uninstalled.
+_AQUA_ATTESTATION_DRIFT_COMMENT = """\
+# {manager}: aqua-registry expects a workflow-signed build-provenance
+# attestation, but upstream publishes a release-type attestation
+# signed by GitHub's release infrastructure. mise's aqua plugin
+# disqualifies it and the install aborts. Disabling aqua's
+# attestation gate keeps mise's sha256 checksum verification on —
+# equivalent trust to upstream's install script. See
+# docs/features/more_languages_support.md (Phase 1.2.7) for full
+# detail."""
+
+
+def _render_mise_uses(languages: dict) -> str:
+    """Render the `mise use --global` block(s) covering runtimes + non-bundled managers.
+
+    Phase 1.2.4: install rule is "non-bundled manager". `bundled_managers`
+    (per-language tuple of managers that ship with the runtime —
+    `("pip",)` for python, etc.) drives the decision. Empty tuple (java)
+    means EVERY picked manager installs separately, including the
+    default `maven`.
+
+    Phase 1.2.7: managers in `AQUA_ATTESTATION_MISALIGNED` (today: uv)
+    split off into their own RUN block. mise's aqua plugin rejects those
+    tools' attestations because aqua-registry's expected `signer_workflow`
+    doesn't match what upstream publishes; disabling aqua's attestation
+    gate via `MISE_AQUA_GITHUB_ATTESTATIONS=false` on those lines keeps
+    the build green while preserving sha256 checksum verification. Each
+    misaligned RUN gets the comment-block above it documenting the
+    workaround for users reading the generated Dockerfile.
     """
     if not languages:
         return ""
-    uses: list[str] = []
+    main_uses: list[str] = []
+    misaligned: list[str] = []
     for lang, cfg in languages.items():
-        uses.append(f"{lang}@{cfg['version']}")
+        main_uses.append(f"{lang}@{cfg['version']}")
         manager = cfg.get("manager") or SUPPORTED_LANGUAGES[lang]["default_manager"]
-        if manager not in SUPPORTED_LANGUAGES[lang].get("bundled_managers", ()):
-            uses.append(manager)
-    commands = [f"mise use --global {u}" for u in uses]
-    return "RUN " + " && \\\n    ".join(commands) + "\n"
+        if manager in SUPPORTED_LANGUAGES[lang].get("bundled_managers", ()):
+            continue
+        if manager in AQUA_ATTESTATION_MISALIGNED:
+            misaligned.append(manager)
+        else:
+            main_uses.append(manager)
+
+    blocks: list[str] = []
+    if main_uses:
+        commands = [f"mise use --global {u}" for u in main_uses]
+        blocks.append("RUN " + " && \\\n    ".join(commands))
+    for manager in misaligned:
+        comment = _AQUA_ATTESTATION_DRIFT_COMMENT.format(manager=manager)
+        blocks.append(f"{comment}\nRUN {_AQUA_ATTESTATION_DISABLE_ENV} mise use --global {manager}")
+    return "\n\n".join(blocks) + "\n"
 
 
 def _render_verify_block(languages: dict) -> str:
