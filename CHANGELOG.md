@@ -132,10 +132,51 @@ in [`docs/features/more_languages_support.md`](docs/features/more_languages_supp
   `alcatrazer.config_hash` LABEL forces a rebuild whenever the
   current configuration's hash doesn't match the image's baked-in
   hash.
+- **`coding-environment.toml` edits between starts now actually
+  rebuild.** A regression introduced by the `image_matches`-based
+  routing widening: when the image's `config_hash` LABEL didn't
+  match the recipe hash from the freshly-loaded `coding_env`,
+  `_first_run_after_init` rebuilt from the on-disk
+  `.alcatrazer/Dockerfile` — which was the **stale** Dockerfile that
+  had built the stale image in the first place. The rebuild
+  produced an identical stale image with the same stale label, and
+  the next start re-entered the same branch: an infinite no-op
+  rebuild loop, masked by `save_coding_environment_snapshot`
+  refreshing `.last` to match the current toml. Fix:
+  `_first_run_after_init` now calls `prison.generate_prison(coding_env)`
+  before `prison.build()` on the rebuild path, so a TOML edit
+  between starts actually picks up the user's changes.
 - **Schema-mismatch tracebacks.** Unsupported `schema_version`
   values used to surface as raw Python tracebacks in `cmd_start`;
   now they print a single `ERROR:` stderr line with an actionable
   "upgrade alcatrazer" message.
+- **Malformed `coding-environment.toml` tracebacks.** Symmetric
+  with the schema-mismatch handler above: `tomllib.TOMLDecodeError`
+  raised while parsing a user-edited `coding-environment.toml`
+  (e.g. a left-over commented-out `[languages.node]` header above
+  uncommented `version =` / `manager =` lines, which silently
+  duplicates keys inside the previous section) used to surface as
+  a raw Python traceback. Now `cmd_start` catches it and prints a
+  single `ERROR: coding-environment.toml is not valid TOML:` line
+  with tomllib's own line/column message.
+- **`manager = "uv"` build failure.** `mise use --global uv` aborted
+  with `GitHub artifact attestations verification failed` because
+  mise's aqua plugin expects a workflow-signed build-provenance
+  attestation, while uv 0.11.x publishes a release-type attestation
+  signed by GitHub's release infrastructure (cert SAN
+  `dotcom.releases.github.com`; predicateType `in-toto release/v0.2`).
+  mise's check disqualifies the release-type attestation and the
+  install fails. Phase 1.2.7 works around it by splitting the uv
+  install into its own RUN, prefixed with
+  `MISE_AQUA_GITHUB_ATTESTATIONS=false` and preceded by an
+  explanatory comment block (visible per `docs/design_principles.md`
+  §Trust & Verification — disabled-verification must be visible to
+  the reader). mise's sha256 checksum verification still runs.
+  Data anchored in the new `languages.AQUA_ATTESTATION_MISALIGNED`
+  frozenset so the cleanup path is "delete the manager from the
+  set, rebuild, ship" once upstream catches up. See
+  [`docs/features/more_languages_support.md`](docs/features/more_languages_support.md)
+  Phase 1.2.7 for full detail.
 
 ### Known issues (deferred to 0.0.5)
 
