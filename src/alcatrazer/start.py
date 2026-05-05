@@ -389,6 +389,13 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     current_hash = prison.recipe_hash(coding_env)
     if not prison.image_matches(current_hash):
         print("Building Alcatraz image...")
+        # Re-render the recipe from the freshly-loaded coding_env. The
+        # on-disk Dockerfile is what built the (now-stale) image; building
+        # from it would produce the same stale image with the same stale
+        # label, looping us back into this branch on every subsequent
+        # start. Phase 1.2.6's image_matches widening only made sense
+        # paired with this regeneration step.
+        prison.generate_prison(coding_env)
         try:
             prison.build()
         except PrisonBuildError as e:

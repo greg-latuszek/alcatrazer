@@ -2918,7 +2918,11 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.assertLess(names.index("create_workspace"), names.index("start"))
 
     def test_does_not_re_run_wizards_or_writers(self):
-        """cmd_init already produced config + Dockerfile; don't touch them."""
+        """cmd_init already collected the user's answers and wrote the
+        config files; don't reprompt or rewrite them. The Dockerfile is
+        a separate concern — it's regenerated from the (possibly edited)
+        coding_env on the rebuild path; see
+        test_dockerfile_regenerated_before_build_when_image_stale."""
         with (
             patch.object(start, "ask_promotion_identity") as ask_id,
             patch.object(start, "ask_coding_environment") as ask_env,
@@ -2934,7 +2938,6 @@ class FirstRunAfterInitTests(unittest.TestCase):
         w_cfg.assert_not_called()
         w_env.assert_not_called()
         w_src.assert_not_called()
-        self.prison.generate_prison.assert_not_called()
 
     def test_workspace_name_loaded_from_identity(self):
         self.mocks["load_workspace_dir"].return_value = ".devspace-zzzz"
