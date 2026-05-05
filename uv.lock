@@ -4,7 +4,6 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "alcatrazer"
-version = "0.0.1"
 source = { editable = "." }
 
 [package.dev-dependencies]
