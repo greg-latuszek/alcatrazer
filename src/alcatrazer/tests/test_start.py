@@ -3027,6 +3027,30 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self._run()
         self.prison.build.assert_called_once()
 
+    def test_dockerfile_regenerated_before_build_when_image_stale(self):
+        """Manual-test bug F/ERR (toml-edit-no-rebuild): editing
+        coding-environment.toml between starts routes back here because
+        the image's baked config_hash no longer matches the recipe hash
+        the new toml would produce. But the on-disk .alcatrazer/Dockerfile
+        is the OLD one — it's what built the (now-stale) image. Rebuilding
+        from that file produces the same stale image with the same stale
+        label, and the next start enters this branch again: an infinite
+        no-op rebuild loop. `save_coding_environment_snapshot` then masks
+        the failure by refreshing `.last` to match the current toml.
+
+        Re-rendering the Dockerfile from the freshly-loaded coding_env
+        before `build()` closes the loop — the build now produces an
+        image whose label matches the current recipe."""
+        self.prison.image_matches.return_value = False
+        coding_env = start._load_coding_environment(self.project_dir)
+        self._run()
+        self.prison.generate_prison.assert_called_once_with(coding_env)
+        prison_call_names = [c[0] for c in self.prison.mock_calls]
+        self.assertLess(
+            prison_call_names.index("generate_prison"),
+            prison_call_names.index("build"),
+        )
+
     def test_stale_container_removed_before_start(self):
         """Manual-test bug F/ERR 2: `rm -rf .alcatrazer/ .devspace-*/`
         followed by `alcatrazer init && start` collides with a leftover
