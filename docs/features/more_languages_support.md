@@ -1964,6 +1964,219 @@ tests in two files. Estimated ~2 hours: ~30 min for the hash logic
 for the port method + cmd_start integration + integration tests,
 ~15 min for README + doc updates.
 
+### Phase 1.2.7 — uv attestation workaround
+
+Surfaced during Phase 1.2.4 manual testing of python managers: setting
+`[languages.python].manager = "uv"` and rebuilding the image fails the
+build with:
+
+```
+mise ERROR Failed to install aqua:astral-sh/uv@latest:
+GitHub artifact attestations verification failed:
+expected 'astral-sh/uv/.github/workflows/release.yml',
+found certificate: None, provenance: None
+```
+
+`pip` (bundled), `poetry`, and `pipenv` install cleanly under the same
+flow. The failure is uv-specific.
+
+#### What's actually happening
+
+mise's default backend for uv is `aqua:astral-sh/uv`. The aqua-registry
+config for that package declares:
+
+```yaml
+github_artifact_attestations:
+  signer_workflow: astral-sh/uv/.github/workflows/release.yml
+```
+
+i.e. aqua expects a **build-provenance attestation** whose Sigstore
+certificate's SAN is the workflow path
+`astral-sh/uv/.github/workflows/release.yml@<ref>` — what
+`actions/attest-build-provenance` produces from inside that workflow.
+
+uv 0.11.x publishes a different shape of attestation. Querying GitHub
+for the linux-musl tarball's sha256 returns a Sigstore bundle, but:
+
+- `predicateType` is `https://in-toto.io/attestation/release/v0.2`
+  (GitHub's release-attestation predicate, not build-provenance)
+- the signing certificate's SAN is `URI:https://dotcom.releases.github.com`
+  (signed by GitHub's release infrastructure, not by uv's workflow runner)
+
+This is a real attestation, retrievable via GitHub's attestation API,
+covering the per-platform tarballs by sha256 in the subject list. But
+mise's aqua plugin disqualifies it because the cert SAN doesn't match
+the registered `signer_workflow`, then reports "certificate: None,
+provenance: None" — i.e. "no matching attestation found", not "no
+attestation exists".
+
+The misalignment is between what aqua's registry was wired for and
+what uv's release process now publishes. A real config drift; both
+sides are internally consistent.
+
+#### The workaround — surgical, transparent, data-anchored
+
+Per `docs/design_principles.md` §Trust & Verification ("the installed
+tool must carry its own proof") any disabling of a verification layer
+must be **visible in the artifact users read** — here, the generated
+`.alcatrazer/Dockerfile`. Three design decisions follow:
+
+1. **Surgical, not global.** Disable aqua's attestation gate **only on
+   the affected `mise use --global <manager>` line** — leave it on for
+   any future tool where the registry config and upstream's attestation
+   shape do match.
+2. **Split into its own RUN.** Keeping a misaligned manager in its own
+   `RUN` (rather than chained inside the main mise-uses RUN) makes the
+   comment scope unambiguous: each comment sits directly above its own
+   RUN, no parser-fragile inline-`#` business.
+3. **Data-anchored.** A frozenset constant in `languages.py` lists the
+   misaligned manager names. When upstream catches up, removing one
+   string from the set + verifying the build is the cleanup path.
+
+Generated stage 3 looks like:
+
+```dockerfile
+RUN mise use --global python@3.13
+
+# uv: aqua-registry expects a workflow-signed build-provenance
+# attestation, but upstream publishes a release-type attestation
+# signed by GitHub's release infrastructure. mise's aqua plugin
+# disqualifies it and the install aborts. Disabling aqua's
+# attestation gate keeps mise's sha256 checksum verification on —
+# equivalent trust to upstream's install script. See
+# docs/features/more_languages_support.md (Phase 1.2.7) for full
+# detail.
+RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv
+```
+
+When uv isn't picked, neither the prefix nor the comment appears —
+non-misaligned managers (pip, poetry, pipenv, npm, pnpm, yarn, maven,
+gradle, …) render exactly as Phase 1.2.4 produces them today.
+
+#### Trust delta — what's still verified
+
+What `MISE_AQUA_GITHUB_ATTESTATIONS=false` actually disables:
+- aqua's specific check that "the artifact has a build-provenance
+  attestation matching the registered `signer_workflow`."
+
+What still runs at install time:
+- TLS to github.com (artifact + `.sha256` fetched over HTTPS)
+- mise's sha256 checksum step (the `[2/3] checksum` phase verifies
+  the downloaded tarball against the signed sums file)
+
+What's untouched elsewhere:
+- `aqua.github_attestations` stays `true` for every other tool — the
+  workaround is per-line, not an `ENV` in dev-base.
+- `node.verify`, the global `github_attestations` setting, and every
+  other supply-chain check are unaffected.
+
+Practical trust delta for uv specifically: **zero relative to fully-on
+attestation verification.** That layer was already producing zero
+information for uv (rejecting a valid release-type attestation as
+not-matching). The workaround stops the install from aborting on a
+check that was already non-functional for this tool.
+
+Equivalent-trust comparison: Astral's official install script
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`) trusts the same
+TLS-to-github + sha256 chain. The workaround keeps Alcatraz's uv
+install at parity with what Astral itself recommends.
+
+#### Concrete code touches
+
+- `src/alcatrazer/languages.py`
+  - New module-level constant
+    `AQUA_ATTESTATION_MISALIGNED: frozenset[str] = frozenset({"uv"})`
+    with a docstring explaining the purpose and the removal path.
+- `src/alcatrazer/docker_prison.py`
+  - Two new module-level constants near the existing render helpers:
+    `_AQUA_ATTESTATION_DISABLE_ENV = "MISE_AQUA_GITHUB_ATTESTATIONS=false"`
+    and `_AQUA_ATTESTATION_DRIFT_COMMENT` (the multi-line comment
+    template with a `{manager}` placeholder).
+  - `_render_mise_uses` separates picked managers into "normal" and
+    "misaligned" lists. Normal entries (runtimes + non-misaligned
+    managers) coalesce into the existing single RUN with `&& \\`
+    chaining. Each misaligned manager renders as its own RUN
+    preceded by the comment block and prefixed with the disable env.
+  - Returns a single string of one-or-more RUN blocks separated by
+    `\n\n`. Caller (`_render_dockerfile_body`) is unchanged — it
+    already appends the rendered mise block as-is.
+- `src/alcatrazer/tests/test_start.py`
+  - `test_aqua_attestation_misaligned_includes_uv` — locks
+    `"uv" in languages.AQUA_ATTESTATION_MISALIGNED`. When upstream
+    is fixed and the entry is removed, this test changes too —
+    explicit signal, not a silent drift.
+- `src/alcatrazer/tests/test_docker_prison.py`
+  - `test_uv_install_uses_attestation_workaround_env_prefix` — uv
+    picked → rendered dev stage contains
+    `MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv`.
+  - `test_uv_install_emits_attestation_workaround_comment` — comment
+    block is present and references `aqua-registry`, `sha256
+    checksum`, and `more_languages_support.md` (the doc anchor).
+  - `test_uv_install_lands_in_separate_run_block` — the `RUN
+    MISE_AQUA_GITHUB_ATTESTATIONS=…` is preceded by its own `RUN`
+    keyword (not chained off the main mise-uses RUN via `&& \\`).
+  - `test_non_misaligned_managers_emit_no_attestation_workaround` —
+    pip / poetry / pipenv / npm / pnpm / yarn / maven / gradle each
+    render with no env-var prefix and no aqua-related comment.
+  - `test_uv_workaround_does_not_break_coalesced_run_for_other_tools`
+    — when uv is mixed with python+node, python@3.13 and node@22
+    coalesce in one RUN; only uv splits off into its own.
+
+#### Manual-test plan update
+
+`docs/tests/test_more_languages_support.md` Section B (python row)
+gains an explicit verification step after the `manager = "uv"` reinit:
+`alcatrazer visit && which uv && uv --version` succeeds. This catches
+future regressions of the workaround from end-to-end.
+
+#### What Phase 1.2.7 does NOT do
+
+- Does **not** disable attestation verification globally. The
+  workaround is per-mise-line; non-misaligned tools keep their full
+  verification layer.
+- Does **not** introduce a generalized "manager install env-var
+  override" mechanism. The single failure mode we have today fits the
+  current shape; build the framework when a second case appears.
+- Does **not** add a TOML field for users to opt out. Failed builds
+  aren't useful; users picking uv get a working build by default.
+- Does **not** install uv via Astral's official script (Option B
+  considered earlier). Same trust delta, more code change. Revisit if
+  another aqua tool hits a different shape of drift that doesn't fit
+  the env-var-prefix pattern.
+- Does **not** file an upstream issue against aquaproj/aqua-registry
+  on Alcatrazer's behalf — that's a maintainer choice, separate from
+  shipping a working build today. Users curious about the upstream
+  state can read the comment in the Dockerfile and chase it themselves.
+
+#### Removal path
+
+When aqua-registry's uv config catches up (or uv's release pipeline
+re-emits per-artifact build-provenance attestations matching the
+expected workflow signer):
+
+1. Remove `"uv"` from `languages.AQUA_ATTESTATION_MISALIGNED`.
+2. Build a fresh alcatraz with python+uv from a clean
+   `coding-environment.toml`.
+3. Confirm `mise install uv` succeeds without the env var.
+4. The corresponding test
+   (`test_aqua_attestation_misaligned_includes_uv`) flips to
+   asserting the **absence** of `"uv"`, or gets deleted if the
+   constant becomes empty.
+5. The render tests follow — assertions on the workaround comment
+   and env prefix become "must NOT appear for uv" assertions.
+
+Cheap to re-check periodically; bounded by the data anchor.
+
+#### Phase 1.2.7 independence
+
+Independent of Phase 1.2.5 (per-repo naming) and 1.2.6 (config_hash
+label) — those are unrelated concerns. Depends on Phase 1.2.4
+(manager-install-via-mise rules) since uv is the manager whose mise
+install path is what fails. Touches `languages.py` (one constant) +
+`docker_prison.py` (render split) + tests in two files. Estimated
+~1 hour: ~15 min for the constant + render change, ~30 min for
+tests, ~15 min for doc + manual-test-plan updates.
+
 ### Independence and ordering
 
 Phase 1.1 (schema versioning) and Phase 1.2 (C# entry) don't depend on
@@ -2065,6 +2278,19 @@ To keep scope tight:
    `rm -rf .alcatrazer/` recovery scenario where today's
    `image_exists()` returns True for a stale image. Depends on
    Phase 1.2.5 landing first.
+9. **uv attestation workaround (Phase 1.2.7).** Surfaced during 1.2.4
+   manual testing: `manager = "uv"` builds fail because
+   `aqua:astral-sh/uv`'s expected `signer_workflow` build-provenance
+   attestation is misaligned with what uv 0.11.x publishes (a
+   release-type attestation signed by GitHub release infra instead).
+   New `AQUA_ATTESTATION_MISALIGNED` constant in `languages.py`
+   anchors the affected manager names. `_render_mise_uses` splits
+   misaligned managers into their own RUN, prefixed with
+   `MISE_AQUA_GITHUB_ATTESTATIONS=false` and preceded by an
+   explanatory comment so the trust-delta is visible in the
+   generated Dockerfile per design_principles.md §Trust &
+   Verification. Removal path is "delete the string, rebuild,
+   confirm green."
 
 **Phase 2 — v2 refactor (deferred):**
 
@@ -2102,6 +2328,14 @@ To keep scope tight:
   `required_os_packages` on `SUPPORTED_LANGUAGES` entries; populated
   for `dotnet` (libicu74), empty for everything else for now. Java
   will likely add to this when introduced under v2.
+- **Phase 1 — uv install via mise.** Resolved by Phase 1.2.7. mise's
+  default backend `aqua:astral-sh/uv` runs an attestation check whose
+  registered `signer_workflow` doesn't match what uv 0.11.x publishes
+  (release-type attestation signed by GitHub release infra). Worked
+  around with `MISE_AQUA_GITHUB_ATTESTATIONS=false` on the uv install
+  line, comment-documented in the generated Dockerfile, anchored to
+  the `AQUA_ATTESTATION_MISALIGNED` data set so the cleanup path is a
+  one-string deletion.
 - **Agent user privilege escalation at runtime.** Resolved: the agent
   user has **no sudo** inside Alcatraz, by design. Sudo is attack
   surface; an agent compromise must not escalate to root. Anything
