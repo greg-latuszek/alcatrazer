@@ -37,6 +37,127 @@ from alcatrazer.daemon_lifecycle import (
 )
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 
+# --- Coding-environment schema version --------------------------------------
+#
+# Bumped when the structure of `coding-environment.toml` changes in an
+# incompatible way. Files written before this field existed are treated as
+# version 1 (backwards compat). An older alcatrazer encountering a newer
+# schema raises UnsupportedSchemaVersionError rather than silently
+# misreading.
+
+CODING_ENV_SCHEMA_VERSION = 1
+
+
+def _workspace_ready(project_dir: Path, workspace_name: str | None) -> bool:
+    """Whether the inner workspace at `project_dir / workspace_name` is
+    populated enough to skip a fresh `create_workspace`.
+
+    Both `cmd_start` (routing decision: first-run vs subsequent-run) and
+    `_first_run_after_init` (whether to recreate the workspace inside its
+    own branch) need the same predicate. The criterion is the inner
+    `.git/` because `mkdir(exist_ok=True)` makes the workspace dir alone
+    a poor signal — half-initialized states (dir present, `.git/` not
+    written) must read as "not ready" so recovery rebuilds them.
+    """
+    if workspace_name is None:
+        return False
+    return (project_dir / workspace_name / ".git").is_dir()
+
+
+class UnsupportedSchemaVersionError(Exception):
+    """coding-environment.toml declares a schema_version this alcatrazer
+    cannot parse — almost always means the user needs to upgrade."""
+
+
+def _validate_coding_env_schema_version(data: dict) -> None:
+    """Reject coding-environment.toml configs we can't safely parse.
+
+    - field absent → OK (treated as CODING_ENV_SCHEMA_VERSION; backwards compat)
+    - positive int ≤ CODING_ENV_SCHEMA_VERSION → OK
+    - everything else → UnsupportedSchemaVersionError
+
+    The bool branch is explicit because bool is a subclass of int in Python
+    (`isinstance(True, int)` is True), and `schema_version = true` should not
+    silently slip through as `1`.
+    """
+    if "schema_version" not in data:
+        return
+    value = data["schema_version"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml: schema_version must be an integer, "
+            f"got {value!r} ({type(value).__name__})."
+        )
+    if value < 1:
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml: schema_version must be >= 1, got {value}."
+        )
+    if value > CODING_ENV_SCHEMA_VERSION:
+        raise UnsupportedSchemaVersionError(
+            f"coding-environment.toml declares schema_version={value}, but "
+            f"this alcatrazer only supports up to {CODING_ENV_SCHEMA_VERSION}. "
+            f"Upgrade alcatrazer (e.g. `uv tool upgrade alcatrazer` or "
+            f"`pipx upgrade alcatrazer`)."
+        )
+
+
+# --- Detection of alcatrazer-generated coding-environment.toml --------------
+#
+# Used by `cmd_init` to recognize a `coding-environment.toml` produced by a
+# previous run of the wizard, so the user can reuse it instead of orphaning
+# it with a hex-suffix duplicate. Detection is schema-version-aware: each
+# schema's `_render_coding_environment` may emit different header text, and
+# we need to match what the file's declared `schema_version` actually wrote.
+#
+# When v2 lands with `[provision]`, add a `2: (...)` entry alongside the v1
+# tuple — the dict is the single source of truth, no detection-logic refactor
+# required. The `GeneratedMarkersTableTests.test_current_schema_has_marker_entry`
+# guard catches a missing entry at test time.
+
+_GENERATED_MARKERS_BY_SCHEMA: dict[int, tuple[str, ...]] = {
+    1: (
+        "# Coding environment definition for this repository.",
+        "# Sections follow dependency order: OS -> languages -> startup.",
+    ),
+}
+
+
+def _load_existing_alcatrazer_config(project_dir: Path) -> dict | None:
+    """Return parsed `coding-environment.toml` if it looks alcatrazer-
+    generated, None otherwise.
+
+    Detection: read the file (if present), parse it, look up its
+    `schema_version` (defaulting to v1 to match the validator's
+    backwards-compat semantics), then require BOTH header markers from
+    `_GENERATED_MARKERS_BY_SCHEMA[version]` to appear in the file. Any
+    failure along the way (missing file, invalid TOML, unknown version,
+    markers absent) returns None — the caller falls back to today's
+    hex-suffix behavior, which never clobbers user content.
+
+    Conservative threshold (require both markers) is deliberate. False
+    positives let an already-good file be "reused" with no real harm;
+    false negatives revert to hex-suffix fallback — annoying but never
+    destructive.
+    """
+    target = project_dir / "coding-environment.toml"
+    if not target.exists():
+        return None
+    try:
+        with open(target, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError:
+        return None
+    version = data.get("schema_version", CODING_ENV_SCHEMA_VERSION)
+    if isinstance(version, bool) or not isinstance(version, int):
+        return None
+    markers = _GENERATED_MARKERS_BY_SCHEMA.get(version)
+    if markers is None:
+        return None
+    content = target.read_text()
+    if not all(marker in content for marker in markers):
+        return None
+    return data
+
 
 def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer start` — build (if needed) and run the workspace container.
@@ -74,12 +195,39 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     alcatraz_dir = project_dir / ".alcatrazer"
     workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
-    workspace_ready = (
-        workspace_name is not None and (project_dir / workspace_name / ".git").is_dir()
-    )
-    if not prison.image_exists() or not workspace_ready:
-        return _first_run_after_init(project_dir, prison=prison)
-    return _subsequent_run(project_dir, prison=prison)
+    workspace_ready = _workspace_ready(project_dir, workspace_name)
+    try:
+        # Phase 1.2.6: route on `image_matches(recipe_hash)` instead of
+        # bare `image_exists()`. Catches stale-image scenarios that
+        # today's "image present → reuse" check trusts blindly (e.g.
+        # `rm -rf .alcatrazer/` left an old image in place; the new
+        # init regenerates the Dockerfile but the running image still
+        # carries the OLD config_hash label). The schema validator can
+        # also raise UnsupportedSchemaVersionError when loading the
+        # coding-environment, so all of this lives inside the try.
+        coding_env = _load_coding_environment(project_dir)
+        current_hash = prison.recipe_hash(coding_env)
+        if not prison.image_matches(current_hash) or not workspace_ready:
+            return _first_run_after_init(project_dir, prison=prison)
+        return _subsequent_run(project_dir, prison=prison)
+    except UnsupportedSchemaVersionError as e:
+        # Both routing branches load coding-environment.toml as their first
+        # real step; either can raise this. We print the validator's own
+        # message — it already names the offending version and tells the
+        # user to upgrade alcatrazer — and skip the traceback so the
+        # config issue doesn't read like a tool crash.
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except tomllib.TOMLDecodeError as e:
+        # Symmetric handler for syntax mistakes the user introduced
+        # while editing coding-environment.toml. tomllib's message
+        # already names the line and column, which is the actionable
+        # bit; we just add the filename so the user knows where to look.
+        print(
+            f"ERROR: coding-environment.toml is not valid TOML: {e}",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def _host_has_claude_creds() -> bool:
@@ -130,12 +278,34 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     print("Starting interactive setup...")
     print()
+    _print_init_intro()
 
     # 3c — promotion identity.
     name, email = ask_promotion_identity(project_dir)
 
     # 3d — coding environment (languages, OS packages, startup commands).
-    coding_env = ask_coding_environment()
+    # Phase 1.2.3: if a previous-run alcatrazer-generated config still
+    # exists in the repo, offer to reuse it (skip the wizard, leave the
+    # file untouched) rather than orphan it with a hex-suffix duplicate.
+    # User-authored files are detected as "not ours" and bypass this
+    # branch, preserving today's never-clobber-user-content guarantee.
+    existing = _load_existing_alcatrazer_config(project_dir)
+    reuse_existing = False
+    overwrite_existing = False
+    if existing is not None:
+        print()
+        print("Detected existing coding-environment.toml from a previous alcatrazer install.")
+        answer = input("Reuse it as-is? [Y/n] ").strip().lower()
+        if answer in ("", "y", "yes"):
+            print("Reusing coding-environment.toml.")
+            coding_env = existing
+            reuse_existing = True
+        else:
+            coding_env = ask_coding_environment()
+            answer = input("Overwrite existing coding-environment.toml? [y/N] ").strip().lower()
+            overwrite_existing = answer in ("y", "yes")
+    else:
+        coding_env = ask_coding_environment()
 
     # 3f — workspace dir name + .git/info/exclude patterns. (Pulled ahead
     # of 3e config writes so `.env.example`'s marker block can embed the
@@ -147,7 +317,14 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
     # 3e — config files.
     print()
     print("Writing configuration...")
-    coding_env_path = write_coding_environment_toml(project_dir, coding_env)
+    if reuse_existing:
+        # Reuse path: don't re-render; the existing file is the source
+        # of truth. Point the alcatrazer config at it by name.
+        coding_env_path = project_dir / "coding-environment.toml"
+    else:
+        coding_env_path = write_coding_environment_toml(
+            project_dir, coding_env, overwrite=overwrite_existing
+        )
     write_alcatrazer_config(project_dir, name, email, coding_env_file=coding_env_path.name)
     write_env_example(project_dir, workspace_name)
     print(f"  {coding_env_path.name}  (commit to git — your team's workspace recipe)")
@@ -168,15 +345,17 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
 
     print()
     if _host_has_claude_creds():
-        print("Claude credentials found on host — they will be mounted into the workspace.")
-        print("Next: run `alcatrazer start` to build the image and launch the workspace.")
+        print("Claude credentials found on host — they will be used by Alcatraz.")
+        print("Next: run `alcatrazer start` to build Alcatraz and run it with own git,")
+        print("then `alcatrazer visit` to step inside.")
     else:
         print("Claude credentials not found at ~/.claude/.credentials.json.")
         print("Before running `alcatrazer start`, either:")
         print("  (a) run `claude` on your host to authenticate, or")
         print("  (b) copy .env.example to .env and fill in ANTHROPIC_API_KEY.")
         print()
-        print("Then run `alcatrazer start` to build the image and launch the workspace.")
+        print("Then run `alcatrazer start` to build Alcatraz and run it with own git,")
+        print("then `alcatrazer visit` to step inside.")
     return 0
 
 
@@ -196,21 +375,27 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
         prison = DockerPrison(project_dir)
 
     alcatrazer_dir = project_dir / ".alcatrazer"
-    with open(alcatrazer_dir / "config.toml", "rb") as f:
-        config = tomllib.load(f)
-    coding_env_name = config.get("coding_environment_file", "coding-environment.toml")
-    with open(project_dir / coding_env_name, "rb") as f:
-        coding_env = tomllib.load(f)
+    coding_env = _load_coding_environment(project_dir)
 
     workspace_name = identity.load_workspace_dir(str(alcatrazer_dir))
 
-    # Skip build when the image is already there — `cmd_start` may route
-    # here just because the WORKSPACE is missing (user ran
-    # `rm -rf .devspace-xxx`, or a fresh project-dir shares a docker
-    # daemon with a prior install). Idempotent build semantics make
-    # that path cheap.
-    if not prison.image_exists():
+    # Phase 1.2.6: skip build only when the image carries the
+    # alcatrazer.config_hash matching the current recipe. Bare
+    # `image_exists()` would trust an older image left over from a
+    # different config — the bug reported by users who'd done
+    # `rm -rf .alcatrazer/` and re-run `init`. `image_matches` answers
+    # the right question ("is this image current?") instead of
+    # "is there any image?".
+    current_hash = prison.recipe_hash(coding_env)
+    if not prison.image_matches(current_hash):
         print("Building Alcatraz image...")
+        # Re-render the recipe from the freshly-loaded coding_env. The
+        # on-disk Dockerfile is what built the (now-stale) image; building
+        # from it would produce the same stale image with the same stale
+        # label, looping us back into this branch on every subsequent
+        # start. Phase 1.2.6's image_matches widening only made sense
+        # paired with this regeneration step.
+        prison.generate_prison(coding_env)
         try:
             prison.build()
         except PrisonBuildError as e:
@@ -227,8 +412,22 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     else:
         print("Alcatraz image already present — skipping build.")
 
-    print("Creating workspace snapshot...")
-    create_workspace(project_dir, workspace_name)
+    # _first_run_after_init runs for two distinct reasons (see cmd_start):
+    # stale image OR missing workspace. The image-rebuild reason leaves the
+    # existing workspace untouched — re-running create_workspace on a
+    # populated `.git/` crashes `git init` with exit 128 (dubious ownership
+    # on files the phantom agent UID wrote during the prior run).
+    if _workspace_ready(project_dir, workspace_name):
+        print("Workspace already present — keeping existing snapshot.")
+    else:
+        print("Creating workspace snapshot...")
+        create_workspace(project_dir, workspace_name)
+
+    # Symmetric to the 1.2.6 image self-heal: a leftover container from a
+    # prior session (path-deterministic name) collides with `docker run`.
+    # Removing it here keeps `rm -rf .alcatrazer/` recovery working.
+    if prison.exists():
+        prison.remove()
 
     print("Starting Alcatraz...")
     try:
@@ -250,7 +449,8 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
         save_env_snapshot(project_dir)
         launch_daemon_and_print(project_dir)
         print()
-        print("Ready.")
+        # Phase 1.2.5: point users at the new way to step inside.
+        print("Ready. To enter the Alcatraz: alcatrazer visit")
     return rc
 
 
@@ -272,8 +472,36 @@ def read_git_identity(project_dir: Path) -> tuple[str | None, str | None]:
     return name, email
 
 
+def _print_init_intro() -> None:
+    """Print the introductory diagram + explanation for `alcatrazer init`.
+
+    Once at the top of the wizard so subsequent prompts can use the
+    terms `promote`, `Alcatraz`, and `agents` without redefining them.
+    The diagram puts `your repo` and `Alcatraz (agents repo)` in
+    parallel structure with parity labels for identity + credentials,
+    so the contrast lands at a glance.
+    """
+    print("What this sets up:")
+    print()
+    print("   your repo  <--- promote ---  Alcatraz (agents repo)")
+    print("   ---------                    ---------------------")
+    print("   YOUR identity                fake throwaway identity")
+    print("   YOUR git credentials         no credentials, no SSH keys")
+    print()
+    print("Agents commit inside Alcatraz; a daemon promotes commits back to")
+    print("your repo, re-authored as YOU. Agents cannot push — only you can.")
+    print()
+    print("This wizard writes coding-environment.toml; you can edit it before")
+    print("running `alcatrazer start` if you want to tweak.")
+    print()
+
+
 def ask_promotion_identity(project_dir: Path) -> tuple[str, str]:
     """Prompt the user for the promotion identity, offering the detected one as default."""
+    print("=== Promotion identity ===")
+    print("Re-authored onto agent commits when the daemon promotes them to")
+    print("your repo (see diagram above).")
+    print()
     name, email = read_git_identity(project_dir)
     if name and email:
         print(f"Detected git identity: {name} <{email}>")
@@ -288,6 +516,24 @@ def ask_promotion_identity(project_dir: Path) -> tuple[str, str]:
 
 
 def _ask_version(language: str) -> str:
+    tip = SUPPORTED_LANGUAGES[language].get("version_tip")
+    if tip:
+        # Wrap to a comfortable terminal width with hanging indent so
+        # continuation lines align under the first character of the tip.
+        # Blank line goes BEFORE the tip (Phase 1.2.3): visually groups
+        # the tip with the upcoming `Version for X:` prompt rather than
+        # orphaning it to the previous prompt's answer.
+        import textwrap
+
+        print()
+        print(
+            textwrap.fill(
+                tip,
+                width=72,
+                initial_indent="  Tip: ",
+                subsequent_indent="       ",
+            )
+        )
     while True:
         version = input(f"  Version for {language}: ").strip()
         if not version:
@@ -299,25 +545,59 @@ def _ask_version(language: str) -> str:
         return version
 
 
-def _ask_manager(language: str) -> str | None:
-    """Return the chosen manager, or None when it is the language default."""
+def _ask_manager(language: str) -> str:
+    """Return the chosen manager — always a string, never None.
+
+    Phase 1.2.4: previously returned None for default-accepted or
+    single-manager cases, which left `manager` out of the result dict
+    and therefore out of the generated TOML AND out of mise install
+    decisions. Now the resolved value is always returned, so the wizard
+    output always carries the manager that downstream code (TOML write,
+    mise install) needs to see.
+
+    Single-manager case: skip the prompt, return the lone option.
+    Multi-manager case: print `manager_tip` (if declared, blank line
+    BEFORE — same layout convention as `_ask_version`), then prompt;
+    empty input returns the language default.
+    """
     lang = SUPPORTED_LANGUAGES[language]
     managers = lang["managers"]
     default = lang["default_manager"]
     if len(managers) == 1:
-        return None
+        return managers[0]
+
+    tip = lang.get("manager_tip")
+    if tip:
+        import textwrap
+
+        print()
+        print(
+            textwrap.fill(
+                tip,
+                width=72,
+                initial_indent="  Tip: ",
+                subsequent_indent="       ",
+            )
+        )
+
     options = " / ".join(f"[{m}]" if m == default else m for m in managers)
     while True:
         choice = input(f"  Package manager for {language}? {options}: ").strip()
         if not choice:
-            return None
+            return default
         if choice in managers:
-            return None if choice == default else choice
+            return choice
         print(f"    Unknown manager '{choice}' for {language}.")
 
 
 def ask_languages() -> dict[str, dict]:
     """Ask which languages the project uses; collect version + manager for each."""
+    print()
+    print("=== Languages ===")
+    print("Languages you list here are baked into Alcatraz so agents have a")
+    print("ready dev environment from day one. Stored in coding-environment.toml;")
+    print("edit before `alcatrazer start` to tweak the picks below.")
+    print()
     supported = ", ".join(SUPPORTED_LANGUAGES)
     while True:
         print(f"What languages does this project use? (supported: {supported})")
@@ -336,15 +616,18 @@ def ask_languages() -> dict[str, dict]:
     for name in names:
         version = _ask_version(name)
         manager = _ask_manager(name)
-        entry: dict = {"version": version}
-        if manager is not None:
-            entry["manager"] = manager
-        result[name] = entry
+        # Phase 1.2.4: `manager` is always a string now (the resolved
+        # value, default or override). Always store it.
+        result[name] = {"version": version, "manager": manager}
     return result
 
 
 def ask_os_packages() -> list[str]:
     """Optional list of apt-get packages. Accepts comma or whitespace separated."""
+    print()
+    print("=== System packages (optional) ===")
+    print("Extra apt packages baked into Alcatraz at build time, alongside")
+    print("the languages above.")
     raw = input("Any system packages needed? (e.g. libpq-dev ffmpeg; empty for none): ").strip()
     if not raw:
         return []
@@ -353,6 +636,12 @@ def ask_os_packages() -> list[str]:
 
 def ask_startup_commands() -> list[str]:
     """Commands to run after Alcatraz start — one per line, empty line ends input."""
+    print()
+    print("=== Startup commands (optional) ===")
+    print("Run every time Alcatraz boots — typically `uv sync`, `npm install`,")
+    print("or similar dev-env prep. These are NOT baked in (unlike languages")
+    print("above).")
+    print()
     print("Commands to run after Alcatraz start (one per line, empty line to finish):")
     commands: list[str] = []
     while True:
@@ -409,6 +698,8 @@ _EXAMPLE_LANGUAGE_BLOCKS: dict[str, list[str]] = {
     "node": ["# [languages.node]", '# version = "22"'],
     "rust": ["# [languages.rust]", '# version = "1.75"'],
     "go": ["# [languages.go]", '# version = "1.22"'],
+    "dotnet": ["# [languages.dotnet]", '# version = "10.0.100"'],
+    "java": ["# [languages.java]", '# version = "21"'],
 }
 
 _CODING_ENVIRONMENT_HEADER = [
@@ -424,6 +715,12 @@ _CODING_ENVIRONMENT_HEADER = [
     "# Language libraries (pip, npm, cargo, ...) do NOT belong here — they live",
     "# in the project's own manifests (requirements.txt, package.json, etc.)",
     "# and get installed by [startup] commands or by agents at runtime.",
+]
+
+_SCHEMA_VERSION_COMMENT = [
+    "# File-format version. Bumped when the structure of this file changes",
+    "# in an incompatible way. Older tooling refuses newer schemas rather",
+    "# than silently misreading them. Leave at 1 unless you know why.",
 ]
 
 _OS_SECTION_COMMENT = [
@@ -470,6 +767,11 @@ def _render_coding_environment(data: dict) -> str:
     """
     lines: list[str] = [*_CODING_ENVIRONMENT_HEADER, ""]
 
+    # --- schema_version (top-level field, must precede any [section]) ---
+    lines += _SCHEMA_VERSION_COMMENT
+    lines.append(f"schema_version = {CODING_ENV_SCHEMA_VERSION}")
+    lines.append("")
+
     # --- [os] -----------------------------------------------------------
     lines += _OS_SECTION_COMMENT
     os_packages = data.get("os", {}).get("packages", [])
@@ -485,9 +787,44 @@ def _render_coding_environment(data: dict) -> str:
     languages = data.get("languages", {})
     for lang, cfg in languages.items():
         lines.append(f"[languages.{lang}]")
+        lang_meta = SUPPORTED_LANGUAGES.get(lang, {})
+        # Phase 1.2.3: render the same `version_tip` the wizard prints
+        # as a comment block above `version =`. DRY — one source string
+        # in SUPPORTED_LANGUAGES, two consumers (wizard + this TOML).
+        # Users editing the file later see the same guidance the wizard
+        # gave them.
+        version_tip = lang_meta.get("version_tip")
+        if version_tip:
+            import textwrap
+
+            lines += textwrap.wrap(
+                version_tip,
+                width=76,
+                initial_indent="# ",
+                subsequent_indent="# ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
         lines.append(f"version = {_format_toml_string(cfg['version'])}")
-        if "manager" in cfg:
-            lines.append(f"manager = {_format_toml_string(cfg['manager'])}")
+        # Phase 1.2.4: same DRY pattern for `manager_tip` — comment block
+        # above `manager =`. The `manager` line itself is now ALWAYS
+        # emitted (resolved value: user pick or language default), no
+        # longer gated on whether the user overrode the default.
+        manager_tip = lang_meta.get("manager_tip")
+        if manager_tip:
+            import textwrap
+
+            lines += textwrap.wrap(
+                manager_tip,
+                width=76,
+                initial_indent="# ",
+                subsequent_indent="# ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        manager = cfg.get("manager") or lang_meta.get("default_manager")
+        if manager:
+            lines.append(f"manager = {_format_toml_string(manager)}")
         lines.append("")
     # One commented syntax-reference block for a language the user DIDN'T
     # pick. If they picked all four, fall back to python as a generic
@@ -513,10 +850,18 @@ def _render_coding_environment(data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_coding_environment_toml(project_dir: Path, data: dict) -> Path:
-    """Write coding-environment.toml at repo root; append hex suffix on collision."""
+def write_coding_environment_toml(project_dir: Path, data: dict, overwrite: bool = False) -> Path:
+    """Write coding-environment.toml at repo root.
+
+    Default: append a hex suffix if the canonical filename already exists,
+    so user-authored content is never clobbered. Phase 1.2.3 added the
+    `overwrite=True` opt-in: when `cmd_init` has confirmed the existing
+    file is alcatrazer-generated AND the user accepted overwrite, we
+    write to the canonical name instead. Reuse-path (user accepted "reuse
+    as-is") doesn't go through this function at all.
+    """
     target = project_dir / "coding-environment.toml"
-    if target.exists():
+    if target.exists() and not overwrite:
         suffix = secrets.token_hex(2)
         target = project_dir / f"coding-environment-{suffix}.toml"
     target.write_text(_render_coding_environment(data))
@@ -862,13 +1207,21 @@ def save_env_snapshot(project_dir: Path) -> Path | None:
 
 
 def _load_coding_environment(project_dir: Path) -> dict:
-    """Read config.toml pointer + parse the current coding-environment file."""
+    """Read config.toml pointer + parse + validate the coding-environment file.
+
+    Schema version is checked via _validate_coding_env_schema_version so that
+    a newer config never gets silently misread by an older alcatrazer. Files
+    without an explicit schema_version field are accepted (treated as v1) so
+    configs written before Phase 1.1 keep working unchanged.
+    """
     alcatrazer_dir = project_dir / ".alcatrazer"
     with open(alcatrazer_dir / "config.toml", "rb") as f:
         config = tomllib.load(f)
     source = project_dir / config.get("coding_environment_file", "coding-environment.toml")
     with open(source, "rb") as f:
-        return tomllib.load(f)
+        data = tomllib.load(f)
+    _validate_coding_env_schema_version(data)
+    return data
 
 
 def cmd_selftest(project_dir: Path) -> int:
@@ -881,6 +1234,45 @@ def cmd_selftest(project_dir: Path) -> int:
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
+
+
+def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
+    """`alcatrazer visit` — open an interactive shell as agent inside the
+    running Alcatraz.
+
+    Phase 1.2.5. Replaces the old README incantation
+    ``docker exec -it -u agent -w /workspace workspace bash``, which
+    stopped working when per-repo container names landed.
+
+    Errors explicitly when:
+
+    - ``.alcatrazer/`` is missing → user hasn't run ``alcatrazer init``.
+    - The Alcatraz isn't running → user must run ``alcatrazer start``
+      first. No auto-start: that would hide rebuilds and daemon launches
+      under what should be a fast "drop me in" command.
+
+    On success ``prison.shell()`` replaces this Python process via
+    ``os.execvp`` and never returns; the explicit ``return 0`` below is
+    unreachable but keeps the type checker happy.
+    """
+    if not (project_dir / ".alcatrazer").exists():
+        print(
+            "No alcatrazer setup in this repository — run `alcatrazer init` first.",
+            file=sys.stderr,
+        )
+        return 1
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+
+        prison = DockerPrison(project_dir)
+    if not prison.is_running():
+        print(
+            "Alcatraz is not running — run `alcatrazer start` first.",
+            file=sys.stderr,
+        )
+        return 1
+    prison.shell()  # replaces the process via execvp; never returns
+    return 0
 
 
 def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:

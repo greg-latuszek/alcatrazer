@@ -52,6 +52,20 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 ---
 
+## ⚠️ Release 0.0.4 — DO NOT USE FOR REAL WORK
+
+> **A serious bug in the promotion machinery was uncovered during release-readiness testing for 0.0.4 and is NOT fixed in that release.** The default `mirror` mode rewrites your outer branch's history and leaves your working tree out of sync with `HEAD` every time the daemon promotes commits.
+>
+> **End users: wait for 0.0.5.** Do not run `alcatrazer start` against any repository whose history you care about with version 0.0.4.
+>
+> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md).
+>
+> 0.0.4 is published anyway to surface the language-onboarding work for review and to keep that change cleanly separated from the promotion rewrite landing in 0.0.5.
+
+> **Read the [CHANGELOG](CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
+
+---
+
 ## Purpose
 
 Alcatrazer is a secure development environment for AI-powered coding agents. It isolates agent work inside Docker containers, protecting your host machine from accidental or intentional credential leakage, while letting agents do their job: write code, commit, branch, merge, and talk to LLMs.
@@ -318,16 +332,21 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ### 5. Attach to the container
 
-`alcatrazer start` leaves the container running detached. Open a shell
-inside it as the `agent` user:
+`alcatrazer start` leaves the container running detached. Step inside it
+as the `agent` user:
 
 ```bash
-docker exec -it -u agent -w /workspace workspace bash
+alcatrazer visit
 ```
 
+`visit` opens an interactive bash inside the running Alcatraz, working
+directory set to `/workspace`. Errors cleanly if the Alcatraz isn't
+running (no auto-start — explicit by design).
+
 All tools declared in `coding-environment.toml` are available
-(Python / Node / Rust / Go plus any `[os]` packages), along with the
-always-on security baseline: git, mise, Claude Code CLI, gosu.
+(Python / Node / Rust / Go / .NET / Java plus any `[os]` packages),
+along with the always-on security baseline: git, mise, Claude Code CLI,
+gosu.
 
 ### 6. Watch promotion (optional)
 
@@ -374,19 +393,58 @@ Agent-visible, zero alcatrazer branding. Describes what the container
 must provide before the project's own setup can run:
 
 ```toml
+schema_version = 1
+
 [os]
 packages = ["build-essential", "libpq-dev"]
 
 [languages.python]
 version = "3.12"
-manager = "uv"          # omit for the language default (pip)
+manager = "uv"          # always written; defaults to "pip" if omitted
 
 [languages.node]
 version = "22"
+manager = "npm"         # always written; defaults to "npm" if omitted
 
 [startup]
 commands = ["uv sync", "npm install"]
 ```
+
+`schema_version` stamps the file format. Files written before this field
+existed are accepted as version 1, so existing configs keep working
+unchanged. An older alcatrazer that meets a newer schema refuses to read
+it rather than silently misinterpreting — upgrade alcatrazer in that case.
+
+`manager` is always written by `alcatrazer init` (since Phase 1.2.4) so
+the choice is visible at the line you'd edit. Each language declares
+which managers ship bundled with the runtime — `pip` with Python, `npm`
+with Node, `cargo` with Rust, `go` and `dotnet` are runtimes themselves.
+Bundled managers are skipped at image build (no double-install); anything
+else (`uv`, `poetry`, `pnpm`, `yarn`, `maven`, `gradle`) is installed via
+`mise use --global` whether it's the language default or your override.
+
+#### Java distributions
+
+mise's `java` plugin defaults to Eclipse Temurin. Override by prefixing
+the version string in `[languages.java].version`:
+
+| TOML                | Distribution                          |
+| ------------------- | ------------------------------------- |
+| `"21"`              | Eclipse Temurin (default)             |
+| `"temurin-21.0.5"`  | Temurin, pinned build                 |
+| `"corretto-21"`     | Amazon Corretto                       |
+| `"zulu-21"`         | Azul Zulu                             |
+| `"liberica-21"`     | BellSoft Liberica                     |
+| `"graalvm-21"`      | GraalVM (incl. native-image)          |
+
+Pick whichever your project or employer requires; the choice is opaque
+to alcatrazer — mise installs whatever the version string asks for, and
+the JDKs are binary-compatible across distributions for standard Java
+workloads. The `alcatrazer init` wizard prints the same hint when you
+pick `java`, and it's also rendered as a comment block above each
+language's `version =` line in your generated `coding-environment.toml`,
+so the guidance reaches you whether you're at the prompt or hand-editing
+the file later.
 
 ### `.alcatrazer/config.toml` — gitignored, per-developer
 
@@ -502,11 +560,55 @@ branches = ["main", "feature/*"]    # branch names and glob patterns
 - Language runtimes come from `[languages.*]` in
   `coding-environment.toml` — they are installed via mise, with the
   exact version the user declared (no hidden defaults). Supported:
-  `python`, `node`, `rust`, `go`.
+  `python`, `node`, `rust`, `go`, `dotnet` (the .NET SDK — runs
+  C#, F#, and VB.NET), `java` (JVM — Maven or Gradle as build tool;
+  see [Java distributions](#java-distributions) for picking Temurin
+  vs Corretto vs Zulu vs GraalVM).
 - OS packages come from `[os].packages` (installed with `apt-get`).
+  Some languages also auto-add OS packages they need at runtime: for
+  example, picking `[languages.dotnet]` includes `libicu74` (.NET
+  cannot start without an ICU library). These are baked at image
+  build time — the agent user has no runtime privilege escalation,
+  so anything requiring root has to land before the container's
+  entrypoint drops to the non-root user.
 
 Inside the container agents can use `mise` to layer additional
 runtimes on top; those stay local to the writable layer.
+
+### Per-repo names
+
+Image tag and container name are derived from the repo's canonical
+absolute path: `alcatraz-workspace:<basename>-<hash12>` and
+`workspace-<basename>-<hash12>` (e.g. `workspace-myrepo-7c4a92b14f3e`).
+Two alcatrazers on different repos run simultaneously without
+collision; `docker ps` lists them with recognizable names. Use
+`alcatrazer visit` to step inside without typing the hash.
+
+> **Upgrading from pre-Phase 1.2.5 alcatrazer?** The old shared names
+> (`alcatraz-workspace:local`, container `workspace`) won't match the
+> new derived names; do a one-time cleanup:
+>
+> ```bash
+> docker rm -f workspace 2>/dev/null
+> docker rmi alcatraz-workspace:local 2>/dev/null
+> alcatrazer start   # rebuilds under per-repo names
+> ```
+
+### Stale-image self-healing
+
+Each built image carries an `alcatrazer.config_hash` LABEL whose value
+is a SHA-256 of the recipe (Dockerfile body) that built it. On
+`alcatrazer start`, the running image's label is compared against the
+hash of the recipe alcatrazer would build right now; on mismatch, the
+image is rebuilt automatically. This catches scenarios that bare "is
+there an image?" checks miss — `rm -rf .alcatrazer/` followed by
+`alcatrazer init` regenerates the Dockerfile but leaves the old image
+in place; the LABEL mismatch then forces a clean rebuild.
+
+`alcatrazer clear` semantics are unchanged (image kept across
+`stop`/`clear`/`start` cycles when the recipe hasn't changed). Images
+built before this LABEL existed are treated as stale and trigger one
+rebuild after upgrade.
 
 ### Entrypoint behavior
 
@@ -551,8 +653,7 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
 2. `alcatrazer start` — build the image if needed, snapshot your main
    branch into the workspace, start the container, run `[startup]`
    commands, and launch the promotion daemon.
-3. `docker exec -it -u agent -w /workspace workspace bash` — attach a
-   shell as the agent user.
+3. `alcatrazer visit` — step inside as the agent user.
 4. Agents inside the container write code, run tests, commit
    incrementally. They may use branches, delegate to sub-agents, and
    merge.

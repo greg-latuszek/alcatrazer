@@ -59,11 +59,11 @@ class CmdStartGuardTests(unittest.TestCase):
 
 
 class CmdStartRoutingTests(unittest.TestCase):
-    """cmd_start routes to first-run when EITHER the image OR the
-    Alcatraz workspace is missing. Image and workspace have independent
-    lifetimes (clear preserves both, image prune removes image only,
-    `rm -rf .devspace-xxx` removes workspace only), so routing on just
-    one signal misses legitimate recovery scenarios."""
+    """cmd_start routes to first-run when EITHER the image is stale
+    (Phase 1.2.6: image_matches=False, includes "image missing" and
+    "image built from older config") OR the Alcatraz workspace is
+    missing. Image and workspace have independent lifetimes so
+    routing on just one signal misses legitimate recovery scenarios."""
 
     WORKSPACE_NAME = ".devspace-routing"
 
@@ -73,6 +73,14 @@ class CmdStartRoutingTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+        # Phase 1.2.6: cmd_start now loads coding-environment.toml to
+        # compute the recipe hash. Provide minimal valid contents.
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\nmanager = "pip"\n'
+        )
         self.addCleanup(self.tmp.cleanup)
 
     def _make_workspace_ready(self) -> None:
@@ -81,15 +89,22 @@ class CmdStartRoutingTests(unittest.TestCase):
         workspace = self.project_dir / self.WORKSPACE_NAME
         (workspace / ".git").mkdir(parents=True)
 
-    def _prison(self, image_exists: bool) -> Mock:
+    def _prison(self, image_matches: bool) -> Mock:
+        # Phase 1.2.6: routing now consults image_matches (was image_exists).
+        # recipe_hash is also called by cmd_start to know what to expect.
         p = Mock(spec=Alcatraz)
-        p.image_exists.return_value = image_exists
+        p.recipe_hash.return_value = "expected_hash_123"
+        p.image_matches.return_value = image_matches
         return p
 
-    def test_no_image_routes_to_first_run(self):
-        """Primary first-run trigger: image needs building."""
+    def test_stale_image_routes_to_first_run(self):
+        """Primary first-run trigger: image needs (re)building. After
+        Phase 1.2.6, "needs building" includes "image's config_hash
+        label doesn't match current recipe" — covers the user-reported
+        bug where `rm -rf .alcatrazer/ + init` left an old image in
+        place that today's `image_exists=True` check trusted blindly."""
         self._make_workspace_ready()
-        prison = self._prison(image_exists=False)
+        prison = self._prison(image_matches=False)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -99,14 +114,12 @@ class CmdStartRoutingTests(unittest.TestCase):
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_missing_workspace_routes_to_first_run_even_when_image_exists(self):
-        """Self-heal: user deleted `.devspace-xxx/` manually (or a stale
-        image from a prior install is left over against a fresh
-        project_dir). Image exists but workspace doesn't — go to
-        first-run so workspace gets recreated. Without this branch the
-        daemon would launch against a non-existent workspace and fail."""
+    def test_missing_workspace_routes_to_first_run_even_when_image_matches(self):
+        """Self-heal: user deleted `.devspace-xxx/` manually. Image is
+        current but workspace doesn't exist — go to first-run so
+        workspace gets recreated."""
         # Workspace dir NOT created → workspace_ready = False.
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -120,7 +133,7 @@ class CmdStartRoutingTests(unittest.TestCase):
         """Pointer file itself missing — even weirder state, but same
         recovery path applies."""
         (self.alcatraz_dir / "workspace-dir").unlink()
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -130,11 +143,12 @@ class CmdStartRoutingTests(unittest.TestCase):
         subsequent.assert_not_called()
         self.assertEqual(rc, 0)
 
-    def test_image_and_workspace_both_present_routes_to_subsequent_run(self):
-        """Normal steady-state path — drift detection in subsequent_run
-        decides what (if anything) needs doing."""
+    def test_current_image_and_workspace_present_routes_to_subsequent_run(self):
+        """Normal steady-state path — image_matches=True AND workspace
+        ready, so drift detection in subsequent_run decides what (if
+        anything) needs doing."""
         self._make_workspace_ready()
-        prison = self._prison(image_exists=True)
+        prison = self._prison(image_matches=True)
         with (
             patch.object(start, "_first_run_after_init", return_value=0) as first,
             patch.object(start, "_subsequent_run", return_value=0) as subsequent,
@@ -146,10 +160,24 @@ class CmdStartRoutingTests(unittest.TestCase):
 
     def test_routing_propagates_handler_return_code(self):
         self._make_workspace_ready()
-        prison = self._prison(image_exists=False)
+        prison = self._prison(image_matches=False)
         with patch.object(start, "_first_run_after_init", return_value=7):
             rc = start.cmd_start(self.project_dir, prison=prison)
         self.assertEqual(rc, 7)
+
+    def test_recipe_hash_is_passed_to_image_matches(self):
+        """Sanity check: the recipe hash returned by `recipe_hash` is
+        what gets passed to `image_matches`. This wires together what
+        cmd_start's two port calls communicate about."""
+        self._make_workspace_ready()
+        prison = self._prison(image_matches=True)
+        prison.recipe_hash.return_value = "specifichash00ab"
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0),
+            patch.object(start, "_subsequent_run", return_value=0),
+        ):
+            start.cmd_start(self.project_dir, prison=prison)
+        prison.image_matches.assert_called_once_with("specifichash00ab")
 
 
 class CliVersionFlagTests(unittest.TestCase):
@@ -363,10 +391,10 @@ class AskPromotionIdentityTests(unittest.TestCase):
 class SupportedLanguagesTests(unittest.TestCase):
     """Step 3d: the wizard must know a fixed set of mise-supported languages."""
 
-    def test_has_the_four_supported_languages(self):
+    def test_supported_language_set(self):
         self.assertEqual(
             set(languages.SUPPORTED_LANGUAGES),
-            {"python", "node", "rust", "go"},
+            {"python", "node", "rust", "go", "dotnet", "java"},
         )
 
     def test_python_default_manager_is_pip_with_alternatives(self):
@@ -421,6 +449,242 @@ class SupportedLanguagesTests(unittest.TestCase):
         self.assertIn("pnpm", node["managers"])
         self.assertIn("yarn", node["managers"])
 
+    # --- Phase 1.2: dotnet (C# / F# / VB.NET) -----------------------------
+
+    def test_dotnet_default_manager_is_dotnet_only(self):
+        # .NET ships one canonical CLI — `dotnet add package` (NuGet under
+        # the hood). Same single-element shape as `go` and `rust`.
+        dotnet = languages.SUPPORTED_LANGUAGES["dotnet"]
+        self.assertEqual(dotnet["default_manager"], "dotnet")
+        self.assertEqual(dotnet["managers"], ("dotnet",))
+
+    def test_dotnet_version_check_uses_dotnet_dash_dash_version(self):
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["dotnet"]["version_check"],
+            "dotnet --version",
+        )
+
+    def test_dotnet_declares_libicu74_as_required_os_package(self):
+        # .NET runtime crashes immediately without an ICU library
+        # ("Couldn't find a valid ICU package") on minimal Ubuntu 24.04.
+        # Encoding it next to the language entry means picking
+        # [languages.dotnet] auto-installs libicu74 at image build —
+        # no runtime sudo, no discovery-by-crash.
+        self.assertIn(
+            "libicu74",
+            languages.SUPPORTED_LANGUAGES["dotnet"].get("required_os_packages", ()),
+        )
+
+    def test_other_languages_have_no_required_os_packages(self):
+        # python/node/rust/go/java run on what Ubuntu 24.04's minimal base
+        # provides; any future addition must justify itself with a
+        # crash-on-startup-without-it argument like .NET's ICU.
+        for name in ("python", "node", "rust", "go", "java"):
+            self.assertEqual(
+                languages.SUPPORTED_LANGUAGES[name].get("required_os_packages", ()),
+                (),
+                f"{name!r} should not declare required_os_packages",
+            )
+
+    # --- Phase 1.2.2: java (JVM — Maven / Gradle) ------------------------
+
+    def test_java_default_manager_is_maven_with_gradle_alternative(self):
+        java = languages.SUPPORTED_LANGUAGES["java"]
+        self.assertEqual(java["default_manager"], "maven")
+        self.assertIn("maven", java["managers"])
+        self.assertIn("gradle", java["managers"])
+
+    def test_java_version_check_redirects_stderr(self):
+        # `2>&1` is load-bearing: java prints `-version` output to stderr,
+        # and the verify block's chained `&&` only captures stdout in the
+        # docker-build log. Without the redirect, the version line is lost.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"]["version_check"],
+            "java -version 2>&1",
+        )
+
+    def test_java_has_no_required_os_packages(self):
+        # JDK binary distributions (Temurin, etc.) link only against
+        # Ubuntu 24.04's libc / libstdc++ — no extra apt-time deps for
+        # `java -version` / basic compilation. Verified empirically inside
+        # a fresh Alcatraz before merging.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"].get("required_os_packages", ()),
+            (),
+        )
+
+    def test_java_declares_distribution_version_tip(self):
+        # Java is the first language with multiple shipped distributions
+        # (Temurin / Corretto / Zulu / Liberica / GraalVM) reachable via
+        # the same mise key. The version_tip nudges users mid-wizard so
+        # the option doesn't stay invisible.
+        tip = languages.SUPPORTED_LANGUAGES["java"].get("version_tip", "")
+        self.assertTrue(tip, "java must declare a version_tip")
+        tip_lower = tip.lower()
+        self.assertIn("temurin", tip_lower)
+        self.assertTrue(
+            any(d in tip_lower for d in ("corretto", "zulu", "graalvm")),
+            "version_tip must mention at least one alternative distribution",
+        )
+        self.assertIn("readme", tip_lower)
+
+    # --- Phase 1.2.3: every language declares a version_tip --------------
+
+    def test_every_language_declares_a_version_tip(self):
+        # Phase 1.2.3 expanded version_tip from java-only to every entry,
+        # so users always see format examples and any default behavior
+        # before the version prompt. The tip is no longer optional in
+        # practice — leaving it off a future entry is a regression.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "version_tip",
+                cfg,
+                f"{name!r} must declare a version_tip",
+            )
+            self.assertTrue(
+                cfg["version_tip"].strip(),
+                f"{name!r} version_tip must be non-empty",
+            )
+
+    def test_every_version_tip_starts_with_version_examples(self):
+        # Leading "Version examples:" is the chosen wording — keeps tips
+        # consistent across languages and signals intent ("here are
+        # concrete strings you can paste") rather than an open-ended
+        # explanation.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            tip = cfg.get("version_tip", "")
+            self.assertTrue(
+                tip.startswith("Version examples:"),
+                f"{name!r} version_tip must start with 'Version examples:' (got: {tip[:40]!r}…)",
+            )
+
+    def test_python_version_tip_includes_modern_releases(self):
+        tip = languages.SUPPORTED_LANGUAGES["python"]["version_tip"]
+        for v in ("3.11", "3.12", "3.13"):
+            self.assertIn(v, tip)
+
+    def test_node_version_tip_mentions_lts(self):
+        tip = languages.SUPPORTED_LANGUAGES["node"]["version_tip"].lower()
+        self.assertIn("lts", tip)
+        # Node's even-numbered LTS lines (18/20/22) are the recommended
+        # production versions; tip should surface them.
+        for v in ("18", "20", "22"):
+            self.assertIn(v, tip)
+
+    def test_rust_and_go_version_tips_pin_concrete_releases(self):
+        rust_tip = languages.SUPPORTED_LANGUAGES["rust"]["version_tip"].lower()
+        go_tip = languages.SUPPORTED_LANGUAGES["go"]["version_tip"].lower()
+        self.assertIn("concrete", rust_tip)
+        self.assertIn("concrete", go_tip)
+
+    def test_dotnet_version_tip_mentions_lts_versions(self):
+        tip = languages.SUPPORTED_LANGUAGES["dotnet"]["version_tip"].lower()
+        self.assertIn("lts", tip)
+        # Both currently-supported LTS versions surface in the tip.
+        self.assertIn("8.0.404", tip)
+        self.assertIn("10.0.100", tip)
+
+    # --- Phase 1.2.4: bundled_managers + manager_tip ---------------------
+
+    def test_every_language_declares_bundled_managers(self):
+        # Phase 1.2.4 separates "default manager" (UI hint) from "what
+        # mise installs". `bundled_managers` says "ships with the
+        # runtime, no separate install needed". Every entry must
+        # declare this — the empty tuple is a valid value (e.g. java).
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "bundled_managers",
+                cfg,
+                f"{name!r} must declare bundled_managers",
+            )
+            self.assertIsInstance(
+                cfg["bundled_managers"],
+                tuple,
+                f"{name!r} bundled_managers must be a tuple",
+            )
+
+    def test_python_pip_is_bundled_other_managers_are_not(self):
+        # pip ships with CPython; mise installs CPython, so pip arrives
+        # for free. uv / poetry / pipenv are separate and must install.
+        bm = languages.SUPPORTED_LANGUAGES["python"]["bundled_managers"]
+        self.assertIn("pip", bm)
+        for non_bundled in ("uv", "poetry", "pipenv"):
+            self.assertNotIn(non_bundled, bm)
+
+    def test_node_npm_is_bundled_pnpm_yarn_are_not(self):
+        bm = languages.SUPPORTED_LANGUAGES["node"]["bundled_managers"]
+        self.assertIn("npm", bm)
+        for non_bundled in ("pnpm", "yarn"):
+            self.assertNotIn(non_bundled, bm)
+
+    def test_rust_cargo_is_bundled(self):
+        # cargo ships with the rust toolchain; single canonical manager.
+        bm = languages.SUPPORTED_LANGUAGES["rust"]["bundled_managers"]
+        self.assertEqual(bm, ("cargo",))
+
+    def test_go_and_dotnet_managers_are_runtime_themselves(self):
+        # `go` IS the runtime; `dotnet` IS the runtime. Bundled by
+        # tautology — there's nothing else to install.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["go"]["bundled_managers"],
+            ("go",),
+        )
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["dotnet"]["bundled_managers"],
+            ("dotnet",),
+        )
+
+    def test_java_has_empty_bundled_managers(self):
+        # Java is the first language where NOTHING is bundled. mise
+        # must install whichever manager is picked (default or override).
+        # This is the heart of the bug Phase 1.2.4 fixes — accepting
+        # the default `[maven]` previously left Maven uninstalled.
+        self.assertEqual(
+            languages.SUPPORTED_LANGUAGES["java"]["bundled_managers"],
+            (),
+        )
+
+    def test_every_language_declares_a_manager_tip(self):
+        # Symmetric with version_tip from Phase 1.2.3. Every entry
+        # declares one — even single-manager languages get the tip in
+        # the generated TOML as self-documenting comment, although the
+        # wizard skips the prompt for single-manager cases.
+        for name, cfg in languages.SUPPORTED_LANGUAGES.items():
+            self.assertIn(
+                "manager_tip",
+                cfg,
+                f"{name!r} must declare a manager_tip",
+            )
+            self.assertTrue(
+                cfg["manager_tip"].strip(),
+                f"{name!r} manager_tip must be non-empty",
+            )
+
+    def test_python_manager_tip_mentions_pip_bundled(self):
+        # Tip should explain the pip-is-bundled detail so users know
+        # their default isn't a separate install.
+        tip = languages.SUPPORTED_LANGUAGES["python"]["manager_tip"].lower()
+        self.assertIn("pip", tip)
+        self.assertIn("bundled", tip)
+
+    def test_java_manager_tip_mentions_both_options(self):
+        # Java's tip surfaces both maven (default) and gradle.
+        tip = languages.SUPPORTED_LANGUAGES["java"]["manager_tip"].lower()
+        self.assertIn("maven", tip)
+        self.assertIn("gradle", tip)
+
+    def test_aqua_attestation_misaligned_includes_uv(self):
+        """Phase 1.2.7: uv is the first manager whose mise install fails
+        because aqua-registry expects a workflow-signed build-provenance
+        attestation while upstream publishes a release-type attestation
+        signed by GitHub's release infrastructure. AQUA_ATTESTATION_MISALIGNED
+        is the data anchor for the workaround in `_render_mise_uses`;
+        entries are removed when upstream's aqua-registry config catches
+        up. Locking the current state under test means a future "looks
+        fine, ship it" removal must update this test too — explicit
+        signal, not silent drift."""
+        self.assertIn("uv", languages.AQUA_ATTESTATION_MISALIGNED)
+
 
 def _run_wizard(func, inputs):
     """Call a wizard function with patched input() and captured stdout."""
@@ -434,19 +698,24 @@ def _run_wizard(func, inputs):
 class AskLanguagesTests(unittest.TestCase):
     """Step 3d: languages prompt — selection, version + manager per language."""
 
-    def test_single_language_default_manager_omits_field(self):
-        # Empty input for manager == accept default == omit the field.
+    def test_single_language_default_manager_stored_as_default(self):
+        # Phase 1.2.4: accepting the default no longer omits the field.
+        # The resolved manager (default `pip` for python) is always
+        # written into the dict so the generated TOML can show it
+        # explicitly and `_render_mise_uses` can decide whether to
+        # install it (bundled vs not).
         result = _run_wizard(start.ask_languages, ["python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_single_language_non_default_manager_stored(self):
         result = _run_wizard(start.ask_languages, ["python", "3.12", "uv"])
         self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
 
-    def test_explicit_default_manager_name_still_omits_field(self):
-        # User types "pip" — it is the default; field is not stored.
+    def test_explicit_default_manager_name_stored_same_as_implicit(self):
+        # User types "pip" (the default) → result must equal what the
+        # implicit-default path produces. No special-casing.
         result = _run_wizard(start.ask_languages, ["python", "3.12", "pip"])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_multiple_languages_comma_separated(self):
         result = _run_wizard(
@@ -457,34 +726,185 @@ class AskLanguagesTests(unittest.TestCase):
             result,
             {
                 "python": {"version": "3.12", "manager": "uv"},
-                "node": {"version": "22"},
+                "node": {"version": "22", "manager": "npm"},
             },
         )
 
     def test_unknown_language_reprompts(self):
         result = _run_wizard(start.ask_languages, ["cobol", "python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_empty_selection_reprompts(self):
         result = _run_wizard(start.ask_languages, ["", "python", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_version_latest_is_rejected(self):
         result = _run_wizard(start.ask_languages, ["python", "latest", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_empty_version_is_rejected(self):
         result = _run_wizard(start.ask_languages, ["python", "", "3.12", ""])
-        self.assertEqual(result, {"python": {"version": "3.12"}})
+        self.assertEqual(result, {"python": {"version": "3.12", "manager": "pip"}})
 
     def test_unknown_manager_reprompts(self):
         result = _run_wizard(start.ask_languages, ["python", "3.12", "pixi", "uv"])
         self.assertEqual(result, {"python": {"version": "3.12", "manager": "uv"}})
 
-    def test_rust_single_manager_skips_manager_prompt(self):
-        # Rust's only manager is cargo — no prompt, exactly two inputs total.
+    def test_rust_single_manager_skips_prompt_and_stores_cargo(self):
+        # Single-manager case skips the wizard prompt but still records
+        # the resolved manager in the dict.
         result = _run_wizard(start.ask_languages, ["rust", "1.75"])
-        self.assertEqual(result, {"rust": {"version": "1.75"}})
+        self.assertEqual(result, {"rust": {"version": "1.75", "manager": "cargo"}})
+
+    def test_dotnet_single_manager_skips_prompt_and_stores_dotnet(self):
+        result = _run_wizard(start.ask_languages, ["dotnet", "10.0.100"])
+        self.assertEqual(result, {"dotnet": {"version": "10.0.100", "manager": "dotnet"}})
+
+    def test_java_manager_prompt_default_accepted_stores_maven(self):
+        # Java has multiple managers; default-accepted (empty input)
+        # now records the default explicitly. This is the bug Phase
+        # 1.2.4 fixes — accepting `[maven]` previously left manager
+        # unset, which silently meant Maven didn't install.
+        result = _run_wizard(start.ask_languages, ["java", "21", ""])
+        self.assertEqual(result, {"java": {"version": "21", "manager": "maven"}})
+
+    def test_java_manager_prompt_accepts_gradle(self):
+        result = _run_wizard(start.ask_languages, ["java", "21", "gradle"])
+        self.assertEqual(result, {"java": {"version": "21", "manager": "gradle"}})
+
+
+class AskVersionTipTests(unittest.TestCase):
+    """Phase 1.2.2: `_ask_version` prints `cfg["version_tip"]` (if declared)
+    before the version prompt, so language-specific nudges (Java's
+    distribution prefixes, future Ruby/Python tips) surface in the wizard.
+    Languages without a `version_tip` keep the bare prompt they have today.
+    """
+
+    def _capture_ask_version(self, language: str, answer: str) -> tuple[str, str]:
+        """Run `_ask_version(language)` with `answer` as the typed input.
+        Returns (return_value, captured_stdout)."""
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", return_value=answer),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = start._ask_version(language)
+        return result, stdout.getvalue()
+
+    def test_prints_tip_when_language_declares_it(self):
+        # Java declares a version_tip mentioning Temurin, alternatives,
+        # and a "see README" pointer; all three must appear in the
+        # printed tip (otherwise the wizard nudge is incomplete).
+        result, out = self._capture_ask_version("java", "21")
+        self.assertEqual(result, "21")
+        out_lower = out.lower()
+        self.assertIn("tip:", out_lower)
+        self.assertIn("temurin", out_lower)
+        self.assertTrue(
+            any(d in out_lower for d in ("corretto", "zulu", "graalvm")),
+            "wizard tip must surface at least one alternative distribution",
+        )
+        self.assertIn("readme", out_lower)
+
+    def test_prints_tip_for_python_too(self):
+        # Phase 1.2.3 expanded version_tip from java-only to every entry.
+        # Python now also gets its own format hint before the prompt.
+        result, out = self._capture_ask_version("python", "3.12")
+        self.assertEqual(result, "3.12")
+        self.assertIn("Tip:", out)
+        self.assertIn("Version examples:", out)
+
+    def test_blank_line_precedes_tip_not_follows_it(self):
+        # Layout fix: today's blank-line-after-tip visually orphans the
+        # tip from the upcoming `Version for X:` prompt and groups it
+        # with the previous answer instead. The blank must come BEFORE
+        # the tip so the tip groups with what it explains.
+        _, out = self._capture_ask_version("java", "21")
+        lines = out.split("\n")
+        # Find the Tip line; the line just before it must be empty.
+        tip_idx = next(i for i, line in enumerate(lines) if "Tip:" in line)
+        self.assertGreater(tip_idx, 0, "Tip must not be the very first line")
+        self.assertEqual(
+            lines[tip_idx - 1].strip(),
+            "",
+            "blank line must precede the Tip block",
+        )
+
+    def test_no_blank_line_separates_tip_from_prompt(self):
+        # Counterpart to the previous test: no blank line between the
+        # tip's last line and the version prompt. The captured stdout
+        # ends right after the tip (input() under mock doesn't echo its
+        # prompt), so the discriminator is whether output ends with a
+        # SINGLE newline (good — tip's last line then prompt is next)
+        # or DOUBLE (bad — tip then orphan blank line then prompt).
+        _, out = self._capture_ask_version("java", "21")
+        self.assertFalse(
+            out.endswith("\n\n"),
+            "output must not end with a blank line; the prompt comes next",
+        )
+
+
+class AskManagerTipTests(unittest.TestCase):
+    """Phase 1.2.4: `_ask_manager` prints `cfg["manager_tip"]` before the
+    multi-manager prompt — same pattern as `_ask_version` + `version_tip`
+    from Phase 1.2.3 (blank BEFORE the tip, no blank between tip and
+    prompt). Single-manager languages skip the prompt entirely; the tip
+    still surfaces in the generated TOML as a comment."""
+
+    def _capture_ask_manager(self, language: str, answer: str | None) -> tuple:
+        """Run `_ask_manager(language)`. If answer is None, no input
+        is consumed (single-manager case). Returns (return_value,
+        captured_stdout)."""
+        stdout = io.StringIO()
+        side_effect = iter([]) if answer is None else iter([answer])
+        with (
+            patch("builtins.input", side_effect=side_effect),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = start._ask_manager(language)
+        return result, stdout.getvalue()
+
+    def test_returns_resolved_default_when_user_accepts_default(self):
+        # Phase 1.2.4: _ask_manager always returns a string, never None.
+        # The contract change is the heart of "manager always written".
+        result, _ = self._capture_ask_manager("python", "")
+        self.assertEqual(result, "pip")
+
+    def test_returns_user_pick_when_user_chooses_alternative(self):
+        result, _ = self._capture_ask_manager("python", "uv")
+        self.assertEqual(result, "uv")
+
+    def test_returns_lone_manager_for_single_manager_language(self):
+        # rust has only `cargo` — no prompt, just return the lone option.
+        result, _ = self._capture_ask_manager("rust", None)
+        self.assertEqual(result, "cargo")
+
+    def test_returns_dotnet_for_single_manager_dotnet(self):
+        result, _ = self._capture_ask_manager("dotnet", None)
+        self.assertEqual(result, "dotnet")
+
+    def test_prints_tip_for_multi_manager_language(self):
+        # Java's manager_tip should surface in the wizard before the
+        # `Package manager for java?` prompt.
+        _, out = self._capture_ask_manager("java", "")
+        self.assertIn("Tip:", out)
+        out_lower = out.lower()
+        self.assertIn("maven", out_lower)
+        self.assertIn("gradle", out_lower)
+
+    def test_prints_no_tip_for_single_manager_language(self):
+        # rust has only cargo; the wizard skips the prompt entirely.
+        # No tip is printed mid-wizard either (nothing to choose).
+        _, out = self._capture_ask_manager("rust", None)
+        self.assertNotIn("Tip:", out)
+
+    def test_blank_line_precedes_tip_not_follows_it(self):
+        # Same layout convention as `_ask_version`'s tip (Phase 1.2.3).
+        _, out = self._capture_ask_manager("java", "")
+        self.assertTrue(
+            out.startswith("\n"),
+            "output must start with a blank line preceding the Tip block",
+        )
 
 
 class AskOsPackagesTests(unittest.TestCase):
@@ -540,7 +960,9 @@ class AskCodingEnvironmentTests(unittest.TestCase):
                 "os": {"packages": ["build-essential", "libpq-dev"]},
                 "languages": {
                     "python": {"version": "3.12", "manager": "uv"},
-                    "node": {"version": "22"},
+                    # Phase 1.2.4: default-accepted manager is now stored
+                    # in the dict (resolved value).
+                    "node": {"version": "22", "manager": "npm"},
                 },
                 "startup": {"commands": ["uv sync", "npm install"]},
             },
@@ -549,7 +971,12 @@ class AskCodingEnvironmentTests(unittest.TestCase):
     def test_minimal_python_only_omits_empty_sections(self):
         inputs = ["python", "3.12", "", "", ""]
         result = _run_wizard(start.ask_coding_environment, inputs)
-        self.assertEqual(result, {"languages": {"python": {"version": "3.12"}}})
+        # Phase 1.2.4: python with default manager accepted now stores
+        # the resolved `pip` value.
+        self.assertEqual(
+            result,
+            {"languages": {"python": {"version": "3.12", "manager": "pip"}}},
+        )
 
     def test_sections_ordered_os_languages_startup(self):
         # All three sections non-empty; insertion order must be canonical.
@@ -563,6 +990,100 @@ class AskCodingEnvironmentTests(unittest.TestCase):
         ]
         result = _run_wizard(start.ask_coding_environment, inputs)
         self.assertEqual(list(result), ["os", "languages", "startup"])
+
+
+class WizardSelfExplanationTests(unittest.TestCase):
+    """Phase 1.2.1: the wizard prints a one-time intro diagram, section
+    banners, and a few lines of context per `ask_*` so domain terms
+    (`promote`, `Alcatraz`, `baked`) are introduced BEFORE they appear
+    inside prompts. No structural changes — same prompts, same accepted
+    answers, same return values."""
+
+    def _capture(self, callable_, *args, **kwargs):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            callable_(*args, **kwargs)
+        return stdout.getvalue()
+
+    def _capture_with_inputs(self, func, inputs):
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter(inputs)),
+            contextlib.redirect_stdout(stdout),
+        ):
+            func()
+        return stdout.getvalue()
+
+    # --- Intro panel (`_print_init_intro`) -------------------------------
+
+    def test_intro_panel_introduces_promote_term(self):
+        # The very first prompt later asks "Use for promoted commits?".
+        # Users who don't already know what "promoted" means in this
+        # context need to have seen the term defined first.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("promote", out.lower())
+
+    def test_intro_panel_names_alcatraz_and_your_repo(self):
+        out = self._capture(start._print_init_intro)
+        self.assertIn("Alcatraz", out)
+        self.assertIn("your repo", out)
+
+    def test_intro_panel_distinguishes_real_and_throwaway_identity(self):
+        # YOUR (uppercase) for emphasis on the real side; the agent
+        # side mentions a fake / throwaway identity.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("YOUR", out)
+        self.assertTrue(
+            "fake" in out.lower() or "throwaway" in out.lower(),
+            "intro must describe the agent identity as fake/throwaway",
+        )
+
+    def test_intro_panel_mentions_credentials_contrast(self):
+        out = self._capture(start._print_init_intro)
+        self.assertIn("credentials", out.lower())
+
+    def test_intro_panel_points_at_editable_toml(self):
+        # The intro tells users they can edit coding-environment.toml
+        # before `alcatrazer start` if they want to change anything.
+        out = self._capture(start._print_init_intro)
+        self.assertIn("coding-environment.toml", out)
+
+    def test_intro_panel_mentions_agents_cannot_push(self):
+        # Trust property — agents commit but only the user pushes to
+        # remotes. Stating it once in the intro avoids surprise later.
+        out = self._capture(start._print_init_intro).lower()
+        self.assertIn("cannot push", out)
+
+    # --- Per-section banners + context ---------------------------------
+
+    def test_promotion_identity_has_banner_and_promote_context(self):
+        with patch.object(start, "read_git_identity", return_value=("A", "a@e")):
+            out = self._capture_with_inputs(
+                lambda: start.ask_promotion_identity(Path("/")),
+                [""],
+            )
+        self.assertIn("=== Promotion identity ===", out)
+        # Banner sentence references the term defined in the intro panel.
+        self.assertIn("promote", out.lower())
+
+    def test_languages_has_banner_and_baked_context(self):
+        # Three inputs cover: languages list, version, manager (empty).
+        out = self._capture_with_inputs(start.ask_languages, ["python", "3.12", ""])
+        self.assertIn("=== Languages ===", out)
+        self.assertIn("baked", out.lower())
+        self.assertIn("coding-environment.toml", out)
+
+    def test_os_packages_has_banner_and_baked_context(self):
+        out = self._capture_with_inputs(start.ask_os_packages, [""])
+        self.assertIn("=== System packages", out)
+        self.assertIn("baked", out.lower())
+
+    def test_startup_commands_has_banner_and_every_boot_context(self):
+        out = self._capture_with_inputs(start.ask_startup_commands, [""])
+        self.assertIn("=== Startup commands", out)
+        self.assertIn("every time", out.lower())
+        # Explicit contrast with the baked sections above.
+        self.assertIn("NOT baked", out)
 
 
 class WriteCodingEnvironmentTomlTests(unittest.TestCase):
@@ -595,7 +1116,9 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         self.assertEqual(parsed["languages"]["python"]["version"], "3.12")
         self.assertEqual(parsed["languages"]["python"]["manager"], "uv")
         self.assertEqual(parsed["languages"]["node"]["version"], "22")
-        self.assertNotIn("manager", parsed["languages"]["node"])
+        # Phase 1.2.4: even when caller omits `manager`, the writer fills
+        # it with the language default — so node lands as `npm` here.
+        self.assertEqual(parsed["languages"]["node"]["manager"], "npm")
         self.assertEqual(parsed["startup"]["commands"], ["uv sync", "npm install"])
 
     def test_zero_alcatrazer_branding_in_output(self):
@@ -660,6 +1183,423 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
             path = start.write_coding_environment_toml(self.project_dir, data)
         self.assertEqual(path, self.project_dir / "coding-environment-a3f7.toml")
         self.assertEqual(existing.read_text(), "# user's existing file — do not clobber\n")
+
+    def test_writer_emits_schema_version_field(self):
+        """Phase 1.1: every freshly-generated file declares its schema."""
+        data = {"languages": {"python": {"version": "3.12"}}}
+        path = start.write_coding_environment_toml(self.project_dir, data)
+        with open(path, "rb") as f:
+            parsed = tomllib.load(f)
+        self.assertEqual(parsed["schema_version"], start.CODING_ENV_SCHEMA_VERSION)
+
+    def test_schema_version_precedes_section_headers(self):
+        """Top-level fields must appear before any [section] in TOML — and
+        beyond that requirement, we want it visually first so a human
+        editor sees the version stamp before the data."""
+        data = {
+            "os": {"packages": ["build-essential"]},
+            "languages": {"python": {"version": "3.12"}},
+            "startup": {"commands": ["uv sync"]},
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        schema_idx = content.find("schema_version")
+        self.assertGreater(schema_idx, -1, "schema_version line must be present")
+        prefix = content[:schema_idx]
+        # Only comments and blank lines may precede schema_version.
+        for line in prefix.splitlines():
+            stripped = line.strip()
+            self.assertTrue(
+                stripped == "" or stripped.startswith("#"),
+                f"Non-comment content before schema_version: {line!r}",
+            )
+
+    # --- Phase 1.2.3: version_tip rendered as TOML comment -----------------
+
+    def test_each_language_section_carries_its_version_tip_as_comment(self):
+        # The same version_tip the wizard prints surfaces in the generated
+        # TOML as a comment block above its `version =` line — DRY: one
+        # source string in SUPPORTED_LANGUAGES, two consumers (wizard +
+        # generated config). Users editing the file later see the same
+        # guidance, no need to re-run init.
+        data = {
+            "languages": {
+                "python": {"version": "3.12"},
+                "java": {"version": "21"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+
+        for lang in ("python", "java"):
+            section_idx = content.index(f"[languages.{lang}]")
+            # Find this section's version line; everything between header
+            # and version line is the tip-as-comments block.
+            version_idx = content.index("version =", section_idx)
+            block = content[section_idx:version_idx]
+            tip = languages.SUPPORTED_LANGUAGES[lang]["version_tip"]
+            # The tip's leading "Version examples:" must show up as a
+            # comment in the section.
+            self.assertIn("# Version examples:", block, f"missing tip in {lang} section")
+            # And the language-specific kernel of the tip must show too
+            # (sanity check that we're rendering the right tip per language).
+            kernel = "3.11" if lang == "python" else "Eclipse Temurin"
+            self.assertIn(kernel, block)
+            # No bare (uncommented) leakage — every non-blank line in the
+            # block between header and version must start with `#`.
+            for line in block.splitlines()[1:]:  # skip the [languages.X] header
+                stripped = line.strip()
+                if stripped:
+                    self.assertTrue(
+                        stripped.startswith("#"),
+                        f"non-comment line in tip block for {lang}: {line!r}",
+                    )
+            # And the kernel string proves the right tip is rendered for
+            # this language, not a stale one (avoid `tip` "unused" lint).
+            self.assertTrue(tip)
+
+    def test_long_version_tips_wrap_at_comment_friendly_width(self):
+        # Java's tip is the longest one (mentions four distributions plus
+        # README pointer). It must wrap into multiple `# `-prefixed lines
+        # in the generated TOML rather than land as one mile-long comment.
+        data = {"languages": {"java": {"version": "21"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        section = content[
+            content.index("[languages.java]") : content.index(
+                "version =", content.index("[languages.java]")
+            )
+        ]
+        comment_lines = [ln for ln in section.splitlines() if ln.strip().startswith("#")]
+        self.assertGreater(
+            len(comment_lines),
+            1,
+            "java's tip must wrap to multiple comment lines, not stay one long line",
+        )
+        # Each wrapped line should keep within a sensible width (~80 cols).
+        for line in comment_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                f"tip comment line exceeds 80 cols: {line!r}",
+            )
+
+    # --- Phase 1.2.4: `manager =` always emitted + manager_tip as comment -
+
+    def test_each_language_section_always_emits_manager_line(self):
+        # Phase 1.2.4: `manager =` is no longer optional in the TOML.
+        # The resolved value (user pick OR language default) lands on
+        # disk so users can see and edit the choice without re-init.
+        # Tested for both default-accepted (python+pip) and explicit-
+        # override (java+gradle) cases.
+        data = {
+            "languages": {
+                "python": {"version": "3.12", "manager": "pip"},
+                "java": {"version": "21", "manager": "gradle"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        # Both sections carry the resolved manager line.
+        self.assertIn('manager = "pip"', content)
+        self.assertIn('manager = "gradle"', content)
+
+    def test_each_language_section_carries_its_manager_tip_as_comment(self):
+        # Symmetric with version_tip: same DRY plumbing, same shape —
+        # `manager_tip` lands as `# `-prefixed comments above the
+        # `manager =` line.
+        data = {
+            "languages": {
+                "python": {"version": "3.12", "manager": "pip"},
+                "java": {"version": "21", "manager": "maven"},
+            },
+        }
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        for lang in ("python", "java"):
+            section_start = content.index(f"[languages.{lang}]")
+            manager_idx = content.index("manager =", section_start)
+            block = content[section_start:manager_idx]
+            tip = languages.SUPPORTED_LANGUAGES[lang]["manager_tip"]
+            # Some kernel of the tip's content must surface in the
+            # comment block (avoids matching against the wrong tip).
+            kernel = "pip" if lang == "python" else "maven"
+            self.assertIn("# ", block, f"missing manager_tip comment for {lang}")
+            self.assertIn(kernel, block)
+            # The tip itself shouldn't be unused in this assertion path.
+            self.assertTrue(tip)
+
+    def test_long_manager_tips_wrap_at_comment_friendly_width(self):
+        # Python's manager_tip is the longest (mentions pip default
+        # and three alternatives). Must wrap to multiple lines, each
+        # within ~80 cols.
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        content = start.write_coding_environment_toml(self.project_dir, data).read_text()
+        section_start = content.index("[languages.python]")
+        version_idx = content.index("version =", section_start)
+        manager_idx = content.index("manager =", section_start)
+        # Slice between the version line and the manager line — that's
+        # where the manager_tip comment block lives.
+        manager_block = content[version_idx:manager_idx]
+        manager_comment_lines = [
+            ln for ln in manager_block.splitlines() if ln.strip().startswith("#")
+        ]
+        self.assertGreaterEqual(
+            len(manager_comment_lines),
+            2,
+            "python's manager_tip must wrap to multiple comment lines",
+        )
+        for line in manager_comment_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                f"manager_tip comment line exceeds 80 cols: {line!r}",
+            )
+
+
+class CodingEnvironmentSchemaVersionTests(unittest.TestCase):
+    """Phase 1.1: schema versioning for coding-environment.toml.
+
+    Two surfaces under test:
+    - `_validate_coding_env_schema_version(data)` — pure dict-level validator.
+    - `_load_coding_environment(project_dir)` — file-level loader that calls
+      the validator after parsing. Backwards compat is the load contract:
+      configs without an explicit `schema_version` field were written before
+      Phase 1.1 and must keep working.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        self.addCleanup(self.tmp.cleanup)
+
+    # --- Constant ------------------------------------------------------------
+
+    def test_constant_is_one_for_this_release(self):
+        self.assertEqual(start.CODING_ENV_SCHEMA_VERSION, 1)
+
+    # --- Validator: accept ---------------------------------------------------
+
+    def test_validator_accepts_missing_field(self):
+        """Files predating Phase 1.1 carry no schema_version. Treat them
+        as the current version — refusing them would break every existing
+        user's config."""
+        start._validate_coding_env_schema_version({})  # must not raise
+
+    def test_validator_accepts_current_version_explicit(self):
+        start._validate_coding_env_schema_version({"schema_version": 1})
+
+    # --- Validator: reject ---------------------------------------------------
+
+    def test_validator_rejects_higher_version_with_upgrade_hint(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError) as ctx:
+            start._validate_coding_env_schema_version({"schema_version": 99})
+        msg = str(ctx.exception)
+        self.assertIn("99", msg)
+        self.assertIn("upgrade alcatrazer", msg.lower())
+
+    def test_validator_rejects_zero(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": 0})
+
+    def test_validator_rejects_negative(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": -1})
+
+    def test_validator_rejects_string(self):
+        with self.assertRaises(start.UnsupportedSchemaVersionError) as ctx:
+            start._validate_coding_env_schema_version({"schema_version": "1"})
+        self.assertIn("integer", str(ctx.exception).lower())
+
+    def test_validator_rejects_float(self):
+        # TOML `schema_version = 1.0` parses as float — reject it so users
+        # don't accidentally drift toward semver semantics we don't support.
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": 1.0})
+
+    def test_validator_rejects_bool(self):
+        # bool is a subclass of int in Python; the validator must
+        # short-circuit on bool before the int path.
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._validate_coding_env_schema_version({"schema_version": True})
+
+    # --- Loader integration (validator wired into _load_coding_environment) -
+
+    def test_loader_treats_missing_field_as_v1(self):
+        """Backwards-compat for configs written before Phase 1.1."""
+        self.coding_env_path.write_text('[languages.python]\nversion = "3.12"\n')
+        data = start._load_coding_environment(self.project_dir)
+        self.assertEqual(data["languages"]["python"]["version"], "3.12")
+
+    def test_loader_accepts_explicit_v1(self):
+        self.coding_env_path.write_text(
+            'schema_version = 1\n[languages.python]\nversion = "3.12"\n'
+        )
+        data = start._load_coding_environment(self.project_dir)
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["languages"]["python"]["version"], "3.12")
+
+    def test_loader_rejects_unsupported_version(self):
+        self.coding_env_path.write_text(
+            'schema_version = 99\n[languages.python]\nversion = "3.12"\n'
+        )
+        with self.assertRaises(start.UnsupportedSchemaVersionError):
+            start._load_coding_environment(self.project_dir)
+
+    def test_writer_loader_round_trip(self):
+        """The wizard-generated file is consumable by the loader unchanged."""
+        data = {
+            "os": {"packages": ["build-essential"]},
+            "languages": {"python": {"version": "3.12", "manager": "uv"}},
+            "startup": {"commands": ["uv sync"]},
+        }
+        start.write_coding_environment_toml(self.project_dir, data)
+        loaded = start._load_coding_environment(self.project_dir)
+        self.assertEqual(loaded["schema_version"], start.CODING_ENV_SCHEMA_VERSION)
+        self.assertEqual(loaded["os"]["packages"], ["build-essential"])
+        self.assertEqual(loaded["languages"]["python"]["manager"], "uv")
+        self.assertEqual(loaded["startup"]["commands"], ["uv sync"])
+
+
+class CmdStartHandlesUnsupportedSchemaVersionTests(unittest.TestCase):
+    """Phase 1.1: when coding-environment.toml declares a schema_version this
+    alcatrazer cannot parse, cmd_start surfaces the error to the user as a
+    clean stderr line — not a Python traceback. The actionable message
+    (`upgrade alcatrazer ...`) is what the user sees, with no internal frames
+    or class names leaking.
+
+    Routing: workspace-dir pointer present but workspace dir missing →
+    workspace_ready=False → cmd_start routes to _first_run_after_init,
+    which calls _load_coding_environment as its first real step. The
+    exception fires there, before prison.build is invoked.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.project_dir / ".git").mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
+        # Deliberately do NOT create the workspace dir — workspace_ready
+        # comes back False, routing to _first_run_after_init.
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        self.coding_env_path.write_text(
+            'schema_version = 99\n[languages.python]\nversion = "3.12"\n'
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.image_exists.return_value = True
+
+    def _run(self) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_exit_code_one(self):
+        rc, _, _ = self._run()
+        self.assertEqual(rc, 1)
+
+    def test_stderr_names_the_offending_version(self):
+        _, _, stderr = self._run()
+        self.assertIn("99", stderr)
+
+    def test_stderr_tells_user_to_upgrade(self):
+        _, _, stderr = self._run()
+        self.assertIn("upgrade alcatrazer", stderr.lower())
+
+    def test_stderr_has_no_python_traceback(self):
+        """Traceback / exception class name leaking would make the error look
+        like a crash rather than a config issue."""
+        _, _, stderr = self._run()
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("UnsupportedSchemaVersionError", stderr)
+
+    def test_does_not_invoke_prison_build_or_start(self):
+        """The schema check is a fast-fail gate; nothing downstream runs."""
+        self._run()
+        self.prison.build.assert_not_called()
+        self.prison.start.assert_not_called()
+
+
+class CmdStartHandlesMalformedTomlTests(unittest.TestCase):
+    """Manual-test bug F/ERR 1: a typo in coding-environment.toml (e.g. a
+    table header commented out without commenting out its assignments)
+    surfaces as a raw Python traceback through tomllib. Symmetric to the
+    schema-version handler — config-file mistakes should look like
+    config-file mistakes, not tool crashes.
+
+    Same routing as the schema test: workspace_ready=False so cmd_start
+    runs _load_coding_environment, which in turn calls tomllib.load and
+    raises TOMLDecodeError before any other work happens.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        (self.project_dir / ".git").mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
+        self.coding_env_path = self.project_dir / "coding-environment.toml"
+        # Real-world shape of the bug: `[languages.node]` table header is
+        # commented out, but its `version =` and `manager =` assignments
+        # land back into the previous `[languages.python]` table where
+        # those keys were already set — tomllib refuses with "Cannot
+        # overwrite a value".
+        self.coding_env_path.write_text(
+            "[languages.python]\n"
+            'version = "3.12"\n'
+            'manager = "pip"\n'
+            "\n"
+            "# [languages.node]\n"
+            'version = "22"\n'
+            'manager = "yarn"\n'
+        )
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+
+    def _run(self) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_returns_exit_code_one(self):
+        rc, _, _ = self._run()
+        self.assertEqual(rc, 1)
+
+    def test_stderr_names_the_config_file(self):
+        """The user needs to know which file to edit; bare 'Cannot
+        overwrite a value' wouldn't tell them."""
+        _, _, stderr = self._run()
+        self.assertIn("coding-environment.toml", stderr)
+
+    def test_stderr_includes_tomllib_diagnostic(self):
+        """tomllib already pinpoints the offending line + column —
+        surface it verbatim so the user can jump straight to the typo."""
+        _, _, stderr = self._run()
+        self.assertIn("Cannot overwrite a value", stderr)
+
+    def test_stderr_has_no_python_traceback(self):
+        _, _, stderr = self._run()
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("TOMLDecodeError", stderr)
+
+    def test_does_not_invoke_prison_build_or_start(self):
+        self._run()
+        self.prison.build.assert_not_called()
+        self.prison.start.assert_not_called()
 
 
 class WriteAlcatrazerConfigTests(unittest.TestCase):
@@ -1834,6 +2774,65 @@ class CmdInitIntegrationTests(unittest.TestCase):
         self._run()
         self.prison.generate_prison.assert_called_once_with(coding_env)
 
+    # --- Phase 1.2.1: wizard self-explanation wiring + closing scrub ----
+
+    def test_intro_panel_printed_before_writing_configuration(self):
+        """The intro must appear before any other cmd_init output so its
+        terms (`promote`, `Alcatraz`) are defined before `Use for promoted
+        commits?` is asked. The integration test mocks the ask_* functions
+        so they don't print; whatever phrases land on stdout BEFORE
+        'Writing configuration...' come from the intro and must match."""
+        _, out = self._run_capturing(host_has_creds=True)
+        intro_idx = out.find("your repo")
+        writing_idx = out.find("Writing configuration")
+        self.assertGreater(intro_idx, -1, "intro panel not printed by cmd_init")
+        self.assertGreater(writing_idx, intro_idx, "intro must precede 'Writing configuration'")
+
+    def test_closing_with_creds_uses_alcatraz_vocabulary(self):
+        """Replaces the old 'mounted into the workspace' / 'launch the
+        workspace' phrasing with Alcatraz-native wording."""
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        self.assertGreater(closing_start, -1)
+        closing = out[closing_start:]
+        self.assertIn("they will be used by Alcatraz", closing)
+        self.assertIn("build Alcatraz and run it with own git", closing)
+
+    def test_closing_with_creds_drops_container_terms(self):
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:].lower()
+        self.assertNotIn("workspace", closing)
+        self.assertNotIn("the image", closing)
+
+    def test_closing_without_creds_uses_alcatraz_vocabulary(self):
+        """The API-key branch's trailing 'run alcatrazer start' line gets
+        the same Alcatraz-vocabulary rewrite as the with-creds branch."""
+        _, out = self._run_capturing(host_has_creds=False)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("build Alcatraz and run it with own git", closing)
+        self.assertNotIn("the image", closing.lower())
+        self.assertNotIn("the workspace", closing.lower())
+
+    # --- Phase 1.2.5: closing message points at `alcatrazer visit` -------
+
+    def test_closing_with_creds_includes_visit_hint(self):
+        # After Phase 1.2.5, both closing branches mention `alcatrazer
+        # visit` so users know the next step after start completes.
+        _, out = self._run_capturing(host_has_creds=True)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("`alcatrazer visit`", closing)
+        self.assertIn("step inside", closing)
+
+    def test_closing_without_creds_includes_visit_hint(self):
+        _, out = self._run_capturing(host_has_creds=False)
+        closing_start = out.find("Generating Alcatraz recipe")
+        closing = out[closing_start:]
+        self.assertIn("`alcatrazer visit`", closing)
+        self.assertIn("step inside", closing)
+
     def test_workspace_name_flows_into_exclude(self):
         self.mocks["generate_workspace_dir_name"].return_value = ".devspace-zzzz"
         self._run()
@@ -1885,9 +2884,12 @@ class FirstRunAfterInitTests(unittest.TestCase):
 
         self.prison = Mock(spec=Alcatraz)
         self.prison.exec.return_value = 0
-        # Default: image doesn't exist yet — first_run builds it. Tests
-        # that exercise the "image already present" branch override.
-        self.prison.image_exists.return_value = False
+        # Phase 1.2.6: first_run uses image_matches(recipe_hash) instead
+        # of bare image_exists(). Default: image is stale (or absent) →
+        # first_run builds it. Tests exercising the "image already
+        # current" branch override `image_matches.return_value = True`.
+        self.prison.recipe_hash.return_value = "current_hash_abcd"
+        self.prison.image_matches.return_value = False
 
         self.mocks: dict[str, Mock] = {}
         to_patch: list[tuple[object, str, object]] = [
@@ -1907,6 +2909,13 @@ class FirstRunAfterInitTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return start._first_run_after_init(self.project_dir, prison=self.prison)
 
+    def _run_capturing(self) -> tuple[int, str]:
+        """Capture stdout for tests that assert on post-success output."""
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            rc = start._first_run_after_init(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue()
+
     def test_happy_path_returns_zero(self):
         self.assertEqual(self._run(), 0)
 
@@ -1921,7 +2930,11 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.assertLess(names.index("create_workspace"), names.index("start"))
 
     def test_does_not_re_run_wizards_or_writers(self):
-        """cmd_init already produced config + Dockerfile; don't touch them."""
+        """cmd_init already collected the user's answers and wrote the
+        config files; don't reprompt or rewrite them. The Dockerfile is
+        a separate concern — it's regenerated from the (possibly edited)
+        coding_env on the rebuild path; see
+        test_dockerfile_regenerated_before_build_when_image_stale."""
         with (
             patch.object(start, "ask_promotion_identity") as ask_id,
             patch.object(start, "ask_coding_environment") as ask_env,
@@ -1937,7 +2950,6 @@ class FirstRunAfterInitTests(unittest.TestCase):
         w_cfg.assert_not_called()
         w_env.assert_not_called()
         w_src.assert_not_called()
-        self.prison.generate_prison.assert_not_called()
 
     def test_workspace_name_loaded_from_identity(self):
         self.mocks["load_workspace_dir"].return_value = ".devspace-zzzz"
@@ -1970,22 +2982,120 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self._run()
         self.mocks["launch_daemon_and_print"].assert_not_called()
 
-    def test_build_skipped_when_image_already_exists(self):
+    def test_build_skipped_when_image_is_current(self):
         """_first_run_after_init is called from two routing paths now
-        (no image OR no workspace). When only the workspace is missing,
-        rebuilding the image is wasted work — skip it."""
-        self.prison.image_exists.return_value = True
+        (stale/missing image OR no workspace). When only the workspace
+        is missing AND the image's config_hash matches the current
+        recipe, rebuilding the image is wasted work — skip it."""
+        self.prison.image_matches.return_value = True
         self._run()
         self.prison.build.assert_not_called()
         # Workspace still gets created + container still starts.
         self.mocks["create_workspace"].assert_called_once()
         self.prison.start.assert_called_once()
 
-    def test_build_runs_when_image_missing(self):
-        """Sanity-lock the original path: no image → build once."""
-        self.prison.image_exists.return_value = False
+    def test_workspace_creation_skipped_when_workspace_already_populated(self):
+        """Manual-test bug B/ERR 1: editing coding-environment.toml after a
+        successful start routes back through _first_run_after_init (image
+        hash changed). The workspace dir from the prior run is still on
+        disk with its `.git/` populated — re-running create_workspace
+        crashes because `git init` exits 128 on a directory whose `.git/`
+        already contains files (often owned by the phantom agent UID from
+        the previous container run).
+
+        Image-rebuild and workspace-creation are independent concerns: when
+        only the image is stale, leave the existing workspace alone."""
+        # Workspace from the prior run — `.git/` already initialized.
+        (self.project_dir / ".devspace-abcd" / ".git").mkdir(parents=True)
+        # Image is stale (toml edit), workspace is fine.
+        self.prison.image_matches.return_value = False
         self._run()
         self.prison.build.assert_called_once()
+        self.mocks["create_workspace"].assert_not_called()
+        self.prison.start.assert_called_once()
+
+    def test_workspace_created_when_workspace_dir_absent(self):
+        """Symmetric to the previous test: when the workspace dir is
+        missing entirely (the `rm -rf .devspace-*` recovery scenario),
+        we DO need to recreate it. Default setUp leaves the dir absent
+        so this is just an explicit assertion of today's behavior."""
+        self.assertFalse((self.project_dir / ".devspace-abcd").exists())
+        self._run()
+        self.mocks["create_workspace"].assert_called_once()
+
+    def test_workspace_created_when_dir_exists_without_git(self):
+        """Half-broken state: the workspace dir exists but `.git/` was
+        wiped (or never finished initializing). Treat this as 'not
+        populated' — recreate. The check has to be the inner `.git/`,
+        not the workspace dir itself, because outer-side mkdir is
+        idempotent and would otherwise mask half-broken workspaces."""
+        (self.project_dir / ".devspace-abcd").mkdir()
+        self._run()
+        self.mocks["create_workspace"].assert_called_once()
+
+    def test_build_runs_when_image_is_stale(self):
+        """Phase 1.2.6: stale image → rebuild. Covers both the
+        "no image" original case and the new "image present but
+        built from older config" case the user reported (rm -rf
+        .alcatrazer/ + init left a stale image visible)."""
+        self.prison.image_matches.return_value = False
+        self._run()
+        self.prison.build.assert_called_once()
+
+    def test_dockerfile_regenerated_before_build_when_image_stale(self):
+        """Manual-test bug F/ERR (toml-edit-no-rebuild): editing
+        coding-environment.toml between starts routes back here because
+        the image's baked config_hash no longer matches the recipe hash
+        the new toml would produce. But the on-disk .alcatrazer/Dockerfile
+        is the OLD one — it's what built the (now-stale) image. Rebuilding
+        from that file produces the same stale image with the same stale
+        label, and the next start enters this branch again: an infinite
+        no-op rebuild loop. `save_coding_environment_snapshot` then masks
+        the failure by refreshing `.last` to match the current toml.
+
+        Re-rendering the Dockerfile from the freshly-loaded coding_env
+        before `build()` closes the loop — the build now produces an
+        image whose label matches the current recipe."""
+        self.prison.image_matches.return_value = False
+        coding_env = start._load_coding_environment(self.project_dir)
+        self._run()
+        self.prison.generate_prison.assert_called_once_with(coding_env)
+        prison_call_names = [c[0] for c in self.prison.mock_calls]
+        self.assertLess(
+            prison_call_names.index("generate_prison"),
+            prison_call_names.index("build"),
+        )
+
+    def test_stale_container_removed_before_start(self):
+        """Manual-test bug F/ERR 2: `rm -rf .alcatrazer/ .devspace-*/`
+        followed by `alcatrazer init && start` collides with a leftover
+        container from the prior session because the container name is
+        derived from the canonical project path (deterministic across
+        re-inits). 1.2.6 self-healed stale IMAGES via image_matches; the
+        symmetric fix here self-heals stale CONTAINERS by removing them
+        before docker run gets a chance to fail with `Conflict. The
+        container name "..." is already in use`."""
+        self.prison.exists.return_value = True
+        self._run()
+        self.prison.remove.assert_called_once()
+        self.prison.start.assert_called_once()
+        # Order matters: remove must precede start, otherwise docker run
+        # still hits the conflict.
+        prison_call_names = [c[0] for c in self.prison.mock_calls]
+        self.assertLess(
+            prison_call_names.index("remove"),
+            prison_call_names.index("start"),
+        )
+
+    def test_no_remove_when_no_stale_container(self):
+        """Default greenfield: no prior container exists, so we shouldn't
+        invoke remove (it's a no-op for absent containers, but skipping
+        it keeps the docker call count minimal and the trace easier to
+        read in failures)."""
+        self.prison.exists.return_value = False
+        self._run()
+        self.prison.remove.assert_not_called()
+        self.prison.start.assert_called_once()
 
     def test_build_failure_reports_and_returns_nonzero(self):
         self.prison.build.side_effect = PrisonBuildError(
@@ -2007,6 +3117,354 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.mocks["run_startup_commands"].assert_not_called()
         self.mocks["save_coding_environment_snapshot"].assert_not_called()
         self.mocks["save_env_snapshot"].assert_not_called()
+
+    # --- Phase 1.2.5: post-success message points at `alcatrazer visit` --
+
+    def test_post_success_message_directs_user_to_alcatrazer_visit(self):
+        # After _first_run_after_init's happy path, the closing line
+        # tells the user how to enter the running Alcatraz. The
+        # phrasing "Ready. To enter the Alcatraz: alcatrazer visit"
+        # ties to the readme's "step inside" diagram vocabulary.
+        rc, out = self._run_capturing()
+        self.assertEqual(rc, 0)
+        self.assertIn("Ready. To enter the Alcatraz: alcatrazer visit", out)
+
+
+class LoadExistingAlcatrazerConfigTests(unittest.TestCase):
+    """Phase 1.2.3: detection helper for an alcatrazer-generated
+    coding-environment.toml — used by cmd_init to ask the user whether
+    to reuse the existing file rather than orphan it with a hex-suffix
+    duplicate.
+
+    The detection is deliberately conservative (require BOTH header
+    markers): a false positive lets an already-good user file be
+    "reused" with no real harm; a false negative reverts to today's
+    hex-suffix behavior — annoying but never destroys content.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.target = self.project_dir / "coding-environment.toml"
+
+    def _alcatrazer_v1_content(self) -> str:
+        # Reuse the writer to get a guaranteed-real alcatrazer-generated
+        # file, so the test doesn't drift from `_render_coding_environment`
+        # output and break invisibly on a future header tweak.
+        return start._render_coding_environment({"languages": {"python": {"version": "3.12"}}})
+
+    def test_returns_none_when_file_missing(self):
+        # No coding-environment.toml — no decision to make.
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_parsed_dict_for_alcatrazer_generated_v1_file(self):
+        self.target.write_text(self._alcatrazer_v1_content())
+        result = start._load_existing_alcatrazer_config(self.project_dir)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(result["languages"]["python"]["version"], "3.12")
+
+    def test_returns_none_for_user_authored_file_without_markers(self):
+        # User wrote their own TOML — looks valid but has no alcatrazer
+        # header. Helper must return None so cmd_init falls back to
+        # today's hex-suffix behavior (never clobber user content).
+        self.target.write_text('schema_version = 1\n[languages.python]\nversion = "3.12"\n')
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_when_only_one_header_marker_present(self):
+        # Conservative threshold — both markers required. A single
+        # matching line could happen by chance; both lines together is
+        # a strong enough signal of alcatrazer authorship.
+        self.target.write_text(
+            "# Coding environment definition for this repository.\n"
+            "# … but not the other marker line …\n"
+            "schema_version = 1\n"
+            '[languages.python]\nversion = "3.12"\n'
+        )
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_for_unknown_schema_version(self):
+        # File claims schema_version = 99 — we don't have markers for
+        # that schema, so we can't safely identify it as ours. Treat as
+        # "don't recognize, fall back to current behavior" rather than
+        # try to apply v1 markers and possibly misread.
+        content = self._alcatrazer_v1_content().replace(
+            "schema_version = 1",
+            "schema_version = 99",
+        )
+        self.target.write_text(content)
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_treats_missing_schema_version_as_v1(self):
+        # Files predating Phase 1.1 carry no schema_version field; the
+        # validator treats them as v1, and detection should follow that
+        # convention — old alcatrazer-generated files are still "ours".
+        content = self._alcatrazer_v1_content().replace(
+            "schema_version = 1\n",
+            "",
+        )
+        self.target.write_text(content)
+        self.assertIsNotNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+    def test_returns_none_for_invalid_toml(self):
+        # Garbage in the file — don't crash, just bail to None so the
+        # caller falls back to the bare wizard.
+        self.target.write_text("this is { not valid toml = =\n")
+        self.assertIsNone(start._load_existing_alcatrazer_config(self.project_dir))
+
+
+class GeneratedMarkersTableTests(unittest.TestCase):
+    """Phase 1.2.3 detection-table guard: every supported schema_version
+    must have an entry in `_GENERATED_MARKERS_BY_SCHEMA`. When v2 lands
+    with [provision], adding `2: (...)` is the contract — without this
+    test, a future schema bump could silently lose detection."""
+
+    def test_current_schema_has_marker_entry(self):
+        self.assertIn(
+            start.CODING_ENV_SCHEMA_VERSION,
+            start._GENERATED_MARKERS_BY_SCHEMA,
+            f"_GENERATED_MARKERS_BY_SCHEMA must have an entry for the "
+            f"current schema version ({start.CODING_ENV_SCHEMA_VERSION}); "
+            f"otherwise reuse-prompt detection silently breaks.",
+        )
+
+    def test_v1_markers_match_actual_header_lines(self):
+        # The markers must literally appear in `_render_coding_environment`
+        # output — otherwise detection of our own files fails.
+        sample = start._render_coding_environment({"languages": {"python": {"version": "3.12"}}})
+        for marker in start._GENERATED_MARKERS_BY_SCHEMA[1]:
+            self.assertIn(marker, sample, f"v1 marker not in writer output: {marker!r}")
+
+
+class CmdInitReusePromptTests(unittest.TestCase):
+    """Phase 1.2.3: when an alcatrazer-generated coding-environment.toml
+    already exists, cmd_init asks the user whether to reuse it (default
+    Y, skip the languages/os/startup wizard) or run the wizard fresh
+    (then ask whether to overwrite or fall back to hex-suffix).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".git").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        self.prison = Mock(spec=Alcatraz)
+
+        # Pre-create an alcatrazer-style coding-environment.toml so the
+        # reuse-prompt path triggers.
+        self.existing = self.project_dir / "coding-environment.toml"
+        self.existing.write_text(
+            start._render_coding_environment({"languages": {"python": {"version": "3.10"}}})
+        )
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "ask_promotion_identity", ("Alice", "alice@example.com")),
+            (start, "ask_coding_environment", {"languages": {"go": {"version": "1.22"}}}),
+            (start, "write_alcatrazer_config", None),
+            (start, "write_env_example", None),
+            (start, "write_git_exclude", None),
+            (start, "extract_package_source", None),
+            (start, "write_python_symlink", None),
+            (identity, "generate_workspace_dir_name", ".devspace-abcd"),
+            (identity, "store_workspace_dir", None),
+            (start, "_host_has_claude_creds", True),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def _run_with_inputs(self, inputs: list[str]) -> tuple[int, str]:
+        """Run cmd_init with patched input() returning the given answers.
+        Returns (exit code, captured stdout)."""
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter(inputs)),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        return rc, stdout.getvalue()
+
+    # --- Reuse path ------------------------------------------------------
+
+    def test_accept_reuse_skips_languages_os_startup_wizard(self):
+        # User answers "y" to "Reuse existing coding-environment.toml?"
+        # → ask_coding_environment is NOT called (the wizard's expensive
+        # part is skipped); the existing file's parsed content flows
+        # downstream instead.
+        rc, _ = self._run_with_inputs(["y"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_not_called()
+        # The existing file must still be there, untouched.
+        self.assertTrue(self.existing.is_file())
+
+    def test_accept_reuse_with_enter_default(self):
+        # Empty input == accept default (Y).
+        rc, _ = self._run_with_inputs([""])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_not_called()
+
+    def test_reuse_passes_parsed_existing_data_to_prison_generator(self):
+        # The recipe must be generated from the EXISTING config (python
+        # 3.10), not from the mock `ask_coding_environment` return value
+        # (go 1.22). Confirms we actually reuse the file rather than
+        # accept-and-discard.
+        self._run_with_inputs(["y"])
+        call = self.prison.generate_prison.call_args
+        coding_env = call.args[0]
+        self.assertIn("python", coding_env["languages"])
+        self.assertEqual(coding_env["languages"]["python"]["version"], "3.10")
+        # And the mock-supplied "go" was NOT used.
+        self.assertNotIn("go", coding_env["languages"])
+
+    # --- Decline reuse → overwrite path ----------------------------------
+
+    def test_decline_reuse_runs_wizard_and_overwrite_replaces_file(self):
+        # User says "n" to reuse → wizard runs → "y" to overwrite →
+        # canonical filename used; original content (python 3.10) is
+        # replaced by the wizard's mock output (go 1.22).
+        original_size = self.existing.stat().st_size
+        rc, _ = self._run_with_inputs(["n", "y"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # File still at canonical name, no hex suffix.
+        self.assertTrue(self.existing.is_file())
+        # And content has changed (python 3.10 → go 1.22 from the mock).
+        self.assertIn("[languages.go]", self.existing.read_text())
+        self.assertNotEqual(self.existing.stat().st_size, original_size)
+        # No hex-suffix file was created.
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(suffix_files, [])
+
+    # --- Decline reuse → decline overwrite → hex suffix ------------------
+
+    def test_decline_overwrite_falls_back_to_hex_suffix(self):
+        # User says "n" to reuse → wizard runs → "n" to overwrite →
+        # original file preserved; new content lands in
+        # coding-environment-XXXX.toml.
+        rc, _ = self._run_with_inputs(["n", "n"])
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # Original preserved.
+        self.assertIn("python", self.existing.read_text())
+        # Hex-suffixed file exists with the new content.
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(len(suffix_files), 1)
+        self.assertIn("[languages.go]", suffix_files[0].read_text())
+
+
+class CmdInitDoesNotPromptReuseForUserAuthoredConfigTests(unittest.TestCase):
+    """Phase 1.2.3 regression guard: when an existing
+    coding-environment.toml is user-authored (no alcatrazer header
+    markers), cmd_init must NOT show the reuse prompt and must fall
+    back to today's hex-suffix behavior — never overwrite user content
+    just because it happens to share the canonical filename."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        (self.project_dir / ".git").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Pre-create a user-authored TOML — no alcatrazer header.
+        self.user_file = self.project_dir / "coding-environment.toml"
+        self.user_file.write_text(
+            '# user\'s own config\nschema_version = 1\n[languages.python]\nversion = "3.10"\n'
+        )
+
+        self.prison = Mock(spec=Alcatraz)
+
+        self.mocks: dict[str, Mock] = {}
+        to_patch: list[tuple[object, str, object]] = [
+            (start, "ask_promotion_identity", ("Alice", "alice@example.com")),
+            (start, "ask_coding_environment", {"languages": {"go": {"version": "1.22"}}}),
+            (start, "write_alcatrazer_config", None),
+            (start, "write_env_example", None),
+            (start, "write_git_exclude", None),
+            (start, "extract_package_source", None),
+            (start, "write_python_symlink", None),
+            (identity, "generate_workspace_dir_name", ".devspace-abcd"),
+            (identity, "store_workspace_dir", None),
+            (start, "_host_has_claude_creds", True),
+        ]
+        for mod, name, rv in to_patch:
+            p = patch.object(mod, name, return_value=rv)
+            self.mocks[name] = p.start()
+            self.addCleanup(p.stop)
+
+    def test_no_reuse_prompt_for_user_authored_config(self):
+        # No reuse-prompt input is consumed here — if cmd_init asked
+        # for one, the empty iter would raise StopIteration and the
+        # test would error rather than just "pass without prompt".
+        stdout = io.StringIO()
+        with (
+            patch("builtins.input", side_effect=iter([])),  # NO inputs available
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = start.cmd_init(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0)
+        self.mocks["ask_coding_environment"].assert_called_once()
+        # User's original file stays untouched at canonical name.
+        self.assertIn("user's own config", self.user_file.read_text())
+        # New file lands at hex-suffixed name (today's behavior).
+        suffix_files = list(self.project_dir.glob("coding-environment-*.toml"))
+        self.assertEqual(len(suffix_files), 1)
+
+
+class CmdVisitTests(unittest.TestCase):
+    """Phase 1.2.5: `alcatrazer visit` — open an interactive shell as agent
+    inside the running Alcatraz. Wraps the new `Alcatraz.shell()` port
+    method; errors explicitly when no alcatrazer setup exists or the
+    Alcatraz isn't running. No auto-start, no command pass-through."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _run(self, prison) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_visit(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_errors_when_no_alcatrazer_dir(self):
+        # No `.alcatrazer/` → user hasn't run `init`. Friendly message,
+        # exit 1, no prison interaction.
+        prison = Mock(spec=Alcatraz)
+        rc, _, err = self._run(prison)
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer init", err)
+        prison.shell.assert_not_called()
+
+    def test_errors_when_alcatraz_not_running(self):
+        # `.alcatrazer/` present but no running container. Explicit error
+        # ("run `alcatrazer start` first") rather than auto-starting —
+        # auto-start would hide rebuilds and daemon launches under what
+        # should be a fast "drop me in" command.
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = False
+        rc, _, err = self._run(prison)
+        self.assertEqual(rc, 1)
+        self.assertIn("alcatrazer start", err)
+        prison.shell.assert_not_called()
+
+    def test_calls_prison_shell_when_running(self):
+        # Happy path: running alcatraz, `cmd_visit` delegates to
+        # `prison.shell()`. The real shell() never returns (execvp), but
+        # the mock returns None — code path tolerates both.
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+        rc, _, _ = self._run(prison)
+        self.assertEqual(rc, 0)
+        prison.shell.assert_called_once()
 
 
 class CmdStopTests(unittest.TestCase):

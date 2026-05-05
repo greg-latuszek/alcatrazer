@@ -138,3 +138,45 @@ class Alcatraz(ABC):
     @abstractmethod
     def remove(self) -> None:
         """Remove the workspace container (stop first if running). No-op if absent."""
+
+    @abstractmethod
+    def shell(self) -> None:
+        """Open an interactive shell as agent inside the running sandbox.
+
+        Replaces the calling process via execvp (or its backend equivalent)
+        — never returns normally on success; signals (Ctrl+C, Ctrl+D) and
+        the eventual exit status flow through to the user's terminal as if
+        they'd run a shell directly.
+
+        Raises ``PrisonStartError`` when the sandbox isn't running. The
+        caller (``cmd_visit``) catches this and prints a friendly message
+        rather than expecting auto-start.
+
+        Backend-agnostic — DockerPrison implements via ``docker exec -it``;
+        future backends (FirecrackerPrison, VMPrison, …) implement via
+        whatever their interactive-attach mechanism is.
+        """
+
+    @abstractmethod
+    def recipe_hash(self, coding_environment: dict) -> str:
+        """Hash of the recipe the adapter would build right now for
+        ``coding_environment``.
+
+        Phase 1.2.6: paired with ``image_matches`` so ``cmd_start`` can
+        decide whether the running image is current without knowing
+        what kind of recipe the adapter uses (Dockerfile, VM cloud-init,
+        snapshot config, …). DockerPrison hashes the Dockerfile body;
+        future backends hash whatever they bake.
+        """
+
+    @abstractmethod
+    def image_matches(self, expected_hash: str) -> bool:
+        """Whether the running image was built from the recipe whose
+        hash equals ``expected_hash``.
+
+        Phase 1.2.6 staleness detection: closes the gap where today's
+        ``image_exists()`` returns True for an image built from an
+        older config (e.g. user wiped ``.alcatrazer/`` and re-ran init).
+        Returns False on: missing image, image without the
+        adapter's identity label, label-vs-expected mismatch.
+        """

@@ -14,13 +14,57 @@ step that first needs it:
 - `stop` — Step 5
 """
 
+import hashlib
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from alcatrazer import identity
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
-from alcatrazer.languages import SUPPORTED_LANGUAGES
+from alcatrazer.languages import AQUA_ATTESTATION_MISALIGNED, SUPPORTED_LANGUAGES
+
+# --- Per-repo identity (Phase 1.2.5) -----------------------------------------
+#
+# DockerPrison's image tag and container name are derived from the project's
+# canonical absolute path so multiple alcatrazers on one machine coexist
+# without collision (the previous hardcoded `alcatraz-workspace:local` and
+# `workspace` would clash across repos). The hash gives mathematical
+# uniqueness; the sanitized basename gives glance-readability in `docker ps`.
+
+_BASENAME_INVALID_CHARS = re.compile(r"[^a-z0-9.-]+")
+_BASENAME_RUNS_OF_HYPHENS = re.compile(r"-{2,}")
+
+
+def _sanitize_basename(name: str) -> str:
+    """Reduce a path basename to Docker-tag-safe characters.
+
+    Steps: lowercase → replace any non-`[a-z0-9.-]` with `-` → collapse
+    runs of `-` → strip leading/trailing `-` and `.` → fall back to
+    `repo` if the result is empty. Stable mapping; same input always
+    produces the same output.
+    """
+    out = _BASENAME_INVALID_CHARS.sub("-", name.lower())
+    out = _BASENAME_RUNS_OF_HYPHENS.sub("-", out)
+    out = out.strip("-.")
+    return out or "repo"
+
+
+def _identity_for_project(project_dir: Path) -> str:
+    """Return `<sanitized-basename>-<12-hex-hash>` for a project path.
+
+    The hash is SHA-256 of the canonical absolute path (resolves
+    symlinks), truncated to 12 hex chars (~48 bits — birthday bound at
+    ~16M repos on one laptop, effectively never collides). Used by
+    `DockerPrison` to derive image tag and container name so two
+    alcatrazers on different repos coexist without naming collision.
+    """
+    canonical = project_dir.resolve()
+    sanitized = _sanitize_basename(canonical.name)
+    digest = hashlib.sha256(str(canonical).encode()).hexdigest()[:12]
+    return f"{sanitized}-{digest}"
+
 
 # --- Dockerfile generation ---------------------------------------------------
 
@@ -103,17 +147,85 @@ def _render_apt_install(packages: list[str]) -> str:
     )
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    """Return ``items`` with subsequent duplicates dropped, original order kept.
+
+    Used for merging user-declared and tool-injected lists (currently apt
+    package lists, but the helper is generic). The user's list comes first
+    in user order; tool-injected items appended after. ``sorted(set(...))``
+    is deliberately avoided — silent reordering of user input can break
+    dependency ordering for order-sensitive tooling, and it overrides
+    explicit user intent.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+# Phase 1.2.7: workaround surface for aqua-registry attestation drift.
+# AQUA_ATTESTATION_MISALIGNED (in languages.py) names the affected
+# managers; this module emits the disable env var and the explanatory
+# comment block when rendering their mise install lines. Comment is
+# load-bearing per design_principles.md §Trust & Verification: any
+# verification layer being disabled must be visible in the artifact
+# users read (here, .alcatrazer/Dockerfile).
+_AQUA_ATTESTATION_DISABLE_ENV = "MISE_AQUA_GITHUB_ATTESTATIONS=false"
+
+_AQUA_ATTESTATION_DRIFT_COMMENT = """\
+# {manager}: aqua-registry expects a workflow-signed build-provenance
+# attestation, but upstream publishes a release-type attestation
+# signed by GitHub's release infrastructure. mise's aqua plugin
+# disqualifies it and the install aborts. Disabling aqua's
+# attestation gate keeps mise's sha256 checksum verification on —
+# equivalent trust to upstream's install script. See
+# docs/features/more_languages_support.md (Phase 1.2.7) for full
+# detail."""
+
+
 def _render_mise_uses(languages: dict) -> str:
-    """Render the `mise use --global` block covering runtimes + non-default managers."""
+    """Render the `mise use --global` block(s) covering runtimes + non-bundled managers.
+
+    Phase 1.2.4: install rule is "non-bundled manager". `bundled_managers`
+    (per-language tuple of managers that ship with the runtime —
+    `("pip",)` for python, etc.) drives the decision. Empty tuple (java)
+    means EVERY picked manager installs separately, including the
+    default `maven`.
+
+    Phase 1.2.7: managers in `AQUA_ATTESTATION_MISALIGNED` (today: uv)
+    split off into their own RUN block. mise's aqua plugin rejects those
+    tools' attestations because aqua-registry's expected `signer_workflow`
+    doesn't match what upstream publishes; disabling aqua's attestation
+    gate via `MISE_AQUA_GITHUB_ATTESTATIONS=false` on those lines keeps
+    the build green while preserving sha256 checksum verification. Each
+    misaligned RUN gets the comment-block above it documenting the
+    workaround for users reading the generated Dockerfile.
+    """
     if not languages:
         return ""
-    uses: list[str] = []
+    main_uses: list[str] = []
+    misaligned: list[str] = []
     for lang, cfg in languages.items():
-        uses.append(f"{lang}@{cfg['version']}")
-        if "manager" in cfg:
-            uses.append(cfg["manager"])
-    commands = [f"mise use --global {u}" for u in uses]
-    return "RUN " + " && \\\n    ".join(commands) + "\n"
+        main_uses.append(f"{lang}@{cfg['version']}")
+        manager = cfg.get("manager") or SUPPORTED_LANGUAGES[lang]["default_manager"]
+        if manager in SUPPORTED_LANGUAGES[lang].get("bundled_managers", ()):
+            continue
+        if manager in AQUA_ATTESTATION_MISALIGNED:
+            misaligned.append(manager)
+        else:
+            main_uses.append(manager)
+
+    blocks: list[str] = []
+    if main_uses:
+        commands = [f"mise use --global {u}" for u in main_uses]
+        blocks.append("RUN " + " && \\\n    ".join(commands))
+    for manager in misaligned:
+        comment = _AQUA_ATTESTATION_DRIFT_COMMENT.format(manager=manager)
+        blocks.append(f"{comment}\nRUN {_AQUA_ATTESTATION_DISABLE_ENV} mise use --global {manager}")
+    return "\n\n".join(blocks) + "\n"
 
 
 def _render_verify_block(languages: dict) -> str:
@@ -124,8 +236,15 @@ def _render_verify_block(languages: dict) -> str:
     return "RUN " + " && \\\n    ".join(commands) + "\n"
 
 
-def _render_dockerfile(data: dict) -> str:
-    """Build the full three-stage Dockerfile text."""
+def _render_dockerfile_body(data: dict) -> str:
+    """Render the Dockerfile WITHOUT the alcatrazer.config_hash LABEL.
+
+    Phase 1.2.6: this is the canonical body used both as the input for
+    `_compute_config_hash` (avoids chicken-and-egg with the LABEL line)
+    AND as the body of the final Dockerfile. The public
+    `_render_dockerfile` calls this, computes the hash, and appends the
+    LABEL.
+    """
     parts: list[str] = [
         _DOCKERFILE_DEV_BASE.rstrip(),
         _DOCKERFILE_AI_BASE.rstrip(),
@@ -142,12 +261,25 @@ def _render_dockerfile(data: dict) -> str:
         "USER agent",
     ]
 
-    os_block = _render_apt_install(data.get("os", {}).get("packages", []))
+    languages = data.get("languages", {})
+    user_pkgs = data.get("os", {}).get("packages", [])
+    # Merge user-declared packages with every declared language's
+    # required_os_packages (deps that the runtime needs at startup, e.g.
+    # .NET → libicu74). Order rule: user list first in user-declared
+    # order, then language-injected packages in language-declaration
+    # order. Dedupe is by first occurrence — never sort, because
+    # silent reordering of a user-supplied list can break dependency
+    # ordering for any package manager that's order-sensitive (apt
+    # happens to tolerate it; we don't assume future tooling will).
+    lang_pkgs: list[str] = []
+    for name in languages:
+        lang_pkgs.extend(SUPPORTED_LANGUAGES[name].get("required_os_packages", ()))
+    all_pkgs = _dedupe_preserve_order(list(user_pkgs) + lang_pkgs)
+    os_block = _render_apt_install(all_pkgs)
     if os_block:
         dev_stage.append("")
         dev_stage.append(os_block.rstrip())
 
-    languages = data.get("languages", {})
     mise_block = _render_mise_uses(languages)
     if mise_block:
         dev_stage.append("")
@@ -162,6 +294,35 @@ def _render_dockerfile(data: dict) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+def _compute_config_hash(data: dict) -> str:
+    """Phase 1.2.6: SHA-256 of the Dockerfile body (sans LABEL) — first
+    16 hex chars. Baked into the rendered Dockerfile via a LABEL so the
+    running image carries its own identity, and recomputed at start time
+    to detect when the on-disk recipe has drifted from what built the
+    image (covers `rm -rf .alcatrazer/` recovery and similar)."""
+    body = _render_dockerfile_body(data)
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def _render_dockerfile(data: dict) -> str:
+    """Build the full Dockerfile text — body + alcatrazer.config_hash LABEL.
+
+    The LABEL is appended to stage 3 (the dev stage) by string-splicing
+    just before `_DOCKERFILE_ENTRYPOINT_TAIL` so it lands inside the
+    final image's metadata. Computed via `_compute_config_hash` so the
+    running image's label matches what `recipe_hash` would return for
+    the same input."""
+    body = _render_dockerfile_body(data)
+    config_hash = _compute_config_hash(data)
+    label_line = f'\nLABEL alcatrazer.config_hash="{config_hash}"\n'
+    # Insert the LABEL between the dev stage and the entrypoint tail
+    # (which starts with "# Back to root for entrypoint"). This places
+    # the LABEL inside stage 3 just before the USER root switch.
+    entrypoint_marker = "# Back to root for entrypoint"
+    insert_at = body.index(entrypoint_marker)
+    return body[:insert_at] + label_line.lstrip("\n") + "\n" + body[insert_at:]
+
+
 # --- Adapter -----------------------------------------------------------------
 
 
@@ -171,12 +332,17 @@ class DockerPrison(Alcatraz):
     def __init__(
         self,
         project_dir: Path,
-        image_tag: str = "alcatraz-workspace:local",
-        container_name: str = "workspace",
+        image_tag: str | None = None,
+        container_name: str | None = None,
     ):
         super().__init__(project_dir)
-        self.image_tag = image_tag
-        self.container_name = container_name
+        # Phase 1.2.5: defaults derive from a path-hash identity so two
+        # alcatrazers on different repos get different image tags and
+        # container names. Tests that want stable literals can still
+        # pass explicit overrides.
+        ident = _identity_for_project(project_dir)
+        self.image_tag = image_tag if image_tag is not None else f"alcatraz-workspace:{ident}"
+        self.container_name = container_name if container_name is not None else f"workspace-{ident}"
 
     def generate_prison(self, coding_environment: dict) -> None:
         """Write `.alcatrazer/Dockerfile` + `.alcatrazer/entrypoint.sh` from
@@ -194,6 +360,43 @@ class DockerPrison(Alcatraz):
         if not dockerfile.exists():
             return True
         return _render_dockerfile(coding_environment) != dockerfile.read_text()
+
+    def recipe_hash(self, coding_environment: dict) -> str:
+        """Return the alcatrazer.config_hash that this adapter would bake
+        into a freshly-built image for the given coding_environment.
+
+        Phase 1.2.6: paired with `image_matches` so cmd_start can ask
+        "is the running image built from the same recipe I'd build now?"
+        without the caller knowing the underlying hash basis (Dockerfile
+        body for DockerPrison; whatever a future backend's recipe is)."""
+        return _compute_config_hash(coding_environment)
+
+    def image_matches(self, expected_hash: str) -> bool:
+        """True iff the running image carries an `alcatrazer.config_hash`
+        LABEL equal to `expected_hash`.
+
+        Returns False on missing image, missing label (older alcatrazer
+        builds — triggers a one-time rebuild after upgrade), or any
+        mismatch. The label is set by `_render_dockerfile` at build
+        time and read here via `docker inspect --format`.
+        """
+        if not self.image_exists():
+            return False
+        result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                self.image_tag,
+                "--format",
+                '{{ index .Config.Labels "alcatrazer.config_hash" }}',
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+        actual_hash = result.stdout.strip()
+        return actual_hash == expected_hash
 
     def build(self) -> None:
         """Run `docker build` with the generated Dockerfile.
@@ -390,4 +593,34 @@ class DockerPrison(Alcatraz):
             ["docker", "rm", "-f", self.container_name],
             capture_output=True,
             check=True,
+        )
+
+    def shell(self) -> None:
+        """Open an interactive bash as agent inside the running container.
+
+        Phase 1.2.5. Implementation uses ``os.execvp`` so the alcatrazer
+        Python process is replaced by ``docker exec``; signals (Ctrl+C,
+        Ctrl+D) flow through and the user's exit status is whatever bash
+        exits with — same as if they'd typed the docker command directly.
+
+        Raises ``PrisonStartError`` when not running. Never returns on
+        success.
+        """
+        if not self.is_running():
+            raise PrisonStartError(
+                "Alcatraz is not running.",
+            )
+        os.execvp(
+            "docker",
+            [
+                "docker",
+                "exec",
+                "-it",
+                "-u",
+                "agent",
+                "-w",
+                "/workspace",
+                self.container_name,
+                "bash",
+            ],
         )

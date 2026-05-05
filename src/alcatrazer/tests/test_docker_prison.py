@@ -28,6 +28,133 @@ from alcatrazer.alcatraz import PrisonBuildError, PrisonStartError
 from alcatrazer.docker_prison import DockerPrison
 
 
+class SanitizeBasenameTests(unittest.TestCase):
+    """Phase 1.2.5: lowercases and reduces a path basename to Docker-tag-safe
+    characters (`[a-z0-9.-]`), so names like `MyRepo`, `My Project (work)`,
+    or `_____` produce stable, predictable identifiers we can safely
+    interpolate into image tags and container names."""
+
+    def test_lowercases(self):
+        self.assertEqual(docker_prison._sanitize_basename("MyRepo"), "myrepo")
+
+    def test_replaces_spaces_and_specials_with_hyphen(self):
+        self.assertEqual(
+            docker_prison._sanitize_basename("My Project (work)"),
+            "my-project-work",
+        )
+
+    def test_collapses_runs_of_hyphens(self):
+        self.assertEqual(docker_prison._sanitize_basename("a___b!!!c"), "a-b-c")
+
+    def test_strips_leading_and_trailing_hyphens_and_dots(self):
+        self.assertEqual(docker_prison._sanitize_basename("--foo--"), "foo")
+        self.assertEqual(docker_prison._sanitize_basename("..foo.."), "foo")
+        self.assertEqual(docker_prison._sanitize_basename(".-foo-."), "foo")
+
+    def test_falls_back_to_repo_when_empty(self):
+        # Pure-special basename collapses to nothing → use a stable
+        # fallback so tags / container names are never empty.
+        self.assertEqual(docker_prison._sanitize_basename("___"), "repo")
+        self.assertEqual(docker_prison._sanitize_basename("---"), "repo")
+        self.assertEqual(docker_prison._sanitize_basename(""), "repo")
+
+
+class IdentityForProjectTests(unittest.TestCase):
+    """Phase 1.2.5: `_identity_for_project(project_dir)` returns
+    `<sanitized-basename>-<12-hex-hash>` derived from the canonical
+    absolute path. Stable across runs of init/clear/start; collision-
+    free in any realistic per-laptop scenario (~16M-repo birthday bound
+    on 48 bits)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_format_is_basename_dash_12hex(self):
+        # Layout assertion — ident always matches `<text>-<12 hex chars>`.
+        # Test agnostic of the actual hash value (which depends on tempdir).
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertRegex(ident, r"^[a-z0-9.-]+-[0-9a-f]{12}$")
+
+    def test_is_stable_across_calls(self):
+        a = docker_prison._identity_for_project(self.project_dir)
+        b = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(a, b)
+
+    def test_resolves_symlinks(self):
+        # A symlink to the repo and the resolved repo must produce the
+        # same identity — otherwise users with different mountpoints
+        # for the same physical dir would get inconsistent alcatraz
+        # identities.
+        link = Path(self.tmp.name).parent / (Path(self.tmp.name).name + "-link")
+        try:
+            link.symlink_to(self.project_dir)
+            ident_real = docker_prison._identity_for_project(self.project_dir)
+            ident_via_link = docker_prison._identity_for_project(link)
+            self.assertEqual(ident_real, ident_via_link)
+        finally:
+            link.unlink(missing_ok=True)
+
+    def test_different_paths_yield_different_idents(self):
+        other_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(other_tmp.cleanup)
+        ident_a = docker_prison._identity_for_project(self.project_dir)
+        ident_b = docker_prison._identity_for_project(Path(other_tmp.name))
+        self.assertNotEqual(ident_a, ident_b)
+
+    def test_uses_basename_in_ident(self):
+        # The sanitized basename is the human-recognizable part of the
+        # ident (so `docker ps` reads naturally). We verify it appears
+        # by constructing a known basename via a child tempdir.
+        child = self.project_dir / "MyRepo"
+        child.mkdir()
+        ident = docker_prison._identity_for_project(child)
+        self.assertTrue(
+            ident.startswith("myrepo-"),
+            f"ident should start with sanitized basename 'myrepo-', got {ident!r}",
+        )
+
+
+class DockerPrisonPerRepoNamingTests(unittest.TestCase):
+    """Phase 1.2.5: DockerPrison's image_tag and container_name default to
+    per-repo names derived from `_identity_for_project`. Two alcatrazers
+    on different repos coexist without collision."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_image_tag_uses_path_identity(self):
+        prison = DockerPrison(self.project_dir)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(prison.image_tag, f"alcatraz-workspace:{ident}")
+
+    def test_container_name_uses_path_identity(self):
+        prison = DockerPrison(self.project_dir)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertEqual(prison.container_name, f"workspace-{ident}")
+
+    def test_two_projects_get_different_names(self):
+        other_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(other_tmp.cleanup)
+        prison_a = DockerPrison(self.project_dir)
+        prison_b = DockerPrison(Path(other_tmp.name))
+        self.assertNotEqual(prison_a.image_tag, prison_b.image_tag)
+        self.assertNotEqual(prison_a.container_name, prison_b.container_name)
+
+    def test_explicit_overrides_still_work(self):
+        # Tests that need stable assertions can still pass literal names.
+        prison = DockerPrison(
+            self.project_dir,
+            image_tag="custom-image:tag",
+            container_name="custom-name",
+        )
+        self.assertEqual(prison.image_tag, "custom-image:tag")
+        self.assertEqual(prison.container_name, "custom-name")
+
+
 class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
     """generate_prison renders a three-stage Dockerfile from the coding-
     environment dict."""
@@ -111,9 +238,171 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         self.assertIn("mise use --global uv", dev)
 
     def test_no_manager_line_when_language_uses_default(self):
-        content = self._generate({"languages": {"python": {"version": "3.12"}}})
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
         for mgr in ("uv", "poetry", "pnpm", "yarn"):
             self.assertNotIn(mgr, content)
+
+    # --- Phase 1.2.4: bundled vs installable manager install logic --------
+
+    def test_default_manager_for_java_installs_via_mise(self):
+        # Heart of the user-reported bug: accepting Java's default
+        # `[maven]` previously left Maven uninstalled because mise
+        # only emitted `mise use --global` for non-default managers.
+        # bundled_managers=() for java forces install for any pick.
+        content = self._generate({"languages": {"java": {"version": "21", "manager": "maven"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global maven", dev)
+
+    def test_user_picked_gradle_for_java_installs_via_mise(self):
+        # Override path still works: explicit gradle gets installed.
+        content = self._generate({"languages": {"java": {"version": "21", "manager": "gradle"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global gradle", dev)
+        # And maven is NOT installed (user picked gradle, not maven).
+        self.assertNotIn("mise use --global maven", dev)
+
+    def test_default_manager_for_python_does_not_install_via_mise(self):
+        # pip is bundled with CPython; mise installs Python so pip
+        # arrives for free. No separate `mise use --global pip` line.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("mise use --global pip", dev)
+
+    def test_bundled_manager_skipped_even_when_explicitly_chosen(self):
+        # User explicitly types `manager = "pip"` — still skipped
+        # because pip is bundled either way. No double-install.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("mise use --global pip", dev)
+
+    def test_user_picked_uv_for_python_installs_via_mise(self):
+        # Non-bundled override: uv installs.
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global uv", dev)
+
+    # --- Phase 1.2.7: uv attestation workaround ---------------------------
+
+    def test_uv_install_uses_attestation_workaround_env_prefix(self):
+        """Phase 1.2.7: aqua-registry expects a workflow-signed
+        build-provenance attestation but uv 0.11.x publishes a release-
+        type attestation signed by GitHub's release infrastructure. mise
+        rejects the mismatch and the install aborts. Disabling the aqua
+        attestation gate on this one line keeps mise's sha256 checksum
+        verification on (same trust as Astral's official install
+        script). Asserts the rendered uv install carries the
+        MISE_AQUA_GITHUB_ATTESTATIONS=false prefix in front of the
+        `mise use --global uv` command."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+
+    def test_uv_install_emits_attestation_workaround_comment(self):
+        """Per design_principles.md §Trust & Verification: any verification
+        layer being disabled must be visible in the artifact users read
+        (the generated .alcatrazer/Dockerfile). The comment block above
+        the uv RUN explains what's disabled, why, and points at the
+        design doc for full detail. Asserts the comment mentions
+        aqua-registry, sha256 checksum (the fallback), and the design-
+        doc anchor — so a reader who isn't following along can chase
+        the explanation themselves."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("aqua-registry", dev)
+        self.assertIn("sha256 checksum", dev)
+        self.assertIn("more_languages_support.md", dev)
+
+    def test_uv_install_lands_in_separate_run_block(self):
+        """Inline `#` comments inside a multi-line RUN are technically
+        valid but parser-fragile across builders. Splitting the uv
+        install into its own RUN keeps comment scope unambiguous: each
+        comment sits directly above its own RUN. Costs one extra Docker
+        layer (rounding-error). Asserts the line carrying
+        `MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv` is
+        preceded by its own `RUN` keyword, not chained off the main
+        mise-uses RUN via `&& \\`."""
+        content = self._generate({"languages": {"python": {"version": "3.12", "manager": "uv"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+
+    def test_non_misaligned_managers_emit_no_attestation_workaround(self):
+        """Surgical, not blanket: tools whose aqua attestation check
+        works as expected (or that don't go through aqua at all) must
+        render exactly as Phase 1.2.4 produces them — no env-var prefix,
+        no aqua-related comment block. Covers all current non-misaligned
+        manager picks across the supported languages."""
+        cases = [
+            ("python", "3.12", "pip"),
+            ("python", "3.12", "poetry"),
+            ("python", "3.12", "pipenv"),
+            ("node", "22", "npm"),
+            ("node", "22", "pnpm"),
+            ("node", "22", "yarn"),
+            ("java", "21", "maven"),
+            ("java", "21", "gradle"),
+        ]
+        for lang, version, manager in cases:
+            with self.subTest(language=lang, manager=manager):
+                content = self._generate(
+                    {"languages": {lang: {"version": version, "manager": manager}}}
+                )
+                dev = self._slice(content, "FROM ai-base AS dev")
+                self.assertNotIn("MISE_AQUA_GITHUB_ATTESTATIONS", dev)
+                self.assertNotIn("aqua-registry", dev)
+
+    def test_uv_workaround_does_not_break_coalesced_run_for_other_tools(self):
+        """When uv is mixed with another language, the non-misaligned
+        installs (python runtime, node runtime) keep coalescing in the
+        existing single RUN. Only uv splits off into its own RUN with
+        the workaround. Asserts both: the main RUN still chains
+        python@3.13 with node@22 via `&& \\`, AND a separate
+        `RUN MISE_AQUA_GITHUB_ATTESTATIONS=false …` line for uv exists
+        below it."""
+        content = self._generate(
+            {
+                "languages": {
+                    "python": {"version": "3.13", "manager": "uv"},
+                    "node": {"version": "22", "manager": "npm"},
+                }
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # The main RUN coalesces python and node runtimes.
+        self.assertRegex(
+            dev,
+            r"RUN mise use --global python@3\.13 && \\\n\s+mise use --global node@22",
+        )
+        # uv lives in its own RUN below.
+        self.assertIn("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv", dev)
+        # And the uv RUN appears AFTER the coalesced runtime RUN.
+        idx_main = dev.index("RUN mise use --global python@3.13")
+        idx_uv = dev.index("RUN MISE_AQUA_GITHUB_ATTESTATIONS=false mise use --global uv")
+        self.assertLess(idx_main, idx_uv)
+
+    def test_node_default_npm_skipped_node_runtime_installed(self):
+        # npm bundled with node — runtime installs but npm doesn't
+        # need a separate line.
+        content = self._generate({"languages": {"node": {"version": "22", "manager": "npm"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global node@22", dev)
+        self.assertNotIn("mise use --global npm", dev)
+
+    def test_rust_cargo_skipped_runtime_only_install(self):
+        content = self._generate({"languages": {"rust": {"version": "1.75", "manager": "cargo"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("mise use --global rust@1.75", dev)
+        self.assertNotIn("mise use --global cargo", dev)
+
+    def test_dotnet_self_bundled_no_separate_manager_install(self):
+        content = self._generate(
+            {"languages": {"dotnet": {"version": "10.0.100", "manager": "dotnet"}}}
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # Only one `mise use --global dotnet@…` line — the manager
+        # name `dotnet` matches the runtime, so it's not double-emitted.
+        self.assertIn("mise use --global dotnet@10.0.100", dev)
+        # No standalone `mise use --global dotnet` (without the @version).
+        self.assertNotIn("mise use --global dotnet\n", dev + "\n")
 
     def test_os_packages_become_apt_install_in_dev_stage(self):
         content = self._generate(
@@ -131,6 +420,134 @@ class DockerPrisonDockerfileGenerationTests(unittest.TestCase):
         content = self._generate({"languages": {"python": {"version": "3.12"}}})
         dev = self._slice(content, "FROM ai-base AS dev")
         self.assertNotIn("apt-get install", dev)
+
+    # --- Phase 1.2: per-language required_os_packages -----------------------
+
+    def test_dotnet_required_os_package_libicu74_appears_in_apt_install(self):
+        # .NET's runtime needs ICU; declaring [languages.dotnet] must auto-add
+        # libicu74 to the build-time apt-install line so the agent doesn't
+        # need runtime sudo to fix the missing-ICU crash.
+        content = self._generate({"languages": {"dotnet": {"version": "10.0.100"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("apt-get install", dev)
+        self.assertIn("libicu74", dev)
+
+    def test_dotnet_alone_creates_apt_install_block(self):
+        # Even without any user [os].packages, the language's required deps
+        # alone are enough to emit the apt-install block.
+        content = self._generate({"languages": {"dotnet": {"version": "10.0.100"}}})
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("USER root", dev)
+        self.assertIn("apt-get update && apt-get install -y", dev)
+
+    def test_no_libicu74_when_dotnet_not_declared(self):
+        # Regression guard: required_os_packages stay scoped to the language
+        # that declared them — a python-only project must not pull libicu74.
+        content = self._generate(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertNotIn("libicu", dev)
+
+    def test_dotnet_required_packages_unioned_with_user_packages(self):
+        content = self._generate(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        self.assertIn("build-essential", dev)
+        self.assertIn("libicu74", dev)
+
+    def test_dotnet_required_packages_deduped_when_user_already_declares(self):
+        # If a user already lists libicu74 explicitly, the merged apt-install
+        # line must contain it exactly once — not twice.
+        content = self._generate(
+            {
+                "os": {"packages": ["libicu74"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        dev = self._slice(content, "FROM ai-base AS dev")
+        # Count occurrences on the apt-install line specifically (the package
+        # name might also appear in unrelated comments later if added; we
+        # care about the install command).
+        install_line_idx = dev.find("apt-get install")
+        end_of_run_idx = dev.find("rm -rf /var/lib/apt/lists", install_line_idx)
+        install_segment = dev[install_line_idx:end_of_run_idx]
+        self.assertEqual(install_segment.count("libicu74"), 1)
+
+    def _apt_install_segment(self, dev: str) -> str:
+        """Slice the apt-install command's argument list out of the dev stage.
+        Bounded by `apt-get install` on the left and the cleanup `rm -rf
+        /var/lib/apt/lists` on the right — package names appear only here."""
+        start = dev.find("apt-get install")
+        end = dev.find("rm -rf /var/lib/apt/lists", start)
+        self.assertGreater(start, -1, "no apt-get install line found")
+        self.assertGreater(end, start, "no apt-list cleanup found")
+        return dev[start:end]
+
+    def test_apt_install_preserves_user_declared_order(self):
+        # Reordering [os].packages may be load-bearing for the user (intent
+        # or dependency ordering for any package manager that's order-
+        # sensitive). The renderer must NOT silently sort — whatever order
+        # the user wrote is the order that lands in the apt-get install line.
+        content = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev", "build-essential", "libpq-dev"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        segment = self._apt_install_segment(self._slice(content, "FROM ai-base AS dev"))
+        idx_zlib = segment.find("zlib1g-dev")
+        idx_build = segment.find("build-essential")
+        idx_pq = segment.find("libpq-dev")
+        self.assertLess(idx_zlib, idx_build)
+        self.assertLess(idx_build, idx_pq)
+
+    def test_language_required_packages_append_after_user_packages(self):
+        # User-declared packages come first (their explicit list, their
+        # order); language-injected requirements ride along behind.
+        # Picking `zlib1g-dev` here is deliberate: it sorts AFTER `libicu74`
+        # alphabetically, so under a sort-based merge the language's
+        # libicu74 would come first and this assertion would fail. A
+        # first-occurrence dedupe with "user list first" is the only
+        # implementation that keeps user packages ahead in this case.
+        content = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev"]},
+                "languages": {"dotnet": {"version": "10.0.100"}},
+            }
+        )
+        segment = self._apt_install_segment(self._slice(content, "FROM ai-base AS dev"))
+        self.assertLess(segment.find("zlib1g-dev"), segment.find("libicu74"))
+
+    def test_reordering_user_packages_changes_dockerfile(self):
+        # Counterpart to "preserves user order": if the user reorders, the
+        # rendered Dockerfile reflects that. Same logical inputs in different
+        # order are NOT byte-equivalent — and that's correct, because we
+        # don't second-guess the user's ordering. needs_rebuild firing on
+        # reorder is the right behavior, not a flap.
+        a = self._generate(
+            {
+                "os": {"packages": ["zlib1g-dev", "build-essential"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        b = self._generate(
+            {
+                "os": {"packages": ["build-essential", "zlib1g-dev"]},
+                "languages": {"python": {"version": "3.12"}},
+            }
+        )
+        self.assertNotEqual(
+            self._slice(a, "FROM ai-base AS dev"),
+            self._slice(b, "FROM ai-base AS dev"),
+        )
 
     def test_verify_block_always_chains_git_mise_claude(self):
         content = self._generate({"languages": {"python": {"version": "3.12"}}})
@@ -240,7 +657,9 @@ class DockerPrisonBuildTests(unittest.TestCase):
         self.assertIn("--build-arg", cmd)
         self.assertIn("USER_UID=1007", cmd)
         self.assertIn("-t", cmd)
-        self.assertIn("alcatraz-workspace:local", cmd)
+        # Phase 1.2.5: image tag is path-derived, not a hardcoded literal.
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertIn(expected_tag, cmd)
         self.assertIn("-f", cmd)
         self.assertIn(str(self.alcatraz_dir / "Dockerfile"), cmd)
         # Build context is tight (just .alcatrazer/), not the whole project.
@@ -310,7 +729,9 @@ class DockerPrisonQueryTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).query(["id"])
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        # Phase 1.2.5: container name is path-derived, not "workspace".
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", expected_container])
         self.assertEqual(cmd[5:], ["id"])
 
     def test_captures_stdout_and_stderr_as_text(self):
@@ -371,10 +792,11 @@ class DockerPrisonStartTests(unittest.TestCase):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             DockerPrison(self.project_dir).start()
         cmd = mock_run.call_args.args[0]
+        ident = docker_prison._identity_for_project(self.project_dir)
         self.assertEqual(cmd[:3], ["docker", "run", "-d"])
         self.assertIn("--name", cmd)
-        self.assertIn("workspace", cmd)
-        self.assertIn("alcatraz-workspace:local", cmd)
+        self.assertIn(f"workspace-{ident}", cmd)
+        self.assertIn(f"alcatraz-workspace:{ident}", cmd)
         self.assertEqual(cmd[-2:], ["sleep", "infinity"])
 
     def test_workspace_dir_bind_mounted_to_slash_workspace(self):
@@ -474,7 +896,8 @@ class DockerPrisonExecTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).exec(["bash", "-c", "uv sync"])
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:5], ["docker", "exec", "-u", "agent", expected_container])
         self.assertEqual(cmd[5:], ["bash", "-c", "uv sync"])
 
     def test_returns_the_exit_code(self):
@@ -531,11 +954,12 @@ class DockerPrisonImageExistsTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).image_exists()
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd, ["docker", "image", "inspect", "alcatraz-workspace:local"])
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd, ["docker", "image", "inspect", expected_tag])
 
 
 class DockerPrisonIsRunningTests(unittest.TestCase):
-    """is_running() uses `docker ps --filter name=^workspace$ --filter status=running`."""
+    """is_running() uses `docker ps --filter name=^workspace-<ident>$ --filter status=running`."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -543,11 +967,14 @@ class DockerPrisonIsRunningTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_true_when_container_name_returned(self):
+        # Mocked `docker ps` echoes back the per-repo container name
+        # (Phase 1.2.5: no longer the literal "workspace").
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         with patch.object(
             docker_prison.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="workspace\n", stderr=""
+                args=[], returncode=0, stdout=f"{expected_container}\n", stderr=""
             ),
         ):
             self.assertTrue(DockerPrison(self.project_dir).is_running())
@@ -568,8 +995,11 @@ class DockerPrisonIsRunningTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).is_running()
         cmd_str = " ".join(mock_run.call_args.args[0])
-        # Anchored name filter so "workspace" doesn't match "my-workspace-2".
-        self.assertIn("name=^workspace$", cmd_str)
+        # Anchored name filter so e.g. "workspace-foo-…" doesn't match
+        # "my-workspace-foo-…2" (Phase 1.2.5: container name is now path-
+        # derived, but the exact-anchor invariant is what matters).
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn(f"name=^workspace-{ident}$", cmd_str)
         self.assertIn("status=running", cmd_str)
 
 
@@ -600,7 +1030,8 @@ class DockerPrisonStopTests(unittest.TestCase):
         ):
             DockerPrison(self.project_dir).stop()
         mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "stop", expected_container])
 
 
 class DockerPrisonResumeTests(unittest.TestCase):
@@ -625,7 +1056,8 @@ class DockerPrisonResumeTests(unittest.TestCase):
         ) as mock_run:
             DockerPrison(self.project_dir).resume()
         mock_run.assert_called_once()
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "start", "workspace"])
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "start", expected_container])
 
     def test_raises_prison_start_error_on_failure(self):
         from alcatrazer.alcatraz import PrisonStartError
@@ -656,11 +1088,12 @@ class DockerPrisonExistsTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_true_when_container_name_returned(self):
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         with patch.object(
             docker_prison.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="workspace\n", stderr=""
+                args=[], returncode=0, stdout=f"{expected_container}\n", stderr=""
             ),
         ):
             self.assertTrue(DockerPrison(self.project_dir).exists())
@@ -689,7 +1122,8 @@ class DockerPrisonExistsTests(unittest.TestCase):
         cmd_str = " ".join(args)
         self.assertNotIn("status=running", cmd_str)
         # Anchored name filter to avoid substring matches.
-        self.assertIn("name=^workspace$", cmd_str)
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn(f"name=^workspace-{ident}$", cmd_str)
 
 
 class DockerPrisonRemoveTests(unittest.TestCase):
@@ -718,8 +1152,9 @@ class DockerPrisonRemoveTests(unittest.TestCase):
             ) as mock_run,
         ):
             DockerPrison(self.project_dir).remove()
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
         # -f so running containers are also removed (belt + suspenders).
-        self.assertEqual(mock_run.call_args.args[0], ["docker", "rm", "-f", "workspace"])
+        self.assertEqual(mock_run.call_args.args[0], ["docker", "rm", "-f", expected_container])
 
 
 class DockerPrisonNeedsRebuildTests(unittest.TestCase):
@@ -746,6 +1181,249 @@ class DockerPrisonNeedsRebuildTests(unittest.TestCase):
         )
         changed = {"languages": {"python": {"version": "3.13"}}}
         self.assertTrue(DockerPrison(self.project_dir).needs_rebuild(changed))
+
+
+class DockerPrisonShellTests(unittest.TestCase):
+    """Phase 1.2.5: `DockerPrison.shell()` opens an interactive bash inside
+    the running container as the agent user. Implementation uses os.execvp
+    so signals (Ctrl+C, Ctrl+D) flow through and the alcatrazer Python
+    process is replaced — never returns on success."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_calls_execvp_with_docker_exec_argv(self):
+        # Container running → shell() invokes os.execvp with the right
+        # docker-exec command. Patching execvp because the real call would
+        # replace this Python process.
+        with (
+            patch.object(DockerPrison, "is_running", return_value=True),
+            patch("os.execvp") as mock_execvp,
+        ):
+            DockerPrison(self.project_dir).shell()
+        mock_execvp.assert_called_once()
+        args = mock_execvp.call_args.args
+        self.assertEqual(args[0], "docker")
+        expected_container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(
+            args[1],
+            [
+                "docker",
+                "exec",
+                "-it",
+                "-u",
+                "agent",
+                "-w",
+                "/workspace",
+                expected_container,
+                "bash",
+            ],
+        )
+
+    def test_raises_prison_start_error_when_not_running(self):
+        # User ran `alcatrazer visit` against a stopped/missing alcatraz —
+        # shell() must error explicitly rather than silently spawn nothing.
+        # cmd_visit catches this and prints a friendly message.
+        with (
+            patch.object(DockerPrison, "is_running", return_value=False),
+            self.assertRaises(PrisonStartError),
+        ):
+            DockerPrison(self.project_dir).shell()
+
+
+class DockerfileConfigHashLabelTests(unittest.TestCase):
+    """Phase 1.2.6: rendered Dockerfile carries an
+    `alcatrazer.config_hash` LABEL on stage 3 so the running image
+    can be matched against the current recipe later. The hash is the
+    SHA-256 (first 16 hex chars) of the Dockerfile body excluding the
+    LABEL line itself (avoids chicken-and-egg)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def _render(self, data: dict) -> str:
+        DockerPrison(self.project_dir).generate_prison(data)
+        return (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
+
+    def _extract_label(self, content: str) -> str:
+        """Return the value of the alcatrazer.config_hash LABEL, or '' if
+        the LABEL is absent."""
+        import re
+
+        m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', content)
+        return m.group(1) if m else ""
+
+    def test_rendered_dockerfile_emits_config_hash_label(self):
+        content = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        self.assertRegex(content, r'LABEL alcatrazer\.config_hash="[0-9a-f]{16}"')
+
+    def test_label_appears_in_dev_stage_after_dev_marker(self):
+        # LABEL must apply to stage 3 (the final image), so it must
+        # follow `FROM ai-base AS dev`. If it leaks into dev-base, the
+        # base would carry a stale label.
+        content = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        idx_dev = content.find("FROM ai-base AS dev")
+        idx_label = content.find("LABEL alcatrazer.config_hash")
+        self.assertGreater(idx_dev, -1)
+        self.assertGreater(idx_label, idx_dev)
+
+    def test_same_input_yields_same_hash(self):
+        a = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        self.assertEqual(self._extract_label(a), self._extract_label(b))
+        self.assertNotEqual(self._extract_label(a), "")
+
+    def test_different_inputs_yield_different_hashes(self):
+        a = self._render({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = self._render({"languages": {"python": {"version": "3.13", "manager": "pip"}}})
+        self.assertNotEqual(self._extract_label(a), self._extract_label(b))
+
+    def test_different_os_packages_yield_different_hashes(self):
+        # Sanity: hash is over the whole Dockerfile body, not just the
+        # `[languages]` section. A different `[os]` section must
+        # produce a different hash.
+        a = self._render(
+            {
+                "os": {"packages": ["libpq-dev"]},
+                "languages": {"python": {"version": "3.12", "manager": "pip"}},
+            }
+        )
+        b = self._render(
+            {
+                "os": {"packages": ["build-essential"]},
+                "languages": {"python": {"version": "3.12", "manager": "pip"}},
+            }
+        )
+        self.assertNotEqual(self._extract_label(a), self._extract_label(b))
+
+
+class DockerPrisonRecipeHashTests(unittest.TestCase):
+    """Phase 1.2.6: `prison.recipe_hash(coding_env)` returns the same
+    16-hex hash that ends up in the rendered Dockerfile's LABEL. cmd_start
+    uses this to know what to expect from the running image's label."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_returns_16_hex_char_string(self):
+        h = DockerPrison(self.project_dir).recipe_hash(
+            {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        )
+        self.assertRegex(h, r"^[0-9a-f]{16}$")
+
+    def test_is_deterministic(self):
+        prison = DockerPrison(self.project_dir)
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        self.assertEqual(prison.recipe_hash(data), prison.recipe_hash(data))
+
+    def test_changes_with_input(self):
+        prison = DockerPrison(self.project_dir)
+        a = prison.recipe_hash({"languages": {"python": {"version": "3.12", "manager": "pip"}}})
+        b = prison.recipe_hash({"languages": {"python": {"version": "3.13", "manager": "pip"}}})
+        self.assertNotEqual(a, b)
+
+    def test_matches_label_in_rendered_dockerfile(self):
+        # The hash returned by recipe_hash MUST equal the hash baked
+        # into the LABEL, otherwise image_matches would never agree
+        # with anything `recipe_hash` produces.
+        prison = DockerPrison(self.project_dir)
+        data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
+        prison.generate_prison(data)
+        dockerfile = (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
+        import re
+
+        m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', dockerfile)
+        self.assertIsNotNone(m)
+        self.assertEqual(prison.recipe_hash(data), m.group(1))
+
+
+class DockerPrisonImageMatchesTests(unittest.TestCase):
+    """Phase 1.2.6: `prison.image_matches(expected_hash)` reports whether
+    the running image carries an `alcatrazer.config_hash` LABEL equal to
+    the expected hash. Returns False on missing image, missing label, or
+    label mismatch (so older alcatrazer-built images automatically
+    trigger one rebuild after upgrade)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_returns_false_when_image_missing(self):
+        with patch.object(DockerPrison, "image_exists", return_value=False):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_false_when_label_absent(self):
+        # docker inspect with --format on a missing label returns "".
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_false_when_label_mismatches(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="differenthash00\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertFalse(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_returns_true_when_label_matches_exactly(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="a3f7c9e2deadbeef\n", stderr=""
+                ),
+            ),
+        ):
+            prison = DockerPrison(self.project_dir)
+            self.assertTrue(prison.image_matches("a3f7c9e2deadbeef"))
+
+    def test_invokes_docker_inspect_with_format_flag(self):
+        with (
+            patch.object(DockerPrison, "image_exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="a3f7c9e2deadbeef\n", stderr=""
+                ),
+            ) as mock_run,
+        ):
+            prison = DockerPrison(self.project_dir)
+            prison.image_matches("a3f7c9e2deadbeef")
+        cmd = mock_run.call_args.args[0]
+        # Tag is path-derived (Phase 1.2.5).
+        expected_tag = f"alcatraz-workspace:{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:3], ["docker", "inspect", expected_tag])
+        # Format extracts the alcatrazer.config_hash label value.
+        self.assertIn("--format", cmd)
+        format_idx = cmd.index("--format")
+        self.assertIn("alcatrazer.config_hash", cmd[format_idx + 1])
 
 
 if __name__ == "__main__":

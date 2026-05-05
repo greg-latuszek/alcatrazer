@@ -3,6 +3,7 @@
 Usage:
     alcatrazer init        — one-time: wizards + config + recipe on disk
     alcatrazer start       — build (if needed) + start the workspace container
+    alcatrazer visit       — open an interactive shell inside the running Alcatraz
     alcatrazer stop        — freeze the Alcatraz (writable layer preserved)
     alcatrazer clear       — throw away the Alcatraz (next start recreates)
     alcatrazer test        — run bundled test suite to verify installation
@@ -69,6 +70,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers.add_parser(
+        "visit",
+        help="Step inside the running Alcatraz (interactive shell as agent)",
+    )
+    subparsers.add_parser(
         "stop",
         help="Freeze the Alcatraz (writable layer preserved for a later resume)",
     )
@@ -108,6 +113,8 @@ def main():
         if rc == 0 and args.run_selftest:
             rc = start_module.cmd_selftest(Path.cwd())
         sys.exit(rc)
+    elif args.command == "visit":
+        sys.exit(start_module.cmd_visit(Path.cwd()))
     elif args.command == "stop":
         sys.exit(start_module.cmd_stop(Path.cwd()))
     elif args.command == "clear":
