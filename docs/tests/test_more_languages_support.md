@@ -66,7 +66,7 @@ For each language (run in separate fresh repos):
 3. Repeat with `dotnet`, `java`, then a multi-language combo
    `python, node, dotnet, java`.
 
-## B. Build & run per language (Phase 1.2, 1.2.2, 1.2.4)
+## B. Build & run per language (Phase 1.2, 1.2.2, 1.2.4, 1.2.7)
 
 For each `{python, node, rust, go, dotnet, java}`, after init run
 `alcatrazer start`:
@@ -80,7 +80,7 @@ Then `alcatrazer visit` and inside the container:
 
 | Lang   | Verify |
 |--------|--------|
-| python | `python --version`, `pip --version` (bundled), then test `manager = "uv"` reinit → `uv --version` works |
+| python | `python --version`, `pip --version` (bundled). Then **per-manager rebuild check** — the Phase 1.2.4 bundled-vs-installable rule plus the Phase 1.2.7 uv attestation workaround. For each of `manager = "uv"`, `"poetry"`, `"pipenv"`: edit toml, `alcatrazer start` (image rebuilds), `alcatrazer visit`, run `which <mgr> && <mgr> --version`. uv is the load-bearing case — its build path goes through the attestation workaround in `_render_mise_uses` (split RUN with `MISE_AQUA_GITHUB_ATTESTATIONS=false` prefix and explanatory comment). Cross-check the saved Dockerfile at `.alcatrazer/Dockerfile` shows that prefix + comment when uv is picked, and shows neither when uv isn't. |
 | node   | `node --version`, `npm --version`, then `manager = "pnpm"` → `pnpm --version` |
 | rust   | `cargo --version`, `rustc --version` |
 | go     | `go version` |
@@ -89,6 +89,15 @@ Then `alcatrazer visit` and inside the container:
 
 **Java distribution probe** (Phase 1.2.2): `version = "corretto-21"` in
 `[languages.java]`, rebuild, verify `java -version 2>&1` shows Corretto.
+
+**uv attestation workaround removal probe** (Phase 1.2.7): periodically
+re-check whether the workaround is still needed. With `manager = "uv"`,
+hand-edit `.alcatrazer/Dockerfile` to drop the
+`MISE_AQUA_GITHUB_ATTESTATIONS=false` prefix from the uv RUN line, then
+`docker build` from `.alcatrazer/`. If the build now succeeds, upstream
+has caught up — open a PR removing `"uv"` from
+`languages.AQUA_ATTESTATION_MISALIGNED`. If it still fails with the
+attestation-mismatch error, the workaround stays.
 
 ## C. Inmates-not-aware-of-Alcatraz audit (Principle 2)
 
@@ -273,6 +282,7 @@ maps to a section here:
 | 1.2.4 — manager always written / bundled | A, B |
 | 1.2.5 — per-repo naming + visit | D, E, K |
 | 1.2.6 — config_hash LABEL | F |
+| 1.2.7 — uv attestation workaround | B |
 
 When a new Phase 1.X sub-phase lands, extend the relevant section above
 or add a new one and update this table.
