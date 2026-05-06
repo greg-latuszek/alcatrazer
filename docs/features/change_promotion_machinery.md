@@ -170,7 +170,8 @@ git -C $inner format-patch                                    \
   | git -C $outer am                                          \
     --committer-date-is-author-date                           \
     --keep-non-patch                                          \
-    --whitespace=nowarn
+    --whitespace=nowarn                                       \
+    --empty=drop
 ```
 
 - `${last_promoted_or_inner_root}..refs/heads/main` excludes the
@@ -189,6 +190,12 @@ git -C $inner format-patch                                    \
 - `--committer-date-is-author-date` keeps the committer timestamp
   identical to the author timestamp, so reflogs and `git log` show
   one chronology, not two.
+- `--empty=drop` silently skips patches whose changes are already
+  present in outer (e.g., the user manually applied the same edit on
+  `feat/X` while agents were working). Matches the "transparent
+  collaboration" framing — if user and agent converged on the same
+  change, just move on. Real conflicts (overlapping but different
+  edits) still fail and pause as designed.
 
 ### How this removes the bugs by construction
 
@@ -383,26 +390,77 @@ If agents create internal branches and merge them in:
   parent; the side-branch commits don't appear individually. Outer
   sees the merge commit's tree as a single patch.
 
-The constraint on agents is "keep inner-`main`'s first-parent meaningful" — they're free to use side branches for coordination, but the
-merge points are what surface in outer. This isn't enforced; it's
-documented in the workspace's CLAUDE.md template.
+**Agents are not informed of this.** A core principle is that agents
+inside the workspace must believe they're in a vanilla repo — they
+don't know outer exists, don't know about promotion, don't know
+about this constraint. So we don't add a CLAUDE.md instruction
+saying "keep inner-`main` linear". `--first-parent` accepts whatever
+topology agents produce on inner-`main` and surfaces it to outer as
+a sequence of patches. If a future-merge produces an undesirable
+patch (e.g. a giant merge-of-many-files), that's a workspace-level
+conversation about how agents coordinate, not a promotion concern.
 
 ## Recording state
 
-Two new persisted files at `.alcatrazer/`:
+All new fields land in the existing `.alcatrazer/state.json`. The
+`state` module (`src/alcatrazer/state.py`) is already documented as
+the seed of the infocenter layer, with additive-merge semantics and
+atomic writes — exactly what we need. No new files; one source of
+truth for `alcatrazer status` to read.
 
-- `inner-root` — SHA of the workspace's `Initial commit`. Format-patch
-  range boundary.
-- `pinned-branch` — outer's HEAD branch name at start time.
+Fields added:
 
-Both are written once at `alcatrazer start` (by `snapshot.py` and
-`start.py` respectively) and never updated. Both let the daemon
-enforce its invariants without re-deriving them every poll.
+- `inner_root` — SHA of the workspace's `Initial commit`.
+  Format-patch range boundary. Written once by `snapshot.py` at
+  workspace creation; never updated.
+- `pinned_branch` — outer's HEAD branch name at `alcatrazer start`.
+  Written once by `snapshot.py` (since the snapshot itself is what
+  defines what the workspace was built from); never updated.
+- `last_promoted` — SHA of the last successfully promoted inner-`main`
+  commit. Updated by the daemon after each successful `am`. Replaces
+  the per-branch `promoted-tips.json` (which goes away).
+- `paused` — `{ "reason": "<message>" } | null`. Updated by the
+  daemon when entering/leaving the working-tree-conflict state.
+  Replaces `paused-branches.json` (which goes away).
 
-The existing `promoted-tips.json` collapses from `{branch: sha}` to
-a single `last-promoted.json` entry (the SHA of the last successfully
-promoted inner-`main` commit). The existing `paused-branches.json`
-collapses to `paused.json` (single boolean + reason).
+`state.SCHEMA_VERSION` bumps `1 → 2` in the same change. See
+"Breaking-change posture" below.
+
+## Breaking-change posture
+
+v0.0.5 changes both the `coding-environment.toml` schema (removes
+`[promotion-daemon].mode` and `[promotion-daemon].branches`) and the
+`.alcatrazer/state.json` layout. A clean automatic migration would
+require: detecting old layouts, asking permission, possibly draining
+an old daemon — too much code for a feature that has zero external
+users today (pre-1.0.0).
+
+Decision: **no automatic migration.** Instead:
+
+- Bump `coding-environment.toml`'s `schema_version` field to `2`.
+- Bump `state.SCHEMA_VERSION` to `2`.
+- `alcatrazer init` / `start` / `status` detect a `schema_version`
+  mismatch (or absent field, or legacy `[promotion-daemon].mode`
+  key) and refuse with a transparent message:
+
+  ```
+  alcatrazer: this directory was set up by an older version (schema 1).
+  v0.0.5 reworks promotion and is not backwards compatible.
+
+  To upgrade:
+    1. If a daemon is running: alcatrazer stop      (using v0.0.4)
+    2. rm -rf .alcatrazer/ coding-environment.toml
+    3. alcatrazer init                              (using v0.0.5)
+    4. alcatrazer start
+
+  See CHANGELOG for what changed and why.
+  ```
+
+- CHANGELOG entry calls out the breaking change explicitly and
+  re-states the four steps.
+
+Pre-1.0.0, this is the right tradeoff: explicit user action over
+silent migration code that nobody benefits from.
 
 ## What this proposal replaces
 
@@ -418,6 +476,9 @@ collapses to `paused.json` (single boolean + reason).
 - `find_conflict_branches()`, `check_resolved_conflicts()`,
   `detect_diverged_branches()`, `_promote_single_branch()`,
   `rewrite_refs()` — all unused after the rewrite.
+- `promoted-tips.json` and `paused-branches.json` files entirely —
+  their contents fold into `state.json` as `last_promoted` and
+  `paused` fields. Cleaner home, single read for `alcatrazer status`.
 - **`alcatraz-tree` mode entirely.** The new model makes mirror mode
   actually work AND naturally provides what alcatraz-tree was trying
   to: every agent commit is visible in `git log feat/X` with the
@@ -448,11 +509,13 @@ collapses to `paused.json` (single boolean + reason).
 - `src/alcatrazer/snapshot.py`
   - `create_initial_commit()` returns the new commit SHA.
   - `snapshot_workspace()` reads outer's *current branch name* (not
-    hardcoded `main`), extracts that branch's tree, writes
-    `.alcatrazer/inner-root` (SHA of the Initial commit) and
-    `.alcatrazer/pinned-branch` (outer branch name).
-  - Refuses to start if outer is in detached HEAD with a clear
-    message.
+    hardcoded `main`), extracts that branch's tree, then calls
+    `state.update_state(alcatraz_dir, inner_root=<sha>,
+    pinned_branch=<name>)`. Both fields land in the same `state.json`
+    write.
+  - Detached-HEAD precondition check lives in `start.py` (it's about
+    outer's runtime state, not the snapshot mechanics), but
+    `snapshot.py` is the writer of the resulting state fields.
 
 - `src/alcatrazer/promote.py`
   - New `rewrite_from_header(stream: bytes, name: str, email: str) -> bytes`.
@@ -463,27 +526,31 @@ collapses to `paused.json` (single boolean + reason).
     nothing to promote.
   - New `apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> None`.
     Runs `git -C target am --committer-date-is-author-date
-    --keep-non-patch --whitespace=nowarn` with stream on stdin and
-    `GIT_AUTHOR_*` / `GIT_COMMITTER_*` set in env. Raises a typed
-    `PromotionConflictError` on non-zero exit, after running
+    --keep-non-patch --whitespace=nowarn --empty=drop` with stream on
+    stdin and `GIT_AUTHOR_*` / `GIT_COMMITTER_*` set in env. Raises
+    a typed `PromotionConflictError` on non-zero exit, after running
     `git am --abort`.
   - New `check_pin(target: Path, pinned_branch: str) -> PinStatus`.
     Returns one of `OK`, `OFF_PIN`, `DETACHED`, `PIN_DELETED`. Used
     by daemon to decide held vs. active.
-  - New `promote_once(source, target, name, email, inner_root,
-    pinned_branch, last_promoted_state_file) -> PromotionResult`.
-    Single-cycle entry. Returns `{status, commit_count,
+  - New `promote_once(source, target, alcatraz_dir, name, email) -> PromotionResult`.
+    Single-cycle entry. Reads `inner_root`, `pinned_branch`,
+    `last_promoted` from `state.load_state(alcatraz_dir)`. Writes
+    updated `last_promoted` and `paused` fields back via
+    `state.update_state()`. Returns `{status, commit_count,
     new_promoted_tip}`.
   - Deletes: `promote()`, `promote_with_conflict_handling()`,
     `resolve_branches()`, `rewrite_refs()`, `find_conflict_branches()`,
     `check_resolved_conflicts()`, `detect_diverged_branches()`,
-    `_promote_single_branch()`. Marks-file handling and namespace
-    logic both go.
+    `_promote_single_branch()`, `load_promoted_tips()`,
+    `save_promoted_tips()`, `load_paused_branches()`,
+    `save_paused_branches()`. Marks-file handling, separate state
+    files, and namespace logic all go.
 
 - `src/alcatrazer/daemon.py`
-  - `run_cycle()` reads `pinned-branch` + `inner-root` once at
-    startup. Each cycle calls `check_pin()` then `promote_once()`.
-    Logs held/resumed/paused/promoted on state transition only.
+  - `run_cycle()` calls `check_pin()` then `promote_once()` (which
+    pulls its inputs from `state.json`). Logs held/resumed/paused/
+    promoted on state transition only.
   - Drops the `if mode == "mirror" / elif mode == "alcatraz-tree"`
     branching; one path.
   - Final-sync on shutdown obeys the same pin invariants. If outer
@@ -503,8 +570,21 @@ collapses to `paused.json` (single boolean + reason).
     `--discard-pending` flag.
 
 - `src/alcatrazer/config.py` (or wherever the schema lives)
-  - Removes `[promotion-daemon].mode` and `[promotion-daemon].branches`.
-    If users have these set, parser warns and ignores.
+  - Removes `[promotion-daemon].mode` and `[promotion-daemon].branches`
+    from the schema definition.
+  - Bumps `coding-environment.toml`'s `schema_version` to `2`.
+  - `init` / `start` / `status` refuse on `schema_version < 2` (or
+    absent, or with legacy keys present) with the upgrade message
+    described in "Breaking-change posture".
+
+- `src/alcatrazer/state.py`
+  - Bumps `SCHEMA_VERSION` to `2`.
+  - No API changes. The new fields (`inner_root`, `pinned_branch`,
+    `last_promoted`, `paused`) merge in via the existing
+    `update_state()` semantics.
+  - `load_state()` callers (in `start.py`, `daemon.py`,
+    `cmd_status`, `cmd_clear`) refuse on `schema_version < 2` the
+    same way `coding-environment.toml` does.
 
 - Tests
   - `tests/test_promote.py`
@@ -574,9 +654,12 @@ collapses to `paused.json` (single boolean + reason).
   - `README.md` — "Promotion" subsection rewritten for the new flow:
     branch off main, alcatrazer start, agents commit, your branch
     grows, push for PR.
-  - `CHANGELOG.md` — call out the upgrade path: *"v0.0.5 reworks
-    promotion. Run `alcatrazer clear && alcatrazer start` after
-    installing to re-snapshot existing workspaces."*
+  - `CHANGELOG.md` — call out the breaking change: *"v0.0.5
+    reworks promotion. **Not backwards compatible.** Stop any
+    running v0.0.4 daemon (`alcatrazer stop` with v0.0.4 installed),
+    delete `.alcatrazer/` and `coding-environment.toml`, then re-run
+    `alcatrazer init` and `alcatrazer start` with v0.0.5. See [link
+    to design doc] for what changed and why."*
 
 ## What this proposal does NOT do
 
@@ -603,11 +686,11 @@ collapses to `paused.json` (single boolean + reason).
 - **Does not introduce a new CLI subcommand.** Behavior surfaces
   through `alcatrazer status` (extended) and `alcatrazer clear`
   (extended with `--discard-pending`).
-- **Does not provide hot-swap backwards compatibility.** Users
-  running v0.0.4 daemons on the old mirror path run `alcatrazer
-  clear && alcatrazer start` after installing v0.0.5 to re-snapshot
-  with `inner-root` and `pinned-branch` recorded. No runtime
-  fallback for missing files — keeps the new path narrow.
+- **Does not provide automatic migration from v0.0.4.** Schema
+  bump to v2 + refusal-with-helpful-message is the upgrade path
+  (see "Breaking-change posture"). Pre-1.0.0, this is the right
+  tradeoff: explicit user action over silent migration code that
+  serves zero current users.
 
 ## Recommended order
 
@@ -638,14 +721,18 @@ prior estimate because alcatraz-tree retirement is bundled in).
 
 ## Open questions
 
-- **Inner-main merge policy in workspace CLAUDE.md.** Document the
-  `--first-parent` expectation so agents keep mainline meaningful, or
-  stay silent and let agents discover via failed promotions of merge
-  commits? Lean: document. The constraint is mild and the alternative
-  failure mode is a confused user.
-- **Multiple parallel agents inside the workspace.** Out of scope for
-  this design, but worth flagging: the inner-branches-as-coordination
-  story works only if there's no race between agents on inner-`main`.
-  Two agents both committing to inner-`main` simultaneously is a
-  workspace-level concern (agent orchestration), not a promotion
-  concern. Mention but don't solve here.
+None blocking. All design questions identified during iteration are
+settled:
+
+- `git am --empty` behavior → `--empty=drop`.
+- State storage → fold into existing `state.json` via the `state`
+  module; no new files; bump `SCHEMA_VERSION` to 2.
+- Detached-HEAD precondition placement → `start.py` runs the check;
+  `snapshot.py` writes the resulting state fields.
+- Migration policy → no automatic migration; bump
+  `coding-environment.toml` schema to 2, refuse with helpful upgrade
+  message; explicit pre-1.0.0 breaking change in CHANGELOG.
+- CLAUDE.md merge-policy instruction → no instruction; agents must
+  not be aware of Alcatraz's machinery (see "Inner-main linearity").
+- Multi-agent races on inner-`main` → out of scope; workspace-level
+  agent-orchestration concern, not a promotion concern.
