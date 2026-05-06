@@ -424,20 +424,22 @@ RED/GREEN/BLUE pieces across multiple PRs.
 
 Estimated total: ~4–6 hours including tests and doc.
 
+## Resolved questions
+- **Backwards compatibility with running alcatrazers.** Decided:
+  no hot-swap. After installing v0.0.5, users run `alcatrazer
+  clear && start` to re-snapshot, which records
+  `.alcatrazer/inner-root` as part of normal workspace creation.
+  No runtime fallback (no `git rev-list --max-parents=0` derivation
+  on missing file) — keeps the new mirror path narrow and the
+  startup invariant simple: `inner-root` exists ⇔ workspace is
+  v0.0.5+. CHANGELOG/release notes call this out.
+
 ## Open questions
 
 - **Conflict UX granularity.** When a branch pauses, do we
   surface it only via the daemon log, or also via a CLI like
   `alcatrazer status`? Lean toward log-first; add `status` only
   if real users surface a need.
-- **Backwards compatibility with running alcatrazers.** A user
-  who already has a daemon running on the old mirror path will
-  not have `.alcatrazer/inner-root` recorded. Two options: (a) the
-  daemon falls back to `git rev-list --max-parents=0` to derive
-  inner_root at runtime when the file is absent — simple, costs
-  one git call per startup; (b) require `alcatrazer clear &&
-  start` to re-snapshot. Lean (a) — it's free and keeps the
-  upgrade transparent.
 - **Whether to retire `alcatraz-tree` mode entirely.** With mirror
   mode actually working, the namespaced-audit-ref mode loses most
   of its motivation. Keep for one release as a non-default
