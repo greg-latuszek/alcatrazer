@@ -206,6 +206,14 @@ At `alcatrazer start`, the daemon records outer's current branch name
 as the **pinned branch** in `.alcatrazer/pinned-branch`. This is a
 one-time write — the pin lives for the workspace's lifetime.
 
+"Pinned branch" is internal vocabulary (file name, function names,
+this design doc). User-facing copy never says "pinned" — it says
+*"the branch alcatrazer started from"*. The reasoning is that
+end-users shouldn't have to learn a new term to understand a
+constraint that follows naturally from how alcatrazer works:
+*Alcatraz started its internal repo from your branch `feat/X`, and
+can only promote commits back to that same branch.*
+
 Invariants the daemon enforces every cycle:
 
 1. Outer's HEAD must be a branch (not detached).
@@ -245,19 +253,21 @@ Log discipline: emit one line on the **transition** held → resumed
 (and reverse), not every poll. The daemon tracks `last_logged_status`
 to suppress duplicates.
 
-Failure modes that all map to "hold":
+Failure modes that all map to "hold". User-facing messages avoid
+internal vocabulary ("pinned", "invariant"); they explain the
+constraint in plain terms:
 
-| Outer state                | Daemon behavior |
-| -------------------------- | --------------- |
-| On pinned branch           | Active. Promotes each cycle. |
-| On a different branch      | Held. *"On hold: outer is on `main`, expected `feat/X`. Recheckout `feat/X` to resume."* |
-| Detached HEAD              | Held. *"On hold: outer is in detached HEAD. Recheckout `feat/X` to resume."* |
-| Pinned branch deleted      | Held. *"On hold: pinned branch `feat/X` no longer exists in outer. Recreate it or `alcatrazer clear --discard-pending` to abandon."* |
-| Pinned branch renamed      | Same as deleted (rename is delete + create from the daemon's view). |
+| Outer state           | User-facing message |
+| --------------------- | ------------------- |
+| On the start branch   | (active — no message) |
+| On a different branch | *"Promotion on hold. Alcatraz started from `feat/X` and can only promote commits back to `feat/X`. You're currently on `main` — run `git checkout feat/X` to resume."* |
+| Detached HEAD         | *"Promotion on hold. Alcatraz started from `feat/X` and can only promote commits back to `feat/X`. You're in detached HEAD — run `git checkout feat/X` to resume."* |
+| Start branch deleted  | *"Promotion on hold. Alcatraz started from `feat/X` and can only promote commits back to `feat/X`, but `feat/X` no longer exists. Recreate it or run `alcatrazer clear --discard-pending` to abandon the agent work."* |
+| Start branch renamed  | Same as deleted (a rename is a delete + create from the daemon's view). |
 
 The unified user contract for every hold state: **either restore
 outer's state, or explicitly `alcatrazer clear --discard-pending` to
-drop the inner work.** The daemon never decides to abandon work on
+drop the agent work.** The daemon never decides to abandon work on
 the user's behalf.
 
 ## User-visible surfaces
@@ -268,24 +278,27 @@ Three example outputs covering the three steady states:
 
 ```
 Daemon running (PID 12345)
-  Pinned branch:    feat/X  ✓ on it
+  Started from:     feat/X  ✓ active
   Pending commits:  0
   Last promotion:   2 minutes ago
 ```
 
 ```
 Daemon running (PID 12345)
-  Pinned branch:    feat/X  ⚠ on hold
-                    outer is on `main` — recheckout `feat/X` to resume
+  Started from:     feat/X  ⚠ on hold
+                    Alcatraz can only promote commits back to `feat/X`.
+                    You're currently on `main` — run `git checkout feat/X`
+                    to resume.
   Pending commits:  3
   Last promotion:   23 minutes ago
 ```
 
 ```
 Daemon running (PID 12345)
-  Pinned branch:    feat/X  ⚠ paused (working-tree conflict)
-                    outer working tree overlaps with agent patch — commit
-                    or stash and the daemon resumes
+  Started from:     feat/X  ⚠ paused
+                    Your working tree on `feat/X` overlaps with an agent
+                    commit. Commit or stash your changes and the daemon
+                    will resume.
   Pending commits:  1
   Last promotion:   never
 ```
@@ -302,12 +315,15 @@ sync, tear down the workspace." With pin-at-start, four cases:
   onto the pinned branch, proceed.
 - Outer is off-pin / detached / pin missing, no pending commits →
   proceed silently.
-- Outer is off-pin / detached / pin missing, **has pending commits**
-  → **block** with:
+- Outer is off the start branch / detached / start branch missing,
+  **has pending commits** → **block** with:
 
   ```
-  alcatrazer: cannot clear — 3 agent commits are pending and outer
-  is on `main`, not the pinned branch `feat/X`.
+  alcatrazer: cannot clear — 3 agent commits are waiting to be promoted
+  to `feat/X`, but you're currently on `main`.
+
+  Alcatraz started from `feat/X` and can only promote commits back to
+  that branch.
 
     To keep the agent work:    git checkout feat/X && alcatrazer clear
     To discard pending work:   alcatrazer clear --discard-pending
@@ -320,12 +336,14 @@ intent explicit.
 
 ### Daemon log
 
-Adds these per-event entries (transitions only, never per-poll):
+Adds these per-event entries (transitions only, never per-poll).
+Diagnostic logs are still readable to humans, so they avoid the
+"pinned" jargon too:
 
-- `Held: outer on <current>, expected <pinned>`
-- `Resumed: outer back on <pinned>, replaying N commits`
-- `Promoted N commit(s) to <pinned>`
-- `Paused: working-tree conflict on <pinned>`
+- `Held: outer on <current>, alcatraz started from <start>`
+- `Resumed: outer back on <start>, replaying N commits`
+- `Promoted N commit(s) to <start>`
+- `Paused: working-tree conflict on <start>`
 - `Resumed: working-tree conflict resolved`
 
 ## Conflict semantics
@@ -475,9 +493,10 @@ collapses to `paused.json` (single boolean + reason).
 
 - `src/alcatrazer/start.py`
   - `cmd_start`: refuse to start if outer is detached. Post-success
-    message clarifies promotion semantics: *"Agent commits will land
-    on `feat/X` as your own (working tree updates automatically).
-    Stay on `feat/X` to keep promotion active."*
+    message clarifies promotion semantics: *"Alcatraz started from
+    `feat/X`. Agent commits will land on `feat/X` as your own (working
+    tree updates automatically). Switching branches puts promotion on
+    hold until you return to `feat/X`."*
   - `cmd_status`: surfaces the three states above (active / held /
     paused) with pending-commit count and the recovery hint.
   - `cmd_clear`: implements the four-case logic above, including
