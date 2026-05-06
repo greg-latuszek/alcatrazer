@@ -419,6 +419,13 @@ Fields added:
 - `last_promoted` — SHA of the last successfully promoted inner-`main`
   commit. Updated by the daemon after each successful `am`. Replaces
   the per-branch `promoted-tips.json` (which goes away).
+- `last_promotion_time` — ISO 8601 UTC timestamp of the last
+  successful `am` (written in the same state update as
+  `last_promoted`). Backs the *"Last promotion: 23 minutes ago"* line
+  in `alcatrazer status`. Persists across hold periods — important so
+  the user sees the *real* last-promoted time, not the time of the
+  most recent skipped (held) cycle. Stays unset until the first
+  successful promotion (status renders that as `never`).
 - `paused` — `{ "reason": "<message>" } | null`. Updated by the
   daemon when entering/leaving the working-tree-conflict state.
   Replaces `paused-branches.json` (which goes away).
@@ -535,10 +542,12 @@ silent migration code that nobody benefits from.
     by daemon to decide held vs. active.
   - New `promote_once(source, target, alcatraz_dir, name, email) -> PromotionResult`.
     Single-cycle entry. Reads `inner_root`, `pinned_branch`,
-    `last_promoted` from `state.load_state(alcatraz_dir)`. Writes
-    updated `last_promoted` and `paused` fields back via
-    `state.update_state()`. Returns `{status, commit_count,
-    new_promoted_tip}`.
+    `last_promoted` from `state.load_state(alcatraz_dir)`. On
+    successful `am`, writes back `last_promoted`,
+    `last_promotion_time` (ISO 8601 UTC), and clears `paused`.
+    On working-tree conflict, writes `paused = {"reason": ...}` and
+    leaves `last_promoted` / `last_promotion_time` untouched. Returns
+    `{status, commit_count, new_promoted_tip}`.
   - Deletes: `promote()`, `promote_with_conflict_handling()`,
     `resolve_branches()`, `rewrite_refs()`, `find_conflict_branches()`,
     `check_resolved_conflicts()`, `detect_diverged_branches()`,
