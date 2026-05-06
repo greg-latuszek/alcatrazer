@@ -242,9 +242,10 @@ transfer into a sibling ref.
   daemon. Replaced by a new `promote_via_patches()` with the same
   return shape (`{branch: status}`).
 - The marks-file pair `promote-export-marks` /
-  `promote-import-marks` — no longer needed in mirror mode.
-  `last_promoted_tip` per branch (already in
-  `promoted-tips.json`) is sufficient.
+  `promote-import-marks` — no longer needed in mirror mode (still
+  required by `alcatraz-tree` mode for incremental fast-export).
+  `last_promoted_tip` per branch (already in `promoted-tips.json`)
+  is sufficient for the new mirror path.
 
 ### Left alone
 
