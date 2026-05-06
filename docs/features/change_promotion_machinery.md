@@ -745,3 +745,258 @@ settled:
   not be aware of Alcatraz's machinery (see "Inner-main linearity").
 - Multi-agent races on inner-`main` → out of scope; workspace-level
   agent-orchestration concern, not a promotion concern.
+
+---
+
+## Detailed Implementation Plan
+
+Each step is one commit, small enough for human review. Dependencies
+flow top to bottom — each step may require previous steps to be in
+place.
+
+**TDD discipline:** each step follows the RED/GREEN/BLUE cycle where
+possible:
+
+- `[RED]` commit — failing test for the planned functionality
+- `[GREEN]` commit — implementation that makes the test pass
+- `[BLUE]` commit — improvements / cleanup if applicable
+
+**Phase ordering principle:** *additive first, swap next, delete
+last.* Phases 1–3 build new code alongside the existing mirror path
+without breaking it. Phase 4 swaps the daemon to use the new code.
+Phases 6 and 7 (alcatraz-tree retirement, schema bump) come last so
+existing tests stay green throughout development and the schema bump
+doesn't force constant test-fixture rewrites mid-flight.
+
+### Phase 1: New state fields (additive, no breakage)
+
+**Step 1.1** `[RED]` — Test `snapshot_workspace` records `inner_root`
+in `state.json`. Use `state.load_state(alcatraz_dir).get("inner_root")`
+in the assertion; expect SHA equals `git rev-parse HEAD` of the
+workspace's `Initial commit`.
+
+**Step 1.2** `[GREEN]` — `snapshot.py` calls
+`state.update_state(alcatraz_dir, inner_root=<sha>)` after creating
+the initial commit.
+
+**Step 1.3** `[RED]` — Test `snapshot_workspace` records
+`pinned_branch` in `state.json` (outer's current branch name).
+
+**Step 1.4** `[GREEN]` — `snapshot.py` reads outer's HEAD branch,
+calls `state.update_state(alcatraz_dir, pinned_branch=<name>)` in
+the same `state.json` write as `inner_root`.
+
+**Step 1.5** `[RED]` — Test that snapshot uses outer's *current
+branch tree*, not a hardcoded `main` tree. Outer on `feat/X` with
+files differing from `main`; assert workspace tree matches `feat/X`.
+
+**Step 1.6** `[GREEN]` — `snapshot.py` extracts the tree of outer's
+HEAD branch (not hardcoded `main`).
+
+**Step 1.7** `[RED]` — Test `alcatrazer start` refuses on detached
+HEAD with the explanatory message.
+
+**Step 1.8** `[GREEN]` — `start.py` adds detached-HEAD precondition
+check before invoking `snapshot.py`.
+
+### Phase 2: Patch-stream primitives
+
+**Step 2.1** `[RED]` — Test `rewrite_from_header` substitutes the
+`From:` line in a real mbox stream (Patricia → Alice). Operates on
+bytes, preserves binary hunks.
+
+**Step 2.2** `[GREEN]` — Implement `rewrite_from_header(stream, name,
+email) -> bytes` in `promote.py`.
+
+**Step 2.3** `[RED]` — Test `format_patch_stream` excludes
+`inner_root`. Workspace with `inner_root` + N agent commits → stream
+has exactly N patches.
+
+**Step 2.4** `[GREEN]` — Implement `format_patch_stream(source,
+since_sha) -> bytes` wrapping `git format-patch --stdout --binary
+--keep-subject --first-parent <since>..refs/heads/main`.
+
+**Step 2.5** `[RED]` — Test `apply_patch_stream` advances target
+branch and updates working tree. Outer with one commit, apply
+patches for an agent commit adding a file → outer's branch has 2
+commits, file present in working tree, `git status` clean.
+
+**Step 2.6** `[RED]` — Test `apply_patch_stream` preserves outer
+history: outer with `O1`, apply N patches → branch is `O1 → A1 →
+… → AN`, `O1` still ancestor of HEAD. **Direct regression test for
+the manual-test bug.**
+
+**Step 2.7** `[RED]` — Test `apply_patch_stream` rewrites both
+author and committer to the configured user. Inner identity
+(Patricia) appears nowhere in outer.
+
+**Step 2.8** `[RED]` — Test `apply_patch_stream` aborts cleanly on
+conflict. Pre-seed outer with conflicting edit → raises
+`PromotionConflictError`, outer's HEAD and tree byte-identical to
+pre-call state.
+
+**Step 2.9** `[RED]` — Test `apply_patch_stream` drops empty
+patches. Outer already has the same change → `am` exits 0 (via
+`--empty=drop`), no commit added, no error.
+
+**Step 2.10** `[GREEN]` — Implement `apply_patch_stream(target,
+stream, name, email)` running `git am --committer-date-is-author-date
+--keep-non-patch --whitespace=nowarn --empty=drop` with identity in
+env. Raises `PromotionConflictError` (new exception type) on
+non-zero exit after `git am --abort`.
+
+### Phase 3: Pin checking and orchestration
+
+**Step 3.1** `[RED]` — Tests for `check_pin` covering all four
+states: `OK`, `OFF_PIN`, `DETACHED`, `PIN_DELETED`.
+
+**Step 3.2** `[GREEN]` — Implement `check_pin(target, pinned_branch)
+-> PinStatus`.
+
+**Step 3.3** `[RED]` — Test `promote_once` active path: reads state,
+applies patches, writes back `last_promoted` + `last_promotion_time`,
+clears `paused`.
+
+**Step 3.4** `[RED]` — Test `promote_once` held when off-pin: no
+`am` call, no error, returns `held` status, state unchanged.
+
+**Step 3.5** `[RED]` — Test `promote_once` resumes after recheckout:
+held state accumulates inner commits; recheckout pin → next call
+applies all piled commits in one `am`.
+
+**Step 3.6** `[RED]` — Test `promote_once` `--first-parent` flattens
+inner merges: inner has merge commit on `main`; stream contains one
+patch for it, side-branch commits absent.
+
+**Step 3.7** `[RED]` — Test `promote_once` writes `paused` on
+conflict; leaves `last_promoted` and `last_promotion_time` untouched.
+
+**Step 3.8** `[GREEN]` — Implement `promote_once(source, target,
+alcatraz_dir, name, email) -> PromotionResult`.
+
+### Phase 4: Daemon wiring (the swap)
+
+**Step 4.1** `[RED]` — Daemon end-to-end test using the manual-test
+shape: outer on `feat/X` with one initial commit, agent commit
+inside, daemon promotes → outer's `feat/X` is 2 commits with
+original as ancestor, working tree contains the agent file, status
+clean. **Closes the manual-test bug under automation.**
+
+**Step 4.2** `[RED]` — Daemon held-state integration test: outer
+switches to `main` mid-cycle, daemon logs `Held` (once), agent
+keeps committing inside, user switches back to `feat/X`, next cycle
+replays piled commits, daemon logs `Resumed`.
+
+**Step 4.3** `[RED]` — Daemon conflict integration test: pre-seed
+outer with overlapping uncommitted edit, daemon attempts promotion,
+catches `PromotionConflictError`, writes `paused` state, logs
+`Paused`. User commits/stashes, daemon detects clean working tree
+on next cycle, applies patches, logs `Resumed`.
+
+**Step 4.4** `[GREEN]` — Wire `daemon.run_cycle` to call `check_pin`
++ `promote_once` on the mirror branch. Add transition-only
+held/resumed/paused logging via `last_logged_status`. Mirror branch
+now uses the new path; alcatraz-tree branch still present and
+untouched.
+
+### Phase 5: CLI surface extensions
+
+**Step 5.1** `[RED]` — `cmd_status` test: active state output
+matches the spec (Started from / ✓ active / pending / last
+promotion).
+
+**Step 5.2** `[RED]` — `cmd_status` test: held-state output with
+plain-language *"Alcatraz can only promote commits back to `feat/X`"*
+message and pending count.
+
+**Step 5.3** `[RED]` — `cmd_status` test: paused-state output with
+working-tree-conflict message.
+
+**Step 5.4** `[GREEN]` — Implement `cmd_status` extended output
+reading from `state.load_state()`. Single read; no new files.
+
+**Step 5.5** `[RED]` — `cmd_start` test: post-success message
+content (*"Alcatraz started from `feat/X`. … switching branches
+puts promotion on hold …"*).
+
+**Step 5.6** `[GREEN]` — Implement `cmd_start` post-success message.
+
+**Step 5.7** `[RED]` — `cmd_clear` test: blocks with the exact
+upgrade-message text when pending commits exist and outer is off-pin.
+
+**Step 5.8** `[RED]` — `cmd_clear` test: `--discard-pending` flag
+proceeds, drops pending agent work, tears down workspace.
+
+**Step 5.9** `[RED]` — `cmd_clear` test: proceeds on pin with
+pending commits — final sync drains onto the pinned branch first,
+then tears down.
+
+**Step 5.10** `[GREEN]` — Implement `cmd_clear` four-case logic +
+`--discard-pending` flag.
+
+### Phase 6: Retire alcatraz-tree mode
+
+Only safe to do *after* Phase 4 has the daemon running on the new
+mirror path with full test coverage. Until this phase, alcatraz-tree
+mode and its tests remain green as a control.
+
+**Step 6.1** `[GREEN]` — Delete unused functions from `promote.py`:
+`promote()`, `promote_with_conflict_handling()`, `resolve_branches()`,
+`rewrite_refs()`, `find_conflict_branches()`,
+`check_resolved_conflicts()`, `detect_diverged_branches()`,
+`_promote_single_branch()`, `load_promoted_tips()`,
+`save_promoted_tips()`, `load_paused_branches()`,
+`save_paused_branches()`. Marks-file handling, namespace logic, and
+separate JSON-state file handling all go.
+
+**Step 6.2** `[GREEN]` — Delete the `alcatraz-tree` branch in
+`daemon.run_cycle()`. Single path remaining.
+
+**Step 6.3** `[GREEN]` — Remove `mode` and `branches` from the
+`coding-environment.toml` schema definition (schema upgrade comes in
+Phase 7; this just deletes the keys from the parser).
+
+**Step 6.4** `[GREEN]` — Delete obsolete tests: alcatraz-tree mode,
+marks-files behavior, multi-branch promotion, `conflict/resolve-*`
+branches. Verify the full test suite still green.
+
+### Phase 7: Schema bump and refusal
+
+**Step 7.1** `[RED]` — Test `state.load_state()` callers refuse when
+`schema_version < 2` is detected (or absent). Expected: clear error
+message naming the four cleanup steps.
+
+**Step 7.2** `[GREEN]` — Bump `state.SCHEMA_VERSION` to `2`. Add
+helper that checks loaded state's version and raises with the
+upgrade message. Wire into `daemon.py`, `cmd_start`, `cmd_status`,
+`cmd_clear` startup paths.
+
+**Step 7.3** `[RED]` — Test `coding-environment.toml`
+`schema_version = 2` detection: parser refuses on `< 2` (or absent)
+with the full upgrade message.
+
+**Step 7.4** `[GREEN]` — Bump config `schema_version` to `2`. Add
+refusal at `init` / `start` / `status` entry points reading the
+config.
+
+### Phase 8: Documentation
+
+**Step 8.1** `[BLUE]` — Update `docs/design_principles.md` Promotion
+section's "Daemon Watches from Outside" with the new one-liner.
+
+**Step 8.2** `[BLUE]` — Rewrite README's "Promotion" subsection for
+the new flow (branch off main → alcatrazer start → agents commit →
+your branch grows → push for PR).
+
+**Step 8.3** `[BLUE]` — Add CHANGELOG entry with the breaking-change
+notice and the four cleanup steps.
+
+**Step 8.4** `[BLUE]` — Mark this design doc as Status: Complete and
+backfill any "Implementation Notes" subsection with decisions
+resolved during implementation (mirroring the
+`start_from_existing_repo.md` pattern).
+
+### Implementation Notes
+
+*(To be filled in during implementation — decisions made on the fly,
+surprises encountered, deviations from this plan.)*
