@@ -2,7 +2,7 @@
 prd_id: PRD-001
 title: "Alcatrazer"
 version: 1
-status: draft
+status: approved
 author: "Grzegorz Latuszek"
 overview_sections: ["1. Overview"]
 ---
@@ -51,7 +51,7 @@ purpose-built way to keep agents productive *and* contained.
   to do real work: code, branch, merge, test, install packages, talk
   to LLMs, read the web.
 - **G4 — Disappear into the workspace.** Agents inside the sandbox
-  cannot tell that Alcatrazer is the thing surrounding them.
+  cannot tell that Alcatraz is the thing surrounding them.
 - **G5 — Earn trust by proof, not assertion.** Security claims are
   verifiable by the developer on their own machine and against
   independent sources, not taken on faith.
@@ -171,7 +171,7 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 | FR-17 | When the developer's repository drifts into a state where promotion cannot safely proceed — the developer has switched away from the starting branch, or has changes on the starting branch that would conflict with agent work — promotion is **held** rather than overwriting anything. The developer's repository is never modified while in a held state. | Must | The held state is observable; the starting branch is not modified while held; no agent work is silently lost. |
 | FR-18 | Promotion auto-resumes the moment the safe condition is restored (e.g. the developer returns to the starting branch, or resolves the conflicting state). No manual restart of the tool is required. | Must | Returning to the starting branch flushes pending agent work without further user intervention. |
 | FR-19 | When the developer takes an action that requires a decision — e.g. asking to tear down the environment while agent work is still held and not yet in the repository — the system surfaces the situation explicitly and offers the developer a clear choice: drop the pending work, or recover it. | Must | A teardown attempt with held work prompts the developer; non-interactive teardown requires an explicit drop instruction. |
-| FR-20 | The developer can inspect, at any moment, the live state of the promotion machinery (active, held, or otherwise blocked) and the count of work pending promotion. | Must | A status surface reports this without requiring log inspection. |
+| FR-20 | The developer can inspect Alcatrazer at any moment. That includes its static/configured part as well as the live state of the promotion machinery (active, held, or otherwise blocked) and the count of work pending promotion. | Must | A status surface reports this without requiring log inspection. |
 
 ### Onboarding & Lifecycle
 
@@ -285,9 +285,9 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 | **M1 — Secure agent coding loop** | Shipped | A developer can add Alcatrazer to a repository, agents work in a sealed sandbox, and their commits flow back under the developer's identity. Bundled verification proves the security claims on the developer's machine. |
 | **M2 — Convenience for mainstream ecosystems** | Shipped | Out-of-the-box convenience-layer templates for the major mainstream language ecosystems, so developers in those stacks are coding-ready in a few lines of declaration. |
 | **M3 — Reliable promotion under concurrent work** | In flight | Promotion bound to a starting branch; preserves the developer's existing history; safely holds rather than overwrites when the developer's repository diverges; resumes automatically once the safe condition is restored; surfaces explicit decisions when the developer's actions require one. |
-| **M4 — Universal coding-environment declaration** | Planned | Language-independent declarative format for the convenience layer, so any coding environment — not just those with built-in templates — can be expressed cleanly. |
-| **M5 — Backend abstraction** | Planned | The sandboxing mechanism is hidden behind a stable internal contract, so the underlying isolation technology can be swapped or extended without affecting the user contract. |
-| **M6 — 1.0** | Planned | Feature stability and a backwards-compatibility commitment for the user-facing contract. |
+| **M4 — Universal coding-environment declaration** | Planned — **gates 1.0** | Language-independent declarative format for the convenience layer, so any coding environment — not just those with built-in templates — can be expressed cleanly. The first official release must open the door to every language environment, not only the mainstream ones; M4 is therefore a hard precondition for 1.0. |
+| **M5 — Backend abstraction** | Planned — post-1.0 | The sandboxing mechanism is hidden behind a stable internal contract, so the underlying isolation technology can be swapped or extended without affecting the user contract. Not a gate for 1.0. |
+| **M6 — 1.0** | Planned | Feature stability and a backwards-compatibility commitment for the user-facing contract. Preconditions: M3 (reliable promotion) and M4 (universal coding-environment declaration). M5 is desirable but not required. |
 
 ---
 
@@ -340,6 +340,3 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 - [ ] Windows: aspirational support, or formally out of scope?
 - [ ] Should adoption metrics (e.g. download counts, public stars) be
   tracked, or is the project deliberately not optimizing for them?
-- [ ] Which deferred capabilities (notably the M4 universal
-  declarative format and the M5 backend abstraction) are gating
-  items for 1.0, and which can land afterwards?
