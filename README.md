@@ -62,7 +62,7 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 >
 > 0.0.4 was published to surface the language-onboarding work for review; 0.1.0 ships the licence change cleanly separated from the (still pending) promotion rewrite landing in 0.1.1.
 
-> **Read the [CHANGELOG](CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
+> **Read the [CHANGELOG](https://github.com/greg-latuszek/alcatrazer/blob/main/CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
 
 ---
 
