@@ -420,3 +420,9 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 - [ ] Windows: aspirational support, or formally out of scope?
 - [ ] Should adoption metrics (e.g. download counts, public stars) be
   tracked, or is the project deliberately not optimizing for them?
+- [ ] Do target-persona developers articulate the round-trip /
+  identity-rewriting / hold-on-conflict combination as a felt need, or
+  only *"I want my agent to be safe"*? The framing of the project's
+  positioning depends on the answer. Resolution requires a small
+  qualitative study (≈10 developers, structured interviews); currently
+  not in the research plan.

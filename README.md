@@ -74,6 +74,18 @@ Alcatrazer is a secure development environment for AI-powered coding agents. It 
 
 It is designed to drop into any existing git repo — install the CLI, run `alcatrazer init`, then `alcatrazer start`, and start experimenting with any agentic framework (Claude Code, os-eco, custom agent swarms, etc.) in any language you've declared in `coding-environment.toml`.
 
+## What Alcatrazer Commits To
+
+These are the design commitments that define Alcatrazer. They are properties of the tool, not promises about features we plan to add.
+
+- **Agent commits land in your repo, on your starting branch, under your name — automatically.** No manual cherry-pick step. The promotion daemon transfers commits in the background and rewrites the agent's identity to yours on the way out.
+- **Hold rather than overwrite when your in-flight edits would collide with agent work.** Agent work is held until the safe condition returns, then resumes automatically. Your work is never lost to an automated process.
+- **Random fictitious identity for agent commits inside the workspace** — generated fresh per bring-up; never your name or email. The outer repo only sees commits attributed to you, after the rewrite.
+- **The agent inside the workspace cannot detect that Alcatrazer is the surrounding tool.** Mount paths, environment variables, container hostname, file contents, and commit metadata all read as a generic working environment.
+- **A bundled verification suite proves the security model on your own machine.** `alcatrazer test --run-selftest` runs the same assertions the project's CI does. We don't ask you to trust the marketing; we hand you the test.
+- **Zero third-party runtime dependencies in the core.** The trust boundary is the language standard library plus our own source — full stop. The audit surface stays small enough to read in an afternoon.
+- **Apache-2.0 licensed, source readable.** See the [License](#license) section below for details and the dependency-graph compatibility analysis.
+
 ## Repository Structure
 
 Alcatrazer ships as a single Python package. Once installed into a
