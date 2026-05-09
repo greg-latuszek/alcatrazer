@@ -42,6 +42,8 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 **Your professional reputation.** Your public repositories carry your name. Other developers pull from them, depend on them, trust them. Unsupervised AI coding can inject trojans, backdoors, or other malware into YOUR repositories — code that others may pull and be harmed by. It is our responsibility as software engineers to review, test, and security-scan AI-created code before we publish it under our name. No AI writing to your repo without your knowledge. Alcatrazer enforces this: agents commit to an isolated inner repo, and nothing reaches your real repository until you — the warden — inspect and approve the transfer.
 
+**The threat is concrete.** Two recent supply-chain attacks share the same pattern: a compromised npm package uses the developer's local credentials to create public GitHub repositories *under the developer's own account*. **Nx `s1ngularity`** (August 2025) hijacked the victim's `gh` authentication to upload harvested credentials into ~1,400 new public repos named `s1ngularity-repository-*`, each under a different victim's account — 2,349 credentials from 1,079 developers. **Shai-Hulud** (September & November 2025) used stolen tokens to create public repos under victims' accounts *and* backdoor every package those developers maintained (796 packages, 20M+ weekly downloads in the November wave). Inside Alcatrazer, an agent has no GitHub credentials, no SSH keys, no `gh` authentication, no knowledge of your account, and no path to your real repository. A compromised package can poison the agent's workspace; it cannot create repositories under your name or push to GitHub on your behalf. Every commit crosses the water only after you review it.
+
 ---
 
 ## CAUTION
@@ -701,3 +703,12 @@ its `DockerPrison` adapter, and the bundled security self-tests
 ownership, no git remotes). All tests use Python's `unittest`
 framework with real git repos for integration tests and mocking for
 unit tests.
+
+## License
+
+Alcatrazer is licensed under the **Apache License, Version 2.0** — see [`LICENSE`](https://github.com/greg-latuszek/alcatrazer/blob/main/LICENSE).
+
+The licence change from MIT to Apache-2.0, the differences in plain English with concrete scenarios for non-lawyer readers, and the verification that Alcatrazer's full dependency graph is compatible with Apache-2.0 are documented in two companion files:
+
+- [`docs/licence_change_reasoning.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/licence_change_reasoning.md) — the licence change explained for users
+- [`docs/license_dependencies_and_usage.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/license_dependencies_and_usage.md) — every dependency, its licence, and the compatibility analysis

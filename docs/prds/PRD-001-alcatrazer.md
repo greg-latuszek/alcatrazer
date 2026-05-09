@@ -60,6 +60,17 @@ disclosure (2026) showed that a single payload in a GitHub PR title could
 make Claude Code, Gemini CLI, and GitHub Copilot all leak their integration
 secrets.
 
+These two incidents are operationally the same attack class: a
+compromised npm package uses the developer's *own* local credentials —
+`gh` CLI authentication, GitHub PATs, SSH keys — to create public
+GitHub repositories *under the developer's account* (s1ngularity
+created ~1,400 such repos, each named `s1ngularity-repository-*`,
+under different victims), push harvested data there, and (Shai-Hulud)
+backdoor every other package those victims maintained from the same
+credentials. The attacker hijacks the developer's identity at the
+credential layer; no attacker-controlled GitHub presence is needed.
+2026 has continued the pattern.
+
 Existing developer-environment tooling is engineered for *convenience* —
 sharing credentials, forwarding agents, smoothing the trip from laptop to
 container. That model is exactly wrong when the inhabitant is no longer a
