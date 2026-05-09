@@ -58,7 +58,7 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 >
 > **End users: wait for 0.1.1.** Do not run `alcatrazer start` against any repository whose history you care about with versions 0.0.4 or 0.1.0.
 >
-> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md). The **0.1.0 entry** of the changelog explains why the licence change shipped as its own dedicated release rather than being bundled with the promotion fix.
+> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/features/change_promotion_machinery.md). The **0.1.0 entry** of the changelog explains why the licence change shipped as its own dedicated release rather than being bundled with the promotion fix.
 >
 > 0.0.4 was published to surface the language-onboarding work for review; 0.1.0 ships the licence change cleanly separated from the (still pending) promotion rewrite landing in 0.1.1.
 
