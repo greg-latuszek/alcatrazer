@@ -4,7 +4,8 @@ dynamic = ["version"]
 description = "Secure AI agent workspace — your code gets out, your secrets don't"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     {name = "Grzegorz Latuszek", email = "latuszek.grzegorz@gmail.com"},
 ]
