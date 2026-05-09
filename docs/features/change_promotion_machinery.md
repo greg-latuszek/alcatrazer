@@ -435,7 +435,7 @@ Fields added:
 
 ## Breaking-change posture
 
-v0.0.5 changes both the `coding-environment.toml` schema (removes
+v0.1.1 changes both the `coding-environment.toml` schema (removes
 `[promotion-daemon].mode` and `[promotion-daemon].branches`) and the
 `.alcatrazer/state.json` layout. A clean automatic migration would
 require: detecting old layouts, asking permission, possibly draining
@@ -452,12 +452,12 @@ Decision: **no automatic migration.** Instead:
 
   ```
   alcatrazer: this directory was set up by an older version (schema 1).
-  v0.0.5 reworks promotion and is not backwards compatible.
+  v0.1.1 reworks promotion and is not backwards compatible.
 
   To upgrade:
-    1. If a daemon is running: alcatrazer stop      (using v0.0.4)
+    1. If a daemon is running: alcatrazer stop      (using your previous version)
     2. rm -rf .alcatrazer/ coding-environment.toml
-    3. alcatrazer init                              (using v0.0.5)
+    3. alcatrazer init                              (using v0.1.1)
     4. alcatrazer start
 
   See CHANGELOG for what changed and why.
@@ -663,12 +663,13 @@ silent migration code that nobody benefits from.
   - `README.md` — "Promotion" subsection rewritten for the new flow:
     branch off main, alcatrazer start, agents commit, your branch
     grows, push for PR.
-  - `CHANGELOG.md` — call out the breaking change: *"v0.0.5
+  - `CHANGELOG.md` — call out the breaking change: *"v0.1.1
     reworks promotion. **Not backwards compatible.** Stop any
-    running v0.0.4 daemon (`alcatrazer stop` with v0.0.4 installed),
-    delete `.alcatrazer/` and `coding-environment.toml`, then re-run
-    `alcatrazer init` and `alcatrazer start` with v0.0.5. See [link
-    to design doc] for what changed and why."*
+    running pre-v0.1.1 daemon (`alcatrazer stop` with the previous
+    version installed), delete `.alcatrazer/` and
+    `coding-environment.toml`, then re-run `alcatrazer init` and
+    `alcatrazer start` with v0.1.1. See [link to design doc] for
+    what changed and why."*
 
 ## What this proposal does NOT do
 
@@ -695,11 +696,11 @@ silent migration code that nobody benefits from.
 - **Does not introduce a new CLI subcommand.** Behavior surfaces
   through `alcatrazer status` (extended) and `alcatrazer clear`
   (extended with `--discard-pending`).
-- **Does not provide automatic migration from v0.0.4.** Schema
-  bump to v2 + refusal-with-helpful-message is the upgrade path
-  (see "Breaking-change posture"). Pre-1.0.0, this is the right
-  tradeoff: explicit user action over silent migration code that
-  serves zero current users.
+- **Does not provide automatic migration from v0.0.4 or v0.1.0.**
+  Schema bump to v2 + refusal-with-helpful-message is the upgrade
+  path (see "Breaking-change posture"). Pre-1.0.0, this is the
+  right tradeoff: explicit user action over silent migration code
+  that serves zero current users.
 
 ## Recommended order
 

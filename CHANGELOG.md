@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.0] — 2026-05-09
+
+> ## ⚠️ DO NOT USE THIS RELEASE FOR REAL WORK
+>
+> **The promotion-machinery bug from 0.0.4 is unfixed in this release.** 0.1.0 is a licence change plus the documentation written alongside it; it contains no code changes beyond the licence files and version bump. The same warning that applied to 0.0.4 applies here.
+>
+> The fix lands in **0.1.1**. Do not run `alcatrazer start` against any repository whose history you care about with this version. See the 0.0.4 entry below for a full description of the bug and the link to the design doc.
+
+This release is dedicated to changing Alcatrazer's open-source licence from **MIT** to **Apache-2.0**, and shipping the documentation written alongside that change. **No functional code changes** ship in 0.1.0; the broken promotion machinery from 0.0.4 is carried forward unchanged.
+
+### Why a dedicated release for a licence change
+
+Alcatrazer's posture is verifiable trust: users should understand what they are depending on, not take "this is fine" on faith. A licence is the contract between the project and its users; quietly swapping it without explanation would be the opposite of how this project tries to operate. So the licence change ships as its own release, with two companion documents that explain the move and verify it against the project's actual dependency graph.
+
+### Changed
+
+- **Licence: MIT → Apache-2.0.** `LICENSE` replaced with the canonical Apache License 2.0 text. `pyproject.toml` updated to PEP 639 SPDX form (`license = "Apache-2.0"`, `license-files = ["LICENSE"]`).
+- The MIT-licensed history of the project is unaffected — every commit made before this release remains under its original MIT grant in the git history. The Apache-2.0 grant applies to releases from 0.1.0 onward, including all future modifications.
+
+### Added (documentation only)
+
+- **[`docs/licence_change_reasoning.md`](docs/licence_change_reasoning.md)** — release-companion document explaining the MIT → Apache-2.0 change in plain English with concrete scenarios. Audience: non-lawyer developers depending on Alcatrazer. Covers patent grant (three scenarios: rug-pull, contributor-weaponised lawsuit, enterprise legal review), trademark grant (with a brand-impersonation-of-a-security-tool scenario), NOTICE file mechanism, GPL compatibility, and migration guidance for redistributors.
+- **[`docs/license_dependencies_and_usage.md`](docs/license_dependencies_and_usage.md)** — companion document showing every component Alcatrazer depends on at build, distribution, and runtime; each component's licence; and the verification that the dependency graph is compatible with Apache-2.0. Includes a transparency note distinguishing Alcatrazer-hardcoded installs (Stages 1–2 of the generated Dockerfile) from user-declared installs (Stage 3), and the verification commands a reader can run on the checkout to reproduce the analysis.
+- **[`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md)** — the design doc and analysis for the promotion-machinery rewrite that lands in 0.1.1. Updated in this release: version references from the previously-planned 0.0.5 to the new 0.1.1 schedule.
+
+### Migration
+
+For most users: nothing to do. Apache-2.0 is permissive open-source, the same as MIT was; you can still use, modify, fork, distribute, and commercialise Alcatrazer.
+
+If you redistribute Alcatrazer (e.g. you bundle it into your own tool), update your bundled licence text when you next pull. Versions before this release remain under MIT and are not retroactively re-licensed.
+
+### Known issues (carried forward; fix lands in 0.1.1)
+
+- **Promotion in default `mirror` mode rewrites outer history** and leaves the working tree out of sync. Same bug as 0.0.4. See the warning at the top of this entry and the 0.0.4 entry below; the design and fix are in [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md).
+
+---
+
 ## [0.0.4] — 2026-04-29
 
 > ## ⚠️ DO NOT USE THIS RELEASE FOR REAL WORK
@@ -16,12 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 >
 > When the promotion daemon syncs commits from inside Alcatraz back to your outer repo, the default `mirror` mode **rewrites your outer branch's history** and **leaves your working tree out of sync with `HEAD`**. Your original commits on `main` may stop being ancestors of the new tip; `git status` will show phantom "deleted" entries; and there is no automatic recovery path inside the tool.
 >
-> The problem is structural — it stems from using `git fast-export | git fast-import` for a job that should be `git format-patch | git am`. A full design and fix is documented in [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md) and will ship as **0.0.5**.
+> The problem is structural — it stems from using `git fast-export | git fast-import` for a job that should be `git format-patch | git am`. A full design and fix is documented in [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md) and will ship as **0.1.1** (originally planned as 0.0.5; renumbered when 0.1.0 was scoped to the licence change — see the 0.1.0 entry above).
 >
 > **What to do:**
 >
-> - **End users:** wait for **0.0.5**. Do not run `alcatrazer start` against any repository whose history you care about with this version.
-> - **Contributors / reviewers:** 0.0.4 is published to surface the language-onboarding work for review and to keep that change cleanly separated from the promotion rewrite. The published wheel is intentionally limited in usefulness until 0.0.5 lands.
+> - **End users:** wait for **0.1.1**. Do not run `alcatrazer start` against any repository whose history you care about with this version.
+> - **Contributors / reviewers:** 0.0.4 is published to surface the language-onboarding work for review and to keep that change cleanly separated from the promotion rewrite. The published wheel is intentionally limited in usefulness until 0.1.1 lands.
 
 The 0.0.4 release otherwise lands **Phase 1 of the broaden-language-support effort** —
 the wizard, image, and language whitelist all became more capable, and several latent
@@ -178,7 +215,7 @@ in [`docs/features/more_languages_support.md`](docs/features/more_languages_supp
   [`docs/features/more_languages_support.md`](docs/features/more_languages_support.md)
   Phase 1.2.7 for full detail.
 
-### Known issues (deferred to 0.0.5)
+### Known issues (deferred to 0.1.1)
 
 - **Promotion in default `mirror` mode rewrites outer history and
   leaves the working tree out of sync.** See the warning at the top
@@ -251,7 +288,7 @@ implementation work converging on a publishable MVP.
   the workspace's inner git back to the outer repo, rewriting
   authorship to the user's configured identity. *(See
   Known-issues note in 0.0.4 — this pipeline turned out to be
-  the wrong tool for the job; replacement landing in 0.0.5.)*
+  the wrong tool for the job; replacement landing in 0.1.1.)*
 - **Promotion daemon.** Polls the workspace `.git/` from the
   host every 5 seconds; runs as a host-side process so nothing
   about it is visible to the agent inside the container. Two

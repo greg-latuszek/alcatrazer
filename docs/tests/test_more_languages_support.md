@@ -213,18 +213,21 @@ In `repo-py` (already has alcatrazer-generated `coding-environment.toml`):
       → wizard prompts for API key, closing message also mentions
       `alcatrazer visit`
 
-## J. Promotion (KNOWN BROKEN in 0.0.4)
+## J. Promotion (KNOWN BROKEN in 0.0.4 and 0.1.0)
 
 > **Note:** Manual testing of this section in 0.0.4 revealed that
 > default `mirror` mode rewrites outer branch history and leaves the
-> working tree desynced from `HEAD`. See
+> working tree desynced from `HEAD`. The behaviour is unchanged in
+> 0.1.0 (a licence-change-only release; no promotion code was
+> modified). See
 > [`docs/features/change_promotion_machinery.md`](../features/change_promotion_machinery.md)
 > and [`docs/tests/test_promotion_diagnosis.md`](test_promotion_diagnosis.md)
-> (the discriminating test that surfaced the bug). The fix lands in 0.0.5.
+> (the discriminating test that surfaced the bug). The fix lands in 0.1.1.
 >
-> For 0.0.4 release validation, run section J only as a **regression-pin
-> test** — confirm the broken behavior matches what the design doc
-> describes, so we know the bug surface is what we documented.
+> For 0.0.4 / 0.1.0 release validation, run section J only as a
+> **regression-pin test** — confirm the broken behavior matches what
+> the design doc describes, so we know the bug surface is what we
+> documented.
 
 - [ ] `alcatrazer start`, agent makes a commit inside Alcatraz, daemon
       promotes it
@@ -235,7 +238,7 @@ In `repo-py` (already has alcatrazer-generated `coding-environment.toml`):
 - [ ] No alcatraz strings leak into outer repo's commit messages or
       identities (Principle 2 still holds for what *does* land)
 
-When 0.0.5 ships, this section gets rewritten to assert the *fixed*
+When 0.1.1 ships, this section gets rewritten to assert the *fixed*
 behavior: outer history preserved, working tree atomically updated,
 agent files visible immediately under user's identity.
 
@@ -262,7 +265,7 @@ exists on the host.
   later).
 - After any change to wizard flow, Dockerfile generator, image-tag
   derivation, or `Alcatraz` port methods.
-- The 0.0.5 release (promotion rewrite) keeps every section here
+- The 0.1.1 release (promotion rewrite) keeps every section here
   unchanged except section J, which becomes a positive validation
   instead of a regression-pin.
 

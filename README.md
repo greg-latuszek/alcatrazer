@@ -52,15 +52,15 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 ---
 
-## ⚠️ Release 0.0.4 — DO NOT USE FOR REAL WORK
+## ⚠️ Releases 0.0.4 and 0.1.0 — DO NOT USE FOR REAL WORK
 
-> **A serious bug in the promotion machinery was uncovered during release-readiness testing for 0.0.4 and is NOT fixed in that release.** The default `mirror` mode rewrites your outer branch's history and leaves your working tree out of sync with `HEAD` every time the daemon promotes commits.
+> **A serious bug in the promotion machinery was uncovered during release-readiness testing for 0.0.4 and is NOT yet fixed.** The default `mirror` mode rewrites your outer branch's history and leaves your working tree out of sync with `HEAD` every time the daemon promotes commits. The bug is carried forward in **0.1.0** — that release was scoped to the licence change (MIT → Apache-2.0) and the documentation written alongside it, with no functional code changes.
 >
-> **End users: wait for 0.0.5.** Do not run `alcatrazer start` against any repository whose history you care about with version 0.0.4.
+> **End users: wait for 0.1.1.** Do not run `alcatrazer start` against any repository whose history you care about with versions 0.0.4 or 0.1.0.
 >
-> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md).
+> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md). The **0.1.0 entry** of the changelog explains why the licence change shipped as its own dedicated release rather than being bundled with the promotion fix.
 >
-> 0.0.4 is published anyway to surface the language-onboarding work for review and to keep that change cleanly separated from the promotion rewrite landing in 0.0.5.
+> 0.0.4 was published to surface the language-onboarding work for review; 0.1.0 ships the licence change cleanly separated from the (still pending) promotion rewrite landing in 0.1.1.
 
 > **Read the [CHANGELOG](CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
 
