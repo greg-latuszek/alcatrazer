@@ -41,7 +41,10 @@ import re
 import subprocess
 import tomllib
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
+
+from alcatrazer import snapshot
 
 
 def resolve_branches(source: Path, branches_config) -> list[str]:
@@ -267,6 +270,65 @@ def format_patch_stream(source: Path, since_sha: str) -> bytes:
         check=True,
     )
     return result.stdout
+
+
+class PinStatus(Enum):
+    """Classification of outer's current HEAD against the workspace's
+    recorded `pinned_branch`. Drives promote_once's decision to apply
+    patches (OK) or hold (OFF_PIN / DETACHED / PIN_DELETED).
+    """
+
+    OK = "ok"
+    OFF_PIN = "off_pin"
+    DETACHED = "detached"
+    PIN_DELETED = "pin_deleted"
+
+
+def check_pin(target: Path, pinned_branch: str) -> PinStatus:
+    """Classify outer's HEAD against the recorded pin.
+
+    Precedence (most-specific first):
+    1. `pinned_branch` no longer exists in target → `PIN_DELETED`
+    2. HEAD is detached (independent of whether `pinned_branch`
+       exists) → `DETACHED`
+    3. Current branch equals `pinned_branch` → `OK`
+    4. Current branch is something else → `OFF_PIN`
+
+    Step (1) wins over (2) when both apply because PIN_DELETED is
+    the more actionable diagnosis: the user can recover from
+    detached HEAD by checking out the pin; if the pin itself is
+    gone, there's nothing to check out and the workspace needs
+    different remediation.
+
+    Per change_promotion_machinery.md Phase 3 Step 3.2 (L854-855).
+    """
+    # 1. Does the pinned branch still exist?
+    pin_exists = (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target),
+                "rev-parse",
+                "--verify",
+                f"refs/heads/{pinned_branch}",
+            ],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+    if not pin_exists:
+        return PinStatus.PIN_DELETED
+
+    # 2. Detached HEAD? (reuses snapshot's narrow detector)
+    if snapshot.is_detached_head(str(target)):
+        return PinStatus.DETACHED
+
+    # 3 / 4. On a branch — which one?
+    current = snapshot.current_branch(str(target))
+    if current == pinned_branch:
+        return PinStatus.OK
+    return PinStatus.OFF_PIN
 
 
 class PromotionConflictError(Exception):
