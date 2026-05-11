@@ -276,6 +276,42 @@ class TestApplyPatchStream(unittest.TestCase):
                 "O1 must remain an ancestor of HEAD after apply_patch_stream",
             )
 
+    def test_rewrites_both_author_and_committer_identity(self):
+        """Inner authored by Patricia; after applying, outer's commits
+        show BOTH author and committer = the configured outer user.
+        Patricia appears nowhere in the outer's log.
+
+        Spec: change_promotion_machinery.md L830-832 (Step 2.7).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner_ws = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+            _, stream = self._make_inner_with_one_agent_commit(inner_ws)
+            self._make_outer_with_one_commit(outer)
+
+            promote_mod.apply_patch_stream(
+                Path(outer), stream, "Outer User", "user@outer.example.com"
+            )
+
+            # No Patricia / inner-identity strings anywhere in author or
+            # committer fields of the outer's log.
+            authors = git(outer, "log", "--all", "--format=%an <%ae>").splitlines()
+            committers = git(outer, "log", "--all", "--format=%cn <%ce>").splitlines()
+            for line in authors + committers:
+                self.assertNotIn("Patricia", line)
+                self.assertNotIn("patricia", line)
+                self.assertNotIn("inner.example.com", line)
+            # Top commit (the agent-derived one) — author + committer
+            # are explicitly the configured outer user.
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%an <%ae>"),
+                "Outer User <user@outer.example.com>",
+            )
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%cn <%ce>"),
+                "Outer User <user@outer.example.com>",
+            )
+
 
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
