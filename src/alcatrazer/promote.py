@@ -146,6 +146,26 @@ def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
     return stream
 
 
+def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
+    """Substitute the `From: ` header line in an mbox-format patch
+    stream with `From: <name> <<email>>`.
+
+    Operates on raw bytes — `git format-patch --binary` emits binary
+    file diffs that must pass through untouched. The anchor `^From: `
+    (with colon and space) intentionally does NOT match the
+    `From <sha> Mon Sep 17 ...` mbox separator line, which lacks the
+    colon — only the actual author header is rewritten.
+
+    Per change_promotion_machinery.md Phase 2 (Step 2.2). Companion
+    primitive to `rewrite_identity` which operates on fast-export
+    streams; this one operates on `git format-patch` mbox streams used
+    by the new patch-stream-based promotion pipeline.
+    """
+    pattern = re.compile(rb"^From: .+$", re.MULTILINE)
+    replacement = b"From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
+    return pattern.sub(replacement, stream)
+
+
 def dry_run(
     source: Path, marks_dir: Path, name: str, email: str, branches: str | list = "all"
 ) -> None:

@@ -99,8 +99,10 @@ class TestRewriteFromHeader(unittest.TestCase):
             self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
             self.assertNotIn(b"From: Patricia Garcia", rewritten)
             # `From <sha> Mon Sep 17 ...` separator (no colon) must
-            # not match the `From: ` rewrite anchor.
-            self.assertRegex(rewritten, rb"\nFrom [0-9a-f]+ Mon Sep 17 00:00:00 2001\n")
+            # not match the `From: ` rewrite anchor — the separator
+            # line stays intact (mbox stream starts with it; no
+            # surrounding-newline anchor since it's at position 0).
+            self.assertRegex(rewritten, rb"From [0-9a-f]{40} Mon Sep 17 00:00:00 2001")
             # Binary patch section identical bytes after the marker.
             marker = b"GIT binary patch"
             self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
