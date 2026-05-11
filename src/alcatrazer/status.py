@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
 """
-Live log viewer for the promotion daemon.
+Status surface for an Alcatrazer workspace.
 
-Tails .alcatrazer/promotion-daemon.log so you can watch promotion
+Today this module provides a live log viewer that tails
+`.alcatrazer/promotion-daemon.log` so you can watch promotion
 activity in real time from a separate terminal.
 
+Phase 5 of change_promotion_machinery.md expands this module to back
+the `alcatrazer status` CLI command, rendering the active / held /
+paused state from `state.json` (plus, optionally, the log tail this
+module already does). The module is named `status` (renamed from
+the original `inspect` in Phase 3) to anticipate that consolidation.
+
+The historical name `inspect` was retired because it shadowed
+Python's stdlib `inspect` module whenever any code in
+`src/alcatrazer/` ran as a script (Python puts the script's
+directory at the head of `sys.path`). That shadow broke any code
+path that hit `dataclasses.@dataclass`, which internally calls
+`inspect.get_annotations`. Renaming the file removes the shadow
+permanently.
+
 Usage:
-    .alcatrazer/python -m alcatrazer.inspect
-    .alcatrazer/python -m alcatrazer.inspect --alcatraz-dir <dir>
+    .alcatrazer/python -m alcatrazer.status
+    .alcatrazer/python -m alcatrazer.status --alcatraz-dir <dir>
 """
 
 import sys
@@ -60,6 +75,7 @@ def main():
         print()
         print("The promotion daemon hasn't written any logs yet.")
         print("Start it with: .alcatrazer/python -m alcatrazer.daemon")
+        print("Then watch via:  .alcatrazer/python -m alcatrazer.status")
         sys.exit(1)
 
     tail_follow(log_file)

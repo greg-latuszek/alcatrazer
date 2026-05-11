@@ -35,7 +35,7 @@ def python_bin():
 
 
 DAEMON_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "daemon.py")
-INSPECT_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "inspect.py")
+STATUS_SCRIPT = str(project_dir() / "src" / "alcatrazer" / "status.py")
 PYTHON = python_bin()
 
 # Fixed workspace dir name for test fixtures. Real installs generate a
@@ -1134,8 +1134,11 @@ class TestConflictResolution(_ConflictTestBase):
             proc.wait(timeout=5)
 
 
-class TestInspectPromotion(unittest.TestCase):
-    """Tests for inspect_promotion.py."""
+class TestStatusLogTail(unittest.TestCase):
+    """Tests for status.py (renamed from inspect.py in Phase 3 — see
+    docs/source-tree-analysis.md). Currently a tail -f viewer of
+    .alcatrazer/promotion-daemon.log; Phase 5 will expand it into
+    the `alcatrazer status` command surface."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1150,7 +1153,7 @@ class TestInspectPromotion(unittest.TestCase):
     def test_exits_when_no_log_file(self):
         """Should exit non-zero with helpful message when log doesn't exist."""
         result = subprocess.run(
-            [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+            [PYTHON, STATUS_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
             capture_output=True,
             text=True,
         )
@@ -1164,7 +1167,7 @@ class TestInspectPromotion(unittest.TestCase):
         Path(log_file).write_text("2026-04-06 12:00:00 Daemon started\n")
 
         proc = subprocess.Popen(
-            [PYTHON, INSPECT_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
+            [PYTHON, STATUS_SCRIPT, "--alcatraz-dir", self.alcatraz_dir],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

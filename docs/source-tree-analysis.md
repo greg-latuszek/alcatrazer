@@ -103,10 +103,14 @@ src/alcatrazer/
 │                                # (atomic write via tmp + os.replace).
 │                                # Currently 1 flag (daemon_shutdown).
 │                                # Seed of future "infocenter" layer.
-├── inspect.py            (69L)  # Standalone log viewer for the daemon
-│                                # log. NOT the designed `status` command —
-│                                # just a tail -f. Run via
-│                                # `python -m alcatrazer.inspect`.
+├── status.py             (74L)  # Standalone log viewer for the daemon
+│                                # log (tail -f). Renamed from inspect.py
+│                                # in Phase 3 (the old name shadowed
+│                                # stdlib `inspect`, breaking @dataclass
+│                                # any time alcatrazer code ran as a
+│                                # script). Will grow into the `alcatrazer
+│                                # status` command in Phase 5. Run via
+│                                # `python -m alcatrazer.status`.
 ├── container/
 │   └── entrypoint.sh            # Fixed shell script: root → chown
 │                                # /workspace to phantom UID → exec gosu
@@ -247,7 +251,7 @@ selftest.py
 snapshot.py                  (standalone — no alcatrazer imports)
 identity.py                  (standalone — no alcatrazer imports)
 state.py                     (standalone — no alcatrazer imports)
-inspect.py                   (standalone — no alcatrazer imports)
+status.py                    (standalone — no alcatrazer imports)
 languages.py                 (standalone — data only, no imports)
 alcatraz.py                  (standalone — abstract base only)
 ```
@@ -263,7 +267,7 @@ alcatraz.py                  (standalone — abstract base only)
 - `alcatraz.py` and `docker_prison.py` form the hexagonal seam — only
   `selftest.py` and `start.py` import the concrete `DockerPrison`; other
   consumers take the abstract `Alcatraz` type.
-- `languages.py`, `identity.py`, `snapshot.py`, `state.py`, `inspect.py`
+- `languages.py`, `identity.py`, `snapshot.py`, `state.py`, `status.py`
   are leaf modules (pure functions / data). Easy to test in isolation;
   unlikely to need refactoring.
 
@@ -290,7 +294,7 @@ alcatraz.py                  (standalone — abstract base only)
 | FR-17 (hold on conflict) | `promote.promote_with_conflict_handling` |
 | FR-18 (auto-resume) | `promote.check_resolved_conflicts` |
 | FR-19 (explicit decision on pending) | `start.cmd_clear` (lines 1278+) handles held work |
-| FR-20 (inspect at any moment) | `state.py` + `inspect.py` + future `status` command |
+| FR-20 (inspect at any moment) | `state.py` + `status.py` (rename of former `inspect.py`; Phase 5 grows it into the full `status` CLI surface) |
 | FR-21 (CLI surface, 7 commands) | `cli.py` subparsers (6 shipped + `status` designed) |
 | FR-22 (interactive setup) | `start.cmd_init` + `ask_*` wizard functions |
 | FR-23 (self-correcting bring-up) | `start.cmd_start` + `DockerPrison.needs_rebuild` + `image_matches` |
