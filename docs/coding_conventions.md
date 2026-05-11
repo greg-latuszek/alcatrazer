@@ -110,3 +110,89 @@ refactor:
 
 Future regex additions in `src/alcatrazer/**` must include the
 input-example comment from the start.
+
+---
+
+## User-facing strings speak the user's language
+
+Any string that reaches the user — CLI stdout/stderr, error messages,
+log entries they tail (`.alcatrazer/promotion-daemon.log`), status
+surfaces, help text — must use **git's vocabulary** (branch,
+repository, working tree, conflict, commit, stash, merge) and
+**general programming** concepts. It must **not** use Alcatrazer's
+internal machinery vocabulary.
+
+### Why
+
+The user knows git. They don't know our `pinned_branch`,
+`promote_once`, `mirror mode`, `alcatraz-tree mode`, or the
+`outer`/`inner` direction names. Strings written in tool jargon
+turn the log file from a diagnostic surface into a translation
+exercise; the user stops reading.
+
+### Forbidden tool-internal vocabulary in user-facing strings
+
+| Forbidden | Why it's tool-internal | Use instead |
+|---|---|---|
+| `pin`, `pinned`, `pinned_branch` | a state.json field name | `branch '<name>'` |
+| `promotion`, `promoted`, `promote_once` | an internal operation | `applying`, `applied` |
+| `outer`, `outer repo` | direction of view from Alcatrazer | `your repository`, `your branch` |
+| `inner`, `inner repo`, `inner_root` | direction of view from Alcatrazer | `the workspace`, `the agent` |
+| `mirror mode`, `alcatraz-tree mode` | internal daemon modes | never surface — invisible to user |
+| `last_promoted`, `last_promotion_time` | state.json field names | `last applied commit`, `last application time` |
+| `state.json`, `marks file` | implementation details | omit; or `Alcatrazer's state file` if forced |
+| `git am --abort`, `format-patch` | git internals we wrap | describe what HAPPENED ("the commit could not be applied") |
+
+### Preferred (allowed)
+
+- `branch '<name>'` — naming the actual branch (concrete > abstract)
+- `working tree`, `conflict`, `commit` (verb + noun), `stash`, `merge`
+- `repository`, `your branch`
+- `agent` — proxy for the AI process inside the workspace
+- `workspace` — Alcatrazer-native but maps naturally; OK to surface
+
+### Anti-pattern vs. correct
+
+```python
+# Bad — tool jargon, abstract status code
+log.info("Held: outer state not aligned with pin (status=%s)", pin_status.value)
+
+# Good — git vocabulary, names actual branches, gives the user
+# something they can act on
+current = snapshot.current_branch(str(target)) or "<unknown>"
+log.info(
+    "Held: your repository is on branch %r but Alcatrazer was "
+    "started on %r. Switch back to %r to resume.",
+    current, pinned_branch, pinned_branch,
+)
+```
+
+### How to apply
+
+Before committing any user-facing string:
+
+1. Read it aloud as if you were the user (a developer who knows git
+   but not Alcatrazer internals).
+2. Highlight every word that's tool-machinery vocabulary.
+3. Replace with git / general vocabulary, or with the concrete value
+   (the actual branch name, count, file path).
+4. Where possible, end with an actionable next step ("Switch back to
+   '<branch>' to resume.") instead of a bare state ("Held.").
+
+### Allowed to improve over the feature doc
+
+If the design spec uses jargon (and several do — e.g.
+`change_promotion_machinery.md` L344-354's `outer`, `alcatraz started
+from`), the **implementation should still apply this rule**. Update
+the spec to match the better wording in the same commit. Specs are
+starting points, not ceilings — clarity wins when they conflict.
+
+### Out of scope (this rule does NOT apply to)
+
+- Python identifiers (variable / function / type / module names)
+  — `PinStatus`, `_run_cycle_mirror`, `pinned_branch` as a state.json
+  key are fine in code.
+- Code comments and docstrings (developer-facing).
+- Test names and assertions (developer-facing).
+- Feature docs in `docs/features/` (design-level — though clarity is
+  still preferred where it doesn't cost ambiguity).
