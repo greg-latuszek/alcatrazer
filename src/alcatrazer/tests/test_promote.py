@@ -108,6 +108,50 @@ class TestRewriteFromHeader(unittest.TestCase):
             self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
 
 
+class TestFormatPatchStream(unittest.TestCase):
+    """Phase 2 (change_promotion_machinery.md L812-818): primitive
+    `format_patch_stream(source, since_sha) -> bytes` returns an
+    mbox-format patch stream for the range
+    `<since_sha>..refs/heads/main` — i.e. the commit at `since_sha`
+    itself is excluded; only its descendants on main produce patches.
+    """
+
+    def test_excludes_inner_root_commit_from_stream(self):
+        """Workspace with one initial commit (inner_root) + N agent
+        commits → stream has exactly N patches, not N+1. Counting
+        patches via the mbox `From <sha> Mon Sep 17 ...` separator.
+        """
+        import re
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            subprocess.run(
+                ["git", "init", "-b", "main", workspace],
+                capture_output=True,
+                check=True,
+            )
+            git(workspace, "config", "user.name", "Test")
+            git(workspace, "config", "user.email", "t@test")
+            git(workspace, "config", "commit.gpgsign", "false")
+            # Initial commit — this is what Phase 1 records as inner_root.
+            git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(workspace, "rev-parse", "HEAD")
+
+            # Three agent commits on top of inner_root.
+            for i in range(3):
+                Path(workspace, f"file{i}.txt").write_text(f"content {i}\n")
+                git(workspace, "add", ".")
+                git(workspace, "commit", "-m", f"agent commit {i}")
+
+            stream = promote_mod.format_patch_stream(Path(workspace), inner_root)
+
+            patches = re.findall(rb"^From [0-9a-f]{40} Mon Sep 17", stream, re.MULTILINE)
+            self.assertEqual(len(patches), 3)
+            # Sanity: inner_root's commit message must not appear (it's
+            # excluded from the range).
+            self.assertNotIn(b"Initial commit", stream)
+
+
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
 
