@@ -166,6 +166,46 @@ def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
     return pattern.sub(replacement, stream)
 
 
+def format_patch_stream(source: Path, since_sha: str) -> bytes:
+    """Return an mbox-format patch stream for commits in
+    `<since_sha>..refs/heads/main` of the `source` workspace.
+
+    Wraps `git format-patch --stdout --binary --keep-subject
+    --first-parent <since>..refs/heads/main`:
+
+    - `--stdout` — emit a single mbox stream
+    - `--binary` — include GIT binary patch sections for binary files
+      (otherwise they're silently skipped)
+    - `--keep-subject` — don't prepend "[PATCH]" to Subject
+    - `--first-parent` — linearize merges; the outer repo receives
+      agent work as a chain on its pinned branch, not as a merged
+      topology
+
+    The `since_sha` boundary is exclusive — when the caller passes the
+    workspace's `inner_root` (the Initial commit, recorded by Phase 1
+    in state.json), `inner_root` itself does not appear in the stream;
+    only its descendants do.
+
+    Per change_promotion_machinery.md Phase 2 Step 2.4.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "format-patch",
+            "--stdout",
+            "--binary",
+            "--keep-subject",
+            "--first-parent",
+            f"{since_sha}..refs/heads/main",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout
+
+
 def dry_run(
     source: Path, marks_dir: Path, name: str, email: str, branches: str | list = "all"
 ) -> None:
