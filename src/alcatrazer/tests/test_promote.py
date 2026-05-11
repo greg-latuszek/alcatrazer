@@ -377,6 +377,48 @@ class TestApplyPatchStream(unittest.TestCase):
             # No stale am state — `git am --abort` ran cleanly.
             self.assertFalse((Path(outer) / ".git" / "rebase-apply").exists())
 
+    def test_drops_empty_patches(self):
+        """Inner has an empty agent commit (created with --allow-empty);
+        its representation in the mbox stream lacks a diff section.
+        apply_patch_stream uses `git am --empty=drop` to skip the empty
+        e-mail message silently: no error raised, no new commit added.
+
+        Spec: change_promotion_machinery.md L839-841 (Step 2.9).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner_ws = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner: initial + an EMPTY agent commit (no diff).
+            subprocess.run(
+                ["git", "init", "-b", "main", inner_ws],
+                capture_output=True,
+                check=True,
+            )
+            git(inner_ws, "config", "user.name", "Patricia Garcia")
+            git(inner_ws, "config", "user.email", "patricia@inner.example.com")
+            git(inner_ws, "config", "commit.gpgsign", "false")
+            git(inner_ws, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(inner_ws, "rev-parse", "HEAD")
+            git(inner_ws, "commit", "--allow-empty", "-m", "agent: empty work")
+            stream = promote_mod.format_patch_stream(Path(inner_ws), inner_root)
+
+            # Sanity: the stream contains the empty patch's metadata
+            # (otherwise we're not actually exercising --empty=drop).
+            self.assertIn(b"agent: empty work", stream)
+
+            self._make_outer_with_one_commit(outer)
+            pre_count = int(git(outer, "rev-list", "--count", "HEAD"))
+
+            # Must NOT raise.
+            promote_mod.apply_patch_stream(
+                Path(outer), stream, "Outer User", "user@outer.example.com"
+            )
+
+            # No new commit added — empty patch was dropped.
+            post_count = int(git(outer, "rev-list", "--count", "HEAD"))
+            self.assertEqual(post_count, pre_count)
+
 
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
