@@ -1048,7 +1048,7 @@ def create_workspace(project_dir: Path, workspace_name: str) -> Path:
     _wgit("config", "--local", "user.signingkey", "")
     _wgit("config", "--local", "gpg.ssh.allowedSignersFile", "")
 
-    snapshot.snapshot_workspace(str(project_dir), str(workspace_dir))
+    snapshot.snapshot_workspace(str(project_dir), str(workspace_dir), str(alcatrazer_dir))
 
     return workspace_dir
 
