@@ -152,6 +152,81 @@ class TestFormatPatchStream(unittest.TestCase):
             self.assertNotIn(b"Initial commit", stream)
 
 
+class TestApplyPatchStream(unittest.TestCase):
+    """Phase 2 Steps 2.5-2.10 (change_promotion_machinery.md L820-847):
+    primitive `apply_patch_stream(target, stream, name, email)` is the
+    write-side counterpart to format_patch_stream. It runs `git am` on
+    the mbox stream against `target`, rewriting author + committer to
+    (name, email), preserving outer history, dropping empty patches,
+    and aborting cleanly on conflict.
+    """
+
+    def _make_inner_with_one_agent_commit(self, workspace: str) -> tuple[str, bytes]:
+        """Bootstrap an inner workspace: initial commit + one agent
+        commit adding `feature.py`. Returns (inner_root_sha, patch_stream).
+        """
+        subprocess.run(
+            ["git", "init", "-b", "main", workspace],
+            capture_output=True,
+            check=True,
+        )
+        git(workspace, "config", "user.name", "Patricia Garcia")
+        git(workspace, "config", "user.email", "patricia@inner.example.com")
+        git(workspace, "config", "commit.gpgsign", "false")
+        git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
+        inner_root = git(workspace, "rev-parse", "HEAD")
+        Path(workspace, "feature.py").write_text("def feature():\n    return 42\n")
+        git(workspace, "add", "feature.py")
+        git(workspace, "commit", "-m", "agent: add feature")
+        stream = promote_mod.format_patch_stream(Path(workspace), inner_root)
+        return inner_root, stream
+
+    def _make_outer_with_one_commit(self, outer: str) -> None:
+        """Bootstrap outer with one user commit so apply_patch_stream
+        applies on top, not as the very first commit."""
+        subprocess.run(
+            ["git", "init", "-b", "main", outer],
+            capture_output=True,
+            check=True,
+        )
+        git(outer, "config", "user.name", "Outer User")
+        git(outer, "config", "user.email", "user@outer.example.com")
+        git(outer, "config", "commit.gpgsign", "false")
+        Path(outer, "README.md").write_text("# Project\n")
+        git(outer, "add", "README.md")
+        git(outer, "commit", "-m", "initial outer commit")
+
+    def test_advances_target_branch_and_updates_working_tree(self):
+        """Outer with one commit + apply patches for one agent commit
+        adding `feature.py` → branch has 2 commits, `feature.py` is
+        in the working tree, `git status` is clean.
+
+        Spec: change_promotion_machinery.md L820-823 (Step 2.5).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner_ws = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+            _, stream = self._make_inner_with_one_agent_commit(inner_ws)
+            self._make_outer_with_one_commit(outer)
+
+            promote_mod.apply_patch_stream(
+                Path(outer), stream, "Outer User", "user@outer.example.com"
+            )
+
+            # Branch advanced from 1 to 2 commits.
+            count = int(git(outer, "rev-list", "--count", "HEAD"))
+            self.assertEqual(count, 2)
+            # feature.py landed in the working tree.
+            self.assertTrue(Path(outer, "feature.py").exists())
+            self.assertEqual(
+                Path(outer, "feature.py").read_text(),
+                "def feature():\n    return 42\n",
+            )
+            # Working tree clean (no dirty staging or unstaged changes).
+            status = git(outer, "status", "--porcelain")
+            self.assertEqual(status, "")
+
+
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
 
