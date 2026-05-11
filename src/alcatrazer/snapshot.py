@@ -161,13 +161,22 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
     Called by `alcatrazer.start.create_workspace` after `git init` + identity
     are configured on the workspace.
 
-    When `alcatraz_dir` is provided, records the SHA of the workspace's
-    `Initial commit` as `inner_root` in `<alcatraz_dir>/state.json`. That
-    SHA is the format-patch range boundary for every later promotion cycle
-    (per change_promotion_machinery.md "Recording state" — written once at
-    workspace creation, never updated). Older callers that pass only
-    `(outer_repo, workspace)` get the legacy no-state-write behavior so this
-    addition is non-breaking per Phase 1's "additive, no breakage" rule.
+    When `alcatraz_dir` is provided, records two fields in
+    `<alcatraz_dir>/state.json` (one atomic write):
+
+    - `inner_root` — SHA of the workspace's `Initial commit`. Format-patch
+      range boundary for every later promotion cycle.
+    - `pinned_branch` — outer's currently-checked-out branch name at
+      snapshot time (None on detached HEAD; Step 1.8 will preempt that
+      case in `start.cmd_start` so the snapshot never runs on detached
+      HEAD in production).
+
+    Both are written once at workspace creation, never updated — promotion
+    is bound to this branch and origin commit for the workspace's life
+    (per change_promotion_machinery.md "Recording state"). Older callers
+    that pass only `(outer_repo, workspace)` get the legacy no-state-write
+    behavior so this addition is non-breaking per Phase 1's "additive, no
+    breakage" rule.
     """
     require_git_repo(outer_repo)
     branch = detect_default_branch(outer_repo)
@@ -178,7 +187,12 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
 
     if alcatraz_dir is not None:
         inner_root_sha = _git(workspace, "rev-parse", "HEAD").stdout.strip()
-        state.update_state(Path(alcatraz_dir), inner_root=inner_root_sha)
+        pinned_branch = current_branch(outer_repo)
+        state.update_state(
+            Path(alcatraz_dir),
+            inner_root=inner_root_sha,
+            pinned_branch=pinned_branch,
+        )
 
 
 def _warn_if_on_non_default_branch(outer_repo: str, default: str | None) -> None:
