@@ -1,6 +1,6 @@
 ---
 title: "PRD-001 Alcatrazer — Threat Model Supporting Evidence"
-purpose: "Real, verifiable incidents and CVEs supporting the threat model in PRD-001 §2"
+purpose: "Verifiable incidents and CVEs supporting the threat model in PRD-001 §2"
 date: 2026-05-07
 author: "Grzegorz Latuszek"
 status: research-note
@@ -9,20 +9,20 @@ status: research-note
 # Threat Model Supporting Evidence (PRD-001 §2)
 
 This is a research support note for **PRD-001 Alcatrazer §2 Problem Statement**.
-It collects real, verifiable incidents that demonstrate the three threats the
-product is designed to contain:
+It collects verifiable incidents demonstrating the three threats Alcatrazer
+contains:
 
 - **A.** Credential / data exfiltration from AI coding agents and AI dev tools,
-  typically via prompt injection in untrusted content the agent consumes.
+  via prompt injection in untrusted content the agent consumes.
 - **B.** Malicious-package supply-chain attacks that use the *developer's own
   machine* as the propagation vector (postinstall scripts harvesting tokens,
   republishing under the victim's identity).
 - **C.** Compromise of AI-coding-tool distribution channels (VS Code / Open VSX
-  marketplace, npm-published agents) that ride into the developer's laptop
-  through trusted-looking AI tooling.
+  marketplace, npm-published agents) that reach the developer's laptop via AI
+  tooling trusted by default.
 
 All entries below are independently reported, have published advisories or
-researcher write-ups, and are dated within the last two years.
+researcher write-ups, and are dated 2024-05 or later.
 
 ---
 
@@ -47,7 +47,7 @@ Source: <https://www.legitsecurity.com/blog/camoleak-critical-github-copilot-vul
 <https://www.securityweek.com/github-copilot-chat-flaw-leaked-data-from-private-repositories/>
 
 ### A3 — CurXecute (CVE-2025-54135) and MCPoison (CVE-2025-54136), Cursor IDE, July–August 2025
-A single externally-hosted prompt-injection silently rewrites
+A single externally-hosted prompt-injection rewrites
 `~/.cursor/mcp.json` and runs attacker-controlled commands on the developer's
 machine; companion findings showed how two benign tools (`read_file` +
 `create_diagram`) can be chained to exfiltrate the developer's private SSH
@@ -58,14 +58,14 @@ Source: <https://thehackernews.com/2025/08/cursor-ai-code-editor-fixed-flaw.html
 ### A4 — "Comment and Control": Claude Code, Gemini CLI, and GitHub Copilot, 2026
 A single prompt-injection payload placed in a GitHub pull-request title caused
 *all three* coding agents to leak their own integration secrets out of
-`pull_request_target` workflows. Anthropic rated it CVSS 9.4; Anthropic's own
+`pull_request_target` workflows. Anthropic rated it CVSS 9.4; Anthropic's
 Claude Code system card had pre-disclosed that the tool *"is not hardened
 against prompt injection."*
 Source: <https://venturebeat.com/security/ai-agent-runtime-security-system-card-audit-comment-and-control-2026> ·
 <https://securityboulevard.com/2026/04/even-the-best-ai-agents-leak-secrets-prompt-injection-is-why/>
 
 ### A5 — LangGrinch (CVE-2025-68664), langchain-core, December 2025
-Prompt injection against a LangChain-based agent enables full environment
+Prompt injection against a LangChain-based agent enables environment
 variable theft — cloud provider credentials, database/RAG connection strings,
 LLM API keys and vector database secrets — plus remote code execution.
 Source: <https://nvd.nist.gov/vuln/detail/CVE-2025-68664> ·
@@ -118,9 +118,9 @@ GitHub advisory: <https://github.com/aws/aws-toolkit-vscode/security/advisories/
 
 ### C2 — "MaliciousCorgi" / GlassWorm — malicious AI-assistant extensions, 2025–2026
 Koi Security disclosed ~1.5 M installs of VS Code extensions masquerading as
-AI coding assistants that silently siphoned source code and profiling data;
+AI coding assistants that siphoned source code and profiling data;
 GlassWorm is an ongoing campaign on Visual Studio Marketplace and Open VSX
-distributing malicious extensions designed to steal secrets and drain
+distributing malicious extensions that steal secrets and drain
 cryptocurrency wallets. Wiz separately found >550 validated secrets — including
 OpenAI, Anthropic, Gemini, xAI, DeepSeek, Hugging Face and Perplexity keys —
 hard-coded into >500 published extensions.
