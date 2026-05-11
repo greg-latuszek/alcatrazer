@@ -9,11 +9,14 @@ inputDocuments:
   - 'docs/prds/PRD-001-alcatrazer-validation-report.md'
   - 'docs/prds/PRD-001-alcatrazer-threat-model-research.md'
   - 'docs/design_principles.md'
-lastEdited: '2026-05-07'
+lastEdited: '2026-05-11'
 editHistory:
   - date: '2026-05-07'
     version: 2
-    changes: 'Address validation findings: numeric latency bound (FR-16/NFR-4); enumerate CLI surface (FR-21); JTBD reframe of user stories; downstream-reviewer persona; G7 split into G7a/G7b; FR-3 outbound clarification; FR-6 per-concept interface contract; objectified ACs (FR-9, FR-10, FR-25, FR-31, NFR-3); inline threat-model evidence in §2; provenance-integrity success metric.'
+    changes: 'Address validation findings: numeric latency bound (FR-16/NFR-4); enumerate CLI surface (FR-21); JTBD reframe of user stories; downstream-reviewer persona; G7 split into G7a/G7b; FR-3 outbound clarification; FR-6 per-concept interface contract; objectified ACs (FR-9, FR-10, FR-25, FR-31, NFR-3); inline threat-model evidence in §2; provenance-integrity success metric; stealth-traceability user story (US-11); FR-5 reword (drop implementation leak).'
+  - date: '2026-05-11'
+    version: 2
+    changes: 'Brownfield correction: FR-21 command names realigned to shipped CLI ({init, start, visit, stop, clear, verify, status}); only test→verify is a genuine rename (resolves alcatrazer test / project test ambiguity); G6 lifecycle description verbs aligned. §14 Open Questions: Windows host support and adoption-metric tracking moved to §8 Out of Scope.'
 ---
 
 # PRD-001: Alcatrazer
@@ -98,8 +101,8 @@ purpose-built way to keep agents productive *and* contained.
 - **G5 — Earn trust by proof, not assertion.** Security claims are
   verifiable by the developer on their own machine and against
   independent sources, not taken on faith.
-- **G6 — Stay easy to adopt.** The full lifecycle (set up, bring up,
-  step inside, suspend, reset, verify, status) is covered by a fixed,
+- **G6 — Stay easy to adopt.** The full lifecycle (set up, start,
+  step inside, stop, clear, verify, check status) is covered by a fixed,
   enumerated CLI surface (see FR-21). Adopting and operating Alcatrazer
   does not require the developer to read, write, or maintain the
   underlying isolation technology's configuration (e.g. Dockerfiles,
@@ -256,7 +259,7 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 
 | ID | Requirement | Priority | Acceptance Criteria |
 |---|---|---|---|
-| FR-21 | The full Alcatrazer lifecycle is exposed through a fixed CLI surface of seven top-level commands: `init` (set up in a repository), `up` (bring up the environment), `attach` (step inside), `suspend`, `reset`, `verify`, and `status`. Adding a new top-level command is a deliberate product decision, not an organic accretion. | Must | The CLI exposes exactly these seven top-level commands; an integration test asserts that the set of `--help` top-level entries equals `{init, up, attach, suspend, reset, verify, status}`. None of the seven commands requires the user to read, edit, or understand the underlying isolation technology's configuration. |
+| FR-21 | The full Alcatrazer lifecycle is exposed through a fixed CLI surface of seven top-level commands: `init` (set up in a repository), `start` (bring up the environment), `visit` (step inside), `stop`, `clear`, `verify`, and `status`. Adding a new top-level command is a deliberate product decision, not an organic accretion. | Must | The CLI exposes exactly these seven top-level commands; an integration test asserts that the set of `--help` top-level entries equals `{init, start, visit, stop, clear, verify, status}`. None of the seven commands requires the user to read, edit, or understand the underlying isolation technology's configuration. |
 | FR-22 | Setup is interactive by default, with a non-interactive mode for automation. The user is asked only what the tool cannot infer. | Must | Re-running setup against an already-configured repository offers to reuse prior choices. |
 | FR-23 | Bring-up is self-correcting: the tool detects when it must rebuild the sandbox image, restart the runtime, or skip work, and acts accordingly. The user does not manage these states by hand. | Must | A configuration change between runs is picked up automatically. Rebuild loops or stale-image surprises do not occur. |
 | FR-24 | Suspend and reset are idempotent. Any agent commits eligible for promotion are flushed before the runtime is torn down (FR-19 covers the held-and-pending case). | Must | A graceful suspend/reset followed by bring-up shows zero lost commits in the un-held case. |
@@ -340,6 +343,11 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
   actionable upgrade message rather than carrying migration code.
 - **Cross-branch promotion or branch-namespace remapping.** Agent
   work begins from, and returns to, a single starting branch.
+- **Windows host support.** Linux and macOS are the supported host
+  platforms (per NFR-9). Windows is not on the roadmap.
+- **Adoption-metric tracking.** The project deliberately does not
+  optimize for download counts, public stars, or similar visibility
+  metrics.
 
 ## 9. Success Metrics / KPIs
 
@@ -417,9 +425,6 @@ Promotion is a term we use to describe agent work transfer to real repo on host 
 
 ## 14. Open Questions
 
-- [ ] Windows: aspirational support, or formally out of scope?
-- [ ] Should adoption metrics (e.g. download counts, public stars) be
-  tracked, or is the project deliberately not optimizing for them?
 - [ ] Do target-persona developers articulate the round-trip /
   identity-rewriting / hold-on-conflict combination as a felt need, or
   only *"I want my agent to be safe"*? The framing of the project's
