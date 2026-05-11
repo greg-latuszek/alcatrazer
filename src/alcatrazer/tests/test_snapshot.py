@@ -1153,6 +1153,35 @@ class TestSnapshotRecordsState(unittest.TestCase):
             recorded = state.load_state(alcatraz_dir).get("inner_root")
             self.assertEqual(recorded, expected_sha)
 
+    def test_records_pinned_branch_as_outer_current_branch(self):
+        """`state.json.pinned_branch` equals the name of outer's
+        currently-checked-out branch at snapshot time. Written once,
+        never updated — promotion is bound to this branch for the life
+        of the workspace.
+
+        Spec: change_promotion_machinery.md L783-788 (Step 1.3).
+        """
+        from alcatrazer import snapshot, state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            make_repo(outer, branch="main")
+            # Move outer to a feature branch so the recorded pin is
+            # observably different from the default branch.
+            subprocess.run(
+                ["git", "-C", outer, "checkout", "-b", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            init_workspace(workspace)
+
+            snapshot.snapshot_workspace(outer, workspace, str(alcatraz_dir))
+
+            recorded = state.load_state(alcatraz_dir).get("pinned_branch")
+            self.assertEqual(recorded, "feat/X")
+
 
 if __name__ == "__main__":
     unittest.main()
