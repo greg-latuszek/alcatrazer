@@ -1413,6 +1413,171 @@ class TestRunCycleMirror(unittest.TestCase):
                 f"expected 'Resumed: ... 2 commits' log on cycle 3, got: {new_messages}",
             )
 
+    def test_paused_state_transition_logs_paused_then_resumed(self):
+        """Paused-state lifecycle across cycles (Step 4.3 / L909-913):
+
+        Setup: inner edits shared.py v1 -> v2 (agent commit). Outer
+        on pinned feat/X has its own conflicting edit to shared.py
+        (user committed "v2-user").
+
+        Cycle 1: apply collides. promote_once writes state.paused,
+        returns PAUSED. log emits "Paused: ..." entry.
+
+        Cycle 2: user resolves by reverting their conflicting commit
+        (`git reset --hard HEAD~1`), so outer's shared.py is back at
+        v1 — the patch's expected base. promote_once succeeds, clears
+        state.paused, returns PROMOTED. log emits "Resumed: working-
+        tree conflict resolved" entry.
+        """
+        from alcatrazer import daemon, state
+        from alcatrazer.promote import PromotionOutcome
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            # Inner: initial with shared.py = v1; agent edits to v2.
+            inner.mkdir()
+            subprocess.run(
+                ["git", "init", "-b", "main", str(inner)],
+                capture_output=True,
+                check=True,
+            )
+            for k, v in (
+                ("user.name", "Patricia Garcia"),
+                ("user.email", "patricia@inner.example.com"),
+                ("commit.gpgsign", "false"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(inner), "config", k, v],
+                    capture_output=True,
+                    check=True,
+                )
+            Path(inner, "shared.py").write_text("v1\n")
+            subprocess.run(
+                ["git", "-C", str(inner), "add", "shared.py"],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(inner), "commit", "-m", "Initial commit"],
+                capture_output=True,
+                check=True,
+            )
+            inner_root = subprocess.run(
+                ["git", "-C", str(inner), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            Path(inner, "shared.py").write_text("v2 - agent\n")
+            subprocess.run(
+                ["git", "-C", str(inner), "add", "."],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(inner), "commit", "-m", "agent: edit shared"],
+                capture_output=True,
+                check=True,
+            )
+
+            # Outer on feat/X: shared.py = v1 initially, then user
+            # commits a conflicting edit to "v2 - user".
+            outer.mkdir()
+            subprocess.run(
+                ["git", "init", "-b", "feat/X", str(outer)],
+                capture_output=True,
+                check=True,
+            )
+            for k, v in (
+                ("user.name", "Outer User"),
+                ("user.email", "user@outer.example.com"),
+                ("commit.gpgsign", "false"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(outer), "config", k, v],
+                    capture_output=True,
+                    check=True,
+                )
+            Path(outer, "shared.py").write_text("v1\n")
+            subprocess.run(
+                ["git", "-C", str(outer), "add", "shared.py"],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(outer), "commit", "-m", "initial outer"],
+                capture_output=True,
+                check=True,
+            )
+            Path(outer, "shared.py").write_text("v2 - user\n")
+            subprocess.run(
+                ["git", "-C", str(outer), "add", "."],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(outer), "commit", "-m", "user: conflicting edit"],
+                capture_output=True,
+                check=True,
+            )
+
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            log, records = self._capturing_logger()
+
+            # Cycle 1: conflict -> PAUSED, "Paused:" logged.
+            status1 = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=None,
+            )
+            self.assertEqual(status1, PromotionOutcome.PAUSED)
+            messages_after_cycle1 = [r.getMessage() for r in records]
+            self.assertTrue(
+                any("Paused" in m for m in messages_after_cycle1),
+                f"expected 'Paused' log on cycle 1, got: {messages_after_cycle1}",
+            )
+            # state.paused should be recorded.
+            self.assertIsNotNone(state.load_state(alcatraz_dir).get("paused"))
+            records_after_cycle1 = len(records)
+
+            # User resolves: revert their conflicting commit so the
+            # patch's base (v1) matches outer's HEAD content again.
+            subprocess.run(
+                ["git", "-C", str(outer), "reset", "--hard", "HEAD~1"],
+                capture_output=True,
+                check=True,
+            )
+
+            # Cycle 2: PROMOTED, "Resumed:" logged.
+            status2 = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=status1,
+            )
+            self.assertEqual(status2, PromotionOutcome.PROMOTED)
+            new_messages = [r.getMessage() for r in records[records_after_cycle1:]]
+            self.assertTrue(
+                any("Resumed" in m for m in new_messages),
+                f"expected 'Resumed' log on cycle 2, got: {new_messages}",
+            )
+            # state.paused should be cleared by the successful cycle.
+            self.assertIsNone(state.load_state(alcatraz_dir).get("paused"))
+
 
 class TestStatusLogTail(unittest.TestCase):
     """Tests for status.py (renamed from inspect.py in Phase 3 — see
