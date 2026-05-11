@@ -148,22 +148,49 @@ def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
 
 
 def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
-    """Substitute the `From: ` header line in an mbox-format patch
-    stream with `From: <name> <<email>>`.
+    """Substitute the author `From: ` header line in an mbox-format
+    patch stream with `From: <name> <<email>>`.
 
     Operates on raw bytes — `git format-patch --binary` emits binary
-    file diffs that must pass through untouched. The anchor `^From: `
-    (with colon and space) intentionally does NOT match the
-    `From <sha> Mon Sep 17 ...` mbox separator line, which lacks the
-    colon — only the actual author header is rewritten.
+    file diffs that must pass through untouched.
 
     Per change_promotion_machinery.md Phase 2 (Step 2.2). Companion
     primitive to `rewrite_identity` which operates on fast-export
     streams; this one operates on `git format-patch` mbox streams used
     by the new patch-stream-based promotion pipeline.
     """
-    pattern = re.compile(rb"^From: .+$", re.MULTILINE)
-    replacement = b"From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
+    # Input (one mbox message from `git format-patch --stdout`):
+    #   From <40hex> Mon Sep 17 00:00:00 2001          <- mbox separator
+    #   From: <author name> <<author email>>           <- TARGET
+    #   Date: <RFC 2822 timestamp>
+    #   Subject: [PATCH] <subject>
+    #
+    #   <commit body, free-form text — may legitimately contain lines
+    #    starting with "From: ", e.g. an email quoted in the body or
+    #    a config-file example. Those MUST NOT match this regex.>
+    #   ---
+    #   <diff/patch content, possibly binary>
+    #
+    # Boundary: the legitimate target is the `From: ` line that
+    # appears IMMEDIATELY AFTER the `From <40hex> Mon Sep 17 ...`
+    # mbox separator line. A naive `^From: ` anchor (with colon) is
+    # not strict enough — it matches body lines and any other
+    # `From: ` in the patch content. So we capture the separator line
+    # in group 1 and replace only the line that directly follows it,
+    # preserving the separator unchanged.
+    #
+    # The 40-hex anchor + the literal `Mon Sep 17 00:00:00 2001`
+    # (git's stable mbox "From " separator timestamp) makes this
+    # match resilient: the only realistic way to mis-match would be
+    # if a commit body contained a forged line with that exact shape
+    # — and even then the *next* line would still need to start with
+    # `From: ` for the pattern to fire.
+    pattern = re.compile(
+        rb"(?m)^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
+    )
+    replacement = (
+        b"\\1From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
+    )
     return pattern.sub(replacement, stream)
 
 
