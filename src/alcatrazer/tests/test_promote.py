@@ -123,29 +123,35 @@ class TestRewriteFromHeader(unittest.TestCase):
         to the agent's email MUST survive intact (we'd otherwise
         rewrite content the agent deliberately wrote).
 
-        Without proper anchoring, the regex matches every `From: ` in
-        the stream — corrupting body lines too. See
-        docs/coding_conventions.md "Regex parsing must be preceded by
-        an input-example comment".
+        Method: produce the rewritten patch stream, apply it to a
+        real outer repo via plain `git am`, then ask git directly
+        who the author is and what the commit body says. This
+        sidesteps stream-byte-matching entirely — we test the
+        SEMANTIC end effect, not the intermediate mbox shape.
+        Plain `git am` is used (not apply_patch_stream) to keep
+        this test focused on rewrite_from_header in isolation.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = str(Path(tmp) / "workspace")
+            inner = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner workspace: identity = Patricia, and the commit
+            # message body deliberately references that same email
+            # as a config snippet.
             subprocess.run(
-                ["git", "init", "-b", "main", workspace],
+                ["git", "init", "-b", "main", inner],
                 capture_output=True,
                 check=True,
             )
-            # Inner identity — both as the commit's author/committer
-            # (header) AND referenced inside the commit message body
-            # below. The promotion must rewrite the header but not
-            # touch the body reference.
-            git(workspace, "config", "user.name", "Patricia Garcia")
-            git(workspace, "config", "user.email", "patricia@inner.example.com")
-            git(workspace, "config", "commit.gpgsign", "false")
-            Path(workspace, "file.txt").write_text("content\n")
-            git(workspace, "add", "file.txt")
+            git(inner, "config", "user.name", "Patricia Garcia")
+            git(inner, "config", "user.email", "patricia@inner.example.com")
+            git(inner, "config", "commit.gpgsign", "false")
+            git(inner, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(inner, "rev-parse", "HEAD")
+            Path(inner, "file.txt").write_text("content\n")
+            git(inner, "add", "file.txt")
             git(
-                workspace,
+                inner,
                 "commit",
                 "-m",
                 "Subject line\n\n"
@@ -155,49 +161,55 @@ class TestRewriteFromHeader(unittest.TestCase):
                 "More body content after the deliberate reference.",
             )
 
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    workspace,
-                    "format-patch",
-                    "--stdout",
-                    "--binary",
-                    "--keep-subject",
-                    "-1",
-                    "HEAD",
-                ],
-                capture_output=True,
-                check=True,
-            )
-            stream = result.stdout
-            # Sanity — the inner email appears in the stream in two
-            # distinct shapes:
-            #   1. Inside the header: `From: Patricia Garcia <patricia@inner.example.com>`
-            #   2. As a standalone body line: `From: patricia@inner.example.com`
-            # Counting the bare email substring picks up both — total 2.
-            # If we got a different count, the test setup is wrong and
-            # the over-match check below would bite on the wrong shape.
-            self.assertEqual(stream.count(b"patricia@inner.example.com"), 2)
-            # And confirm the body line specifically is present (the
-            # form rewrite_from_header could over-match).
-            self.assertIn(b"From: patricia@inner.example.com", stream)
-
+            stream = promote_mod.format_patch_stream(Path(inner), inner_root)
             rewritten = promote_mod.rewrite_from_header(
                 stream, "Alice Example", "alice@example.com"
             )
 
-            # Header rewritten to the outer identity.
-            self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
-            # Body's reference to the inner email is preserved — with
-            # the old (buggy) `^From: .+$` regex this line was also
-            # rewritten to Alice, corrupting deliberate agent content.
-            self.assertIn(b"From: patricia@inner.example.com", rewritten)
-            # Substring count: header occurrence (inside <...>) was
-            # replaced by alice@example.com, so the inner email now
-            # appears exactly once — in the body. If the regex over-
-            # matched, the count would be 0 (body line also replaced).
-            self.assertEqual(rewritten.count(b"patricia@inner.example.com"), 1)
+            # Outer repo with one initial commit so git am applies the
+            # patch on top.
+            subprocess.run(
+                ["git", "init", "-b", "main", outer],
+                capture_output=True,
+                check=True,
+            )
+            git(outer, "config", "user.name", "Outer User")
+            git(outer, "config", "user.email", "user@outer.example.com")
+            git(outer, "config", "commit.gpgsign", "false")
+            Path(outer, "README.md").write_text("# Project\n")
+            git(outer, "add", "README.md")
+            git(outer, "commit", "-m", "initial outer commit")
+
+            # Apply the rewritten stream via plain `git am` (NOT
+            # apply_patch_stream — we want to isolate rewrite_from_header
+            # here; apply_patch_stream is tested separately).
+            subprocess.run(
+                ["git", "-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
+                input=rewritten,
+                capture_output=True,
+                check=True,
+            )
+
+            # Ask git directly: who is the author of the top commit?
+            # If rewrite_from_header did its job, it's Alice.
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%an <%ae>"),
+                "Alice Example <alice@example.com>",
+            )
+            # Ask git directly: what is the body of the top commit?
+            # If the regex over-matched, the body's "From: patricia@..."
+            # would have been rewritten to "From: Alice ...", losing
+            # the agent's deliberate content. The semantic check is
+            # "the agent's email reference survives in the commit body".
+            body = git(outer, "log", "-1", "--format=%B")
+            self.assertIn("patricia@inner.example.com", body)
+            self.assertIn("From: patricia@inner.example.com", body)
+            # And Patricia's name/email must NOT appear as author or
+            # committer in the outer's log (header rewrite is complete).
+            self.assertNotIn(
+                "Patricia",
+                git(outer, "log", "--all", "--format=%an %ae %cn %ce"),
+            )
 
 
 class TestFormatPatchStream(unittest.TestCase):
