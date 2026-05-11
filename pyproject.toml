@@ -69,6 +69,3 @@ select = [
 ignore = [
     "UP036",  # version guard blocks — we keep these for friendly errors when run directly with old Python
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["src/alcatrazer/tests", "src/alcatrazer/integration_tests"]

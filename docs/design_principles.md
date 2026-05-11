@@ -87,6 +87,19 @@ Python developers already trust Python and its standard library.
 **How to apply:** Before adding any `pip install` dependency, exhaust stdlib alternatives. 
 If stdlib truly cannot do the job, this principle must be revisited as an explicit decision, not a quiet drift.
 
+**Scope — three trust boundaries:**
+
+This rule binds the **runtime trust surface** only — everything under `src/alcatrazer/**`, including 
+the bundled test suite (which is why tests use stdlib `unittest`, not pytest — tests ship with the 
+package and run on the user's machine via `alcatrazer verify`). It does not bind:
+
+- **Development tooling** (linters, build backends, release tools) — third-party is accepted 
+  (currently `ruff`, `build`, `twine`); these never run on the user's machine. Audit responsibility 
+  belongs to contributors, not users.
+- **Host OS dependencies** (`bash`, `git`, Docker, standard Unix tools like `sha256sum`) — 
+  assumed ambient; we don't bundle them and we don't audit them. NFR-9 (Linux + macOS) defines 
+  supported host environments.
+
 ### Tests Bundled with Installation
 
 The test suite ships alongside the tool code. End users run `alcatrazer test` to verify 
