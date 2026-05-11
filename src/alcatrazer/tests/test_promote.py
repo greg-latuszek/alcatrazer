@@ -259,6 +259,86 @@ class TestRewriteFromHeader(unittest.TestCase):
             self.assertNotIn("inner.example.com", log)
 
 
+class TestCheckPin(unittest.TestCase):
+    """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
+    classifies the outer's current HEAD against the recorded pin
+    into one of four `PinStatus` values:
+
+    - `OK`          — outer is on the pinned branch
+    - `OFF_PIN`     — outer is on a different (existing) branch
+    - `DETACHED`    — outer is on detached HEAD
+    - `PIN_DELETED` — pinned branch no longer exists in outer
+
+    This is the gate for promote_once: only OK lets patches apply;
+    the other three states put promotion on hold (no work done, no
+    error, no state mutation).
+    """
+
+    def _make_target_with_pinned_branch(self, target: str, pinned: str) -> None:
+        """Initialize `target` as a git repo on `pinned`, with one
+        commit so HEAD is real (not a "no commits yet" state)."""
+        subprocess.run(
+            ["git", "init", "-b", pinned, target],
+            capture_output=True,
+            check=True,
+        )
+        git(target, "config", "user.name", "Outer User")
+        git(target, "config", "user.email", "user@outer.example.com")
+        git(target, "config", "commit.gpgsign", "false")
+        git(target, "commit", "--allow-empty", "-m", "initial outer commit")
+
+    def test_returns_OK_when_on_pinned_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "outer")
+            self._make_target_with_pinned_branch(target, "feat/X")
+            self.assertEqual(
+                promote_mod.check_pin(Path(target), "feat/X"),
+                promote_mod.PinStatus.OK,
+            )
+
+    def test_returns_OFF_PIN_when_on_different_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "outer")
+            self._make_target_with_pinned_branch(target, "feat/X")
+            # Switch to a different existing branch.
+            subprocess.run(
+                ["git", "-C", target, "checkout", "-b", "main"],
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(
+                promote_mod.check_pin(Path(target), "feat/X"),
+                promote_mod.PinStatus.OFF_PIN,
+            )
+
+    def test_returns_DETACHED_when_head_is_detached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "outer")
+            self._make_target_with_pinned_branch(target, "feat/X")
+            sha = git(target, "rev-parse", "HEAD")
+            subprocess.run(
+                ["git", "-C", target, "checkout", "--detach", sha],
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(
+                promote_mod.check_pin(Path(target), "feat/X"),
+                promote_mod.PinStatus.DETACHED,
+            )
+
+    def test_returns_PIN_DELETED_when_pinned_branch_does_not_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "outer")
+            # Set up with `main` checked out; pin claims `feat/X` but
+            # that branch is never created — represents the "user
+            # deleted the pinned branch" state.
+            self._make_target_with_pinned_branch(target, "main")
+            self.assertEqual(
+                promote_mod.check_pin(Path(target), "feat/X"),
+                promote_mod.PinStatus.PIN_DELETED,
+            )
+
+
 class TestFormatPatchStream(unittest.TestCase):
     """Phase 2 (change_promotion_machinery.md L812-818): primitive
     `format_patch_stream(source, since_sha) -> bytes` returns an
