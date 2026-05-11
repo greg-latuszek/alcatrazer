@@ -1311,6 +1311,108 @@ class TestRunCycleMirror(unittest.TestCase):
                 f"expected 'Promoted 1 commit(s)' log entry, got: {messages}",
             )
 
+    def test_held_state_transition_logs_once_then_resumed(self):
+        """Held-state lifecycle across three cycles (Step 4.2 / L904-907):
+
+        1. outer is off-pin (on `main`, pinned is `feat/X`) → cycle 1
+           returns HELD, log emits "Held:" once.
+        2. agent commits more while held; cycle 2 still HELD →
+           NO new log entry (last_logged_status == HELD suppresses
+           the noisy poll-per-poll repeat).
+        3. user recheckouts feat/X; cycle 3 returns PROMOTED, log emits
+           "Resumed: ... replaying N commits" with the piled count.
+        """
+        from alcatrazer import daemon, state
+        from alcatrazer.promote import PromotionOutcome
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            inner_root = self._make_inner(inner)
+            self._agent_commit(
+                inner, "f1.py", "# agent 1\n", "agent: commit 1"
+            )
+
+            # Outer initialised on `main`; feat/X exists but isn't
+            # checked out (so check_pin returns OFF_PIN, not PIN_DELETED).
+            self._make_outer(outer, "main")
+            subprocess.run(
+                ["git", "-C", str(outer), "branch", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            log, records = self._capturing_logger()
+
+            # Cycle 1: off-pin → HELD, log "Held:".
+            status1 = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=None,
+            )
+            self.assertEqual(status1, PromotionOutcome.HELD)
+            held_logs_after_cycle1 = [r.getMessage() for r in records]
+            self.assertTrue(
+                any("Held" in m for m in held_logs_after_cycle1),
+                f"expected 'Held' log on cycle 1, got: {held_logs_after_cycle1}",
+            )
+            records_after_cycle1 = len(records)
+
+            # Cycle 2: still off-pin, more agent commits. HELD, no new log.
+            self._agent_commit(inner, "f2.py", "# agent 2\n", "agent: commit 2")
+            status2 = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=status1,
+            )
+            self.assertEqual(status2, PromotionOutcome.HELD)
+            # No new log records since cycle 1 — transition-only logging
+            # must suppress repeat-Held noise.
+            self.assertEqual(
+                len(records),
+                records_after_cycle1,
+                "transition-only logging: HELD->HELD should not log "
+                "again. New records: "
+                f"{[r.getMessage() for r in records[records_after_cycle1:]]}",
+            )
+
+            # Cycle 3: user recheckouts feat/X. PROMOTED with 2 piled
+            # commits, log "Resumed: ..." mentioning the count.
+            subprocess.run(
+                ["git", "-C", str(outer), "checkout", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            status3 = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=status2,
+            )
+            self.assertEqual(status3, PromotionOutcome.PROMOTED)
+            new_messages = [r.getMessage() for r in records[records_after_cycle1:]]
+            self.assertTrue(
+                any("Resumed" in m and "2" in m for m in new_messages),
+                f"expected 'Resumed: ... 2 commits' log on cycle 3, got: {new_messages}",
+            )
+
 
 class TestStatusLogTail(unittest.TestCase):
     """Tests for status.py (renamed from inspect.py in Phase 3 — see
