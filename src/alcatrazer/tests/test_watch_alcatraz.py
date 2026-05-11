@@ -1134,6 +1134,184 @@ class TestConflictResolution(_ConflictTestBase):
             proc.wait(timeout=5)
 
 
+class TestRunCycleMirror(unittest.TestCase):
+    """Phase 4 (change_promotion_machinery.md L896-919): the daemon's
+    mirror-mode cycle now calls promote_once + tracks status across
+    cycles via `last_logged_status` for transition-only logging.
+
+    These tests exercise `daemon._run_cycle_mirror` directly (a new
+    top-level function extracted from the closure-based run_cycle
+    that currently lives inside daemon.main). The in-process call
+    sidesteps subprocess flakiness while still covering the
+    transition logic the daemon depends on.
+    """
+
+    def _make_inner(self, inner: Path) -> str:
+        """Initial empty commit (inner_root) — caller adds more commits."""
+        inner.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main", str(inner)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Patricia Garcia"),
+            ("user.email", "patricia@inner.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(inner), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(inner), "commit", "--allow-empty", "-m", "Initial commit"],
+            capture_output=True,
+            check=True,
+        )
+        return subprocess.run(
+            ["git", "-C", str(inner), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _make_outer(self, outer: Path, branch: str) -> None:
+        outer.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", branch, str(outer)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Outer User"),
+            ("user.email", "user@outer.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(outer), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(outer), "commit", "--allow-empty", "-m", "initial outer commit"],
+            capture_output=True,
+            check=True,
+        )
+
+    def _capturing_logger(self):
+        """Logger that captures all records into a list for assertion."""
+        import logging
+
+        records: list[logging.LogRecord] = []
+        log = logging.getLogger(f"test-{id(records)}")
+        log.handlers.clear()
+        log.setLevel(logging.INFO)
+        handler = logging.Handler()
+        handler.emit = records.append
+        log.addHandler(handler)
+        return log, records
+
+    def _agent_commit(self, inner: Path, filename: str, content: str, message: str) -> None:
+        Path(inner, filename).write_text(content)
+        subprocess.run(
+            ["git", "-C", str(inner), "add", filename],
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(inner), "commit", "-m", message],
+            capture_output=True,
+            check=True,
+        )
+
+    def test_end_to_end_promotes_agent_commit(self):
+        """Manual-test shape: outer on feat/X with one initial commit;
+        agent commits inside; `_run_cycle_mirror` applies the patch.
+
+        Asserts (Step 4.1 / L898-902):
+        - outer's feat/X is 2 commits (original + 1 promoted)
+        - original commit is ancestor of HEAD
+        - working tree clean
+        - feature.py present
+        - returns PromotionOutcome.PROMOTED
+        - log contains "Promoted 1 commit(s)"
+        """
+        from alcatrazer import daemon, state
+        from alcatrazer.promote import PromotionOutcome
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            inner_root = self._make_inner(inner)
+            self._agent_commit(
+                inner, "feature.py", "def feature():\n    return 42\n", "agent: add feature"
+            )
+            self._make_outer(outer, "feat/X")
+            outer_initial = subprocess.run(
+                ["git", "-C", str(outer), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            log, records = self._capturing_logger()
+
+            new_status = daemon._run_cycle_mirror(
+                source=inner,
+                target=outer,
+                alcatraz_dir=alcatraz_dir,
+                name="Outer User",
+                email="user@outer.example.com",
+                log=log,
+                last_logged_status=None,
+            )
+
+            self.assertEqual(new_status, PromotionOutcome.PROMOTED)
+            # Outer advanced from 1 to 2 commits.
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(outer), "rev-list", "--count", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip(),
+                "2",
+            )
+            # Original outer commit still ancestor of HEAD.
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(outer), "merge-base", "--is-ancestor", outer_initial, "HEAD"],
+                    capture_output=True,
+                ).returncode,
+                0,
+            )
+            # Working tree clean.
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(outer), "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip(),
+                "",
+            )
+            self.assertTrue(Path(outer, "feature.py").exists())
+            # Promoted log entry.
+            messages = [r.getMessage() for r in records]
+            self.assertTrue(
+                any("Promoted 1 commit" in m for m in messages),
+                f"expected 'Promoted 1 commit(s)' log entry, got: {messages}",
+            )
+
+
 class TestStatusLogTail(unittest.TestCase):
     """Tests for status.py (renamed from inspect.py in Phase 3 — see
     docs/source-tree-analysis.md). Currently a tail -f viewer of
