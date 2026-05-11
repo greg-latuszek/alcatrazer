@@ -344,14 +344,28 @@ intent explicit.
 ### Daemon log
 
 Adds these per-event entries (transitions only, never per-poll).
-Diagnostic logs are still readable to humans, so they avoid the
-"pinned" jargon too:
+Messages use git's vocabulary and name the actual branches — per
+`docs/coding_conventions.md` "User-facing strings speak the user's
+language", they avoid project jargon (`pin`, `pinned`, `promotion`,
+`outer`, `inner`):
 
-- `Held: outer on <current>, alcatraz started from <start>`
-- `Resumed: outer back on <start>, replaying N commits`
-- `Promoted N commit(s) to <start>`
-- `Paused: working-tree conflict on <start>`
-- `Resumed: working-tree conflict resolved`
+- `Held: your repository is on branch '<current>' but Alcatrazer was
+  started on '<start>'. Switch back to '<start>' to resume.`
+- `Held: your repository has a detached HEAD. Check out branch
+  '<start>' to resume.` *(DETACHED variant)*
+- `Held: branch '<start>' no longer exists in your repository.
+  Recreate it (e.g. `` `git branch <start>` ``) to resume.`
+  *(PIN_DELETED variant)*
+- `Resumed: back on branch '<start>'. Applying N agent commit(s).`
+- `Resumed: conflict on branch '<start>' resolved.`
+- `Applied N agent commit(s) to branch '<start>'.`
+- `Paused: your working tree on branch '<start>' overlaps with an
+  agent commit. Commit or stash your changes and Alcatrazer will
+  resume.`
+
+The earlier draft of this section used `outer`, `pinned`, `Promoted`,
+and `alcatraz started from` — internal jargon the end user doesn't
+speak. Revised in Phase 4 BLUE to match the rule and improve clarity.
 
 ## Conflict semantics
 

@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 
 # Import sibling modules
-from alcatrazer import identity, state
+from alcatrazer import identity, snapshot, state
 from alcatrazer import promote as promote_mod
 
 # --- Default config ---
@@ -130,17 +130,40 @@ def _run_cycle_mirror(
     log entries. Returns the resulting `PromotionOutcome` so the
     caller can pass it as `last_logged_status` on the next call.
 
-    Logs (per change_promotion_machinery.md L346-354):
-      - On PROMOTED with N > 0 and no transition:    "Promoted N commit(s)"
-      - On HELD -> PROMOTED transition:              "Resumed: ... replaying N commits"
-      - On PAUSED -> PROMOTED transition:            "Resumed: working-tree conflict resolved"
-      - On (None / PROMOTED / PAUSED) -> HELD:       "Held: outer state not aligned (status=<pin>)"
-      - On (None / PROMOTED / HELD) -> PAUSED:       "Paused: working-tree conflict — <message>"
-      - On HELD -> HELD or PAUSED -> PAUSED:         (no log — transition-only suppression)
-      - On PROMOTED with N == 0 (steady-state poll): (no log)
+    Log messages use git's vocabulary and the actual branch names —
+    see docs/coding_conventions.md "User-facing strings speak the
+    user's language". Sample lines as the user sees them in
+    `.alcatrazer/promotion-daemon.log` (and via
+    `python -m alcatrazer.status`):
+
+      - PROMOTED with N > 0 and no transition:
+            "Applied 3 agent commit(s) to branch 'feat/X'."
+      - HELD -> PROMOTED transition:
+            "Resumed: back on branch 'feat/X'. Applying 3 agent commit(s)."
+      - PAUSED -> PROMOTED transition:
+            "Resumed: conflict on branch 'feat/X' resolved."
+      - entering HELD (OFF_PIN — most common):
+            "Held: your repository is on branch 'main' but Alcatrazer
+            was started on 'feat/X'. Switch back to 'feat/X' to resume."
+      - entering HELD (DETACHED):
+            "Held: your repository has a detached HEAD. Check out
+            branch 'feat/X' to resume."
+      - entering HELD (PIN_DELETED):
+            "Held: branch 'feat/X' no longer exists in your
+            repository. Recreate it (e.g. `git branch feat/X`)
+            to resume."
+      - entering PAUSED:
+            "Paused: your working tree on branch 'feat/X' overlaps
+            with an agent commit. Commit or stash your changes and
+            Alcatrazer will resume."
+      - HELD -> HELD / PAUSED -> PAUSED / steady-state PROMOTED with
+        N == 0: silent (transition-only).
 
     Per change_promotion_machinery.md Phase 4 Step 4.4 (L915-919).
     """
+    state_data = state.load_state(alcatraz_dir)
+    pinned_branch = state_data.get("pinned_branch", "<unknown>")
+
     result = promote_mod.promote_once(source, target, alcatraz_dir, name, email)
     outcome = result.outcome
     PO = promote_mod.PromotionOutcome
@@ -148,26 +171,54 @@ def _run_cycle_mirror(
     if outcome is PO.PROMOTED:
         if last_logged_status is PO.HELD:
             log.info(
-                "Resumed: outer back on pinned branch, replaying %d commits",
+                "Resumed: back on branch %r. Applying %d agent commit(s).",
+                pinned_branch,
                 result.commit_count,
             )
         elif last_logged_status is PO.PAUSED:
-            log.info("Resumed: working-tree conflict resolved")
+            log.info(
+                "Resumed: conflict on branch %r resolved.",
+                pinned_branch,
+            )
         elif result.commit_count > 0:
-            log.info("Promoted %d commit(s)", result.commit_count)
+            log.info(
+                "Applied %d agent commit(s) to branch %r.",
+                result.commit_count,
+                pinned_branch,
+            )
         # else: PROMOTED with no transition + no work — silent steady-state poll
     elif outcome is PO.HELD:
         if last_logged_status is not PO.HELD:
-            pin_label = result.pin_status.value if result.pin_status else "unknown"
-            log.info(
-                "Held: outer state not aligned with pin (status=%s)",
-                pin_label,
-            )
+            pin = result.pin_status
+            if pin is promote_mod.PinStatus.DETACHED:
+                log.info(
+                    "Held: your repository has a detached HEAD. "
+                    "Check out branch %r to resume.",
+                    pinned_branch,
+                )
+            elif pin is promote_mod.PinStatus.PIN_DELETED:
+                log.info(
+                    "Held: branch %r no longer exists in your repository. "
+                    "Recreate it (e.g. `git branch %s`) to resume.",
+                    pinned_branch,
+                    pinned_branch,
+                )
+            else:  # OFF_PIN — most common held case
+                current = snapshot.current_branch(str(target)) or "<unknown>"
+                log.info(
+                    "Held: your repository is on branch %r but Alcatrazer "
+                    "was started on %r. Switch back to %r to resume.",
+                    current,
+                    pinned_branch,
+                    pinned_branch,
+                )
     elif outcome is PO.PAUSED:
         if last_logged_status is not PO.PAUSED:
             log.warning(
-                "Paused: working-tree conflict — %s",
-                result.conflict_message,
+                "Paused: your working tree on branch %r overlaps with an "
+                "agent commit. Commit or stash your changes and Alcatrazer "
+                "will resume.",
+                pinned_branch,
             )
 
     return outcome

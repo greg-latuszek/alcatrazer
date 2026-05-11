@@ -1347,12 +1347,17 @@ class TestRunCycleMirror(unittest.TestCase):
                 "",
             )
             self.assertTrue(Path(outer, "feature.py").exists())
-            # Promoted log entry.
+            # Log uses git vocabulary + names the branch (per
+            # coding_conventions.md "User-facing strings"): the
+            # message must mention "Applied", the actual count, and
+            # the actual branch name 'feat/X' — never "pin" /
+            # "promoted" / "outer".
             messages = [r.getMessage() for r in records]
-            self.assertTrue(
-                any("Promoted 1 commit" in m for m in messages),
-                f"expected 'Promoted 1 commit(s)' log entry, got: {messages}",
-            )
+            joined = "\n".join(messages)
+            self.assertIn("Applied 1 agent commit", joined)
+            self.assertIn("'feat/X'", joined)
+            for jargon in ("pin", "promoted", "promotion", "outer"):
+                self.assertNotIn(jargon, joined.lower())
 
     def test_held_state_transition_logs_once_then_resumed(self):
         """Held-state lifecycle across three cycles (Step 4.2 / L904-907):
@@ -1393,7 +1398,9 @@ class TestRunCycleMirror(unittest.TestCase):
 
             log, records = self._capturing_logger()
 
-            # Cycle 1: off-pin → HELD, log "Held:".
+            # Cycle 1: off-pin → HELD. Log names BOTH actual branches
+            # (current 'main' and started-on 'feat/X') per the user-
+            # language rule.
             status1 = daemon._run_cycle_mirror(
                 source=inner,
                 target=outer,
@@ -1404,11 +1411,10 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=None,
             )
             self.assertEqual(status1, PromotionOutcome.HELD)
-            held_logs_after_cycle1 = [r.getMessage() for r in records]
-            self.assertTrue(
-                any("Held" in m for m in held_logs_after_cycle1),
-                f"expected 'Held' log on cycle 1, got: {held_logs_after_cycle1}",
-            )
+            joined_cycle1 = "\n".join(r.getMessage() for r in records)
+            self.assertIn("Held", joined_cycle1)
+            self.assertIn("'main'", joined_cycle1)
+            self.assertIn("'feat/X'", joined_cycle1)
             records_after_cycle1 = len(records)
 
             # Cycle 2: still off-pin, more agent commits. HELD, no new log.
@@ -1450,11 +1456,14 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=status2,
             )
             self.assertEqual(status3, PromotionOutcome.PROMOTED)
-            new_messages = [r.getMessage() for r in records[records_after_cycle1:]]
-            self.assertTrue(
-                any("Resumed" in m and "2" in m for m in new_messages),
-                f"expected 'Resumed: ... 2 commits' log on cycle 3, got: {new_messages}",
+            new_messages = "\n".join(
+                r.getMessage() for r in records[records_after_cycle1:]
             )
+            # Resumed message names the branch and the count, uses
+            # "agent commit(s)" not "commits" (git-native).
+            self.assertIn("Resumed", new_messages)
+            self.assertIn("'feat/X'", new_messages)
+            self.assertIn("2 agent commit", new_messages)
 
     def test_paused_state_transition_logs_paused_then_resumed(self):
         """Paused-state lifecycle across cycles (Step 4.3 / L909-913):
@@ -1585,11 +1594,13 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=None,
             )
             self.assertEqual(status1, PromotionOutcome.PAUSED)
-            messages_after_cycle1 = [r.getMessage() for r in records]
-            self.assertTrue(
-                any("Paused" in m for m in messages_after_cycle1),
-                f"expected 'Paused' log on cycle 1, got: {messages_after_cycle1}",
-            )
+            joined_cycle1 = "\n".join(r.getMessage() for r in records)
+            # Paused message uses git vocabulary ("working tree",
+            # "commit or stash"), names the branch, and gives the
+            # user an actionable next step.
+            self.assertIn("Paused", joined_cycle1)
+            self.assertIn("'feat/X'", joined_cycle1)
+            self.assertIn("working tree", joined_cycle1)
             # state.paused should be recorded.
             self.assertIsNotNone(state.load_state(alcatraz_dir).get("paused"))
             records_after_cycle1 = len(records)
@@ -1613,11 +1624,14 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=status1,
             )
             self.assertEqual(status2, PromotionOutcome.PROMOTED)
-            new_messages = [r.getMessage() for r in records[records_after_cycle1:]]
-            self.assertTrue(
-                any("Resumed" in m for m in new_messages),
-                f"expected 'Resumed' log on cycle 2, got: {new_messages}",
+            new_messages = "\n".join(
+                r.getMessage() for r in records[records_after_cycle1:]
             )
+            # Resumed log names the branch and says "conflict ...
+            # resolved" — git vocabulary, branch named.
+            self.assertIn("Resumed", new_messages)
+            self.assertIn("'feat/X'", new_messages)
+            self.assertIn("resolved", new_messages.lower())
             # state.paused should be cleared by the successful cycle.
             self.assertIsNone(state.load_state(alcatraz_dir).get("paused"))
 
