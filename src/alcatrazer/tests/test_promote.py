@@ -226,6 +226,56 @@ class TestApplyPatchStream(unittest.TestCase):
             status = git(outer, "status", "--porcelain")
             self.assertEqual(status, "")
 
+    def test_preserves_outer_history_when_applying_patches(self):
+        """Outer with O1, apply N patches for agent commits
+        → branch becomes O1 -> A1 -> ... -> AN, with O1 still an
+        ancestor of HEAD. Direct regression test for the manual-test
+        bug the new format-patch/am pipeline was designed to fix.
+
+        Spec: change_promotion_machinery.md L825-828 (Step 2.6).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner_ws = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner: initial + 2 agent commits.
+            subprocess.run(
+                ["git", "init", "-b", "main", inner_ws],
+                capture_output=True,
+                check=True,
+            )
+            git(inner_ws, "config", "user.name", "Patricia Garcia")
+            git(inner_ws, "config", "user.email", "patricia@inner.example.com")
+            git(inner_ws, "config", "commit.gpgsign", "false")
+            git(inner_ws, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(inner_ws, "rev-parse", "HEAD")
+            for i in range(2):
+                Path(inner_ws, f"agent{i}.py").write_text(f"# agent {i}\n")
+                git(inner_ws, "add", ".")
+                git(inner_ws, "commit", "-m", f"agent: commit {i}")
+            stream = promote_mod.format_patch_stream(Path(inner_ws), inner_root)
+
+            # Outer: single commit O1.
+            self._make_outer_with_one_commit(outer)
+            o1_sha = git(outer, "rev-parse", "HEAD")
+
+            promote_mod.apply_patch_stream(
+                Path(outer), stream, "Outer User", "user@outer.example.com"
+            )
+
+            # Branch length: O1 + 2 agent patches = 3 commits.
+            self.assertEqual(int(git(outer, "rev-list", "--count", "HEAD")), 3)
+            # O1 still ancestor of HEAD — outer history preserved.
+            result = subprocess.run(
+                ["git", "-C", outer, "merge-base", "--is-ancestor", o1_sha, "HEAD"],
+                capture_output=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                "O1 must remain an ancestor of HEAD after apply_patch_stream",
+            )
+
 
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
