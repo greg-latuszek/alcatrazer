@@ -180,6 +180,66 @@ class CmdStartRoutingTests(unittest.TestCase):
         prison.image_matches.assert_called_once_with("specifichash00ab")
 
 
+class CmdStartDetachedHeadTests(unittest.TestCase):
+    """Step 1.7 (change_promotion_machinery.md L797-798):
+    `alcatrazer start` must refuse to run when the outer repository
+    is on a detached HEAD. Promotion is bound to a starting branch
+    (Phase 1 introduces pinned_branch as state.json's anchor for
+    every later cycle); without a branched HEAD there is no anchor
+    to record.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        # Minimal .alcatrazer/ so cmd_start passes its first guard
+        # ("run alcatrazer init first"). The detached-HEAD check is
+        # expected to fire before any further setup is required.
+        (self.project_dir / ".alcatrazer").mkdir()
+
+    def _detach_outer(self) -> None:
+        """Initialize outer on `main` with one commit, then detach HEAD."""
+        cwd = str(self.project_dir)
+        subprocess.run(
+            ["git", "init", "-b", "main", cwd],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (("user.name", "T"), ("user.email", "t@test")):
+            subprocess.run(
+                ["git", "-C", cwd, "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", cwd, "commit", "--allow-empty", "-m", "first"],
+            capture_output=True,
+            check=True,
+        )
+        sha = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", cwd, "checkout", "--detach", sha],
+            capture_output=True,
+            check=True,
+        )
+
+    def test_refuses_with_explanatory_message_on_detached_head(self):
+        self._detach_outer()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir)
+        self.assertNotEqual(rc, 0)
+        # Error message must mention the constraint: outer must be on a branch.
+        err = stderr.getvalue().lower()
+        self.assertIn("branch", err)
+
+
 class CliVersionFlagTests(unittest.TestCase):
     """Standard `--version` / `-V` flag — the `alcatrazer version` subcommand
     (noun-as-verb wart) is replaced by the flag form."""
