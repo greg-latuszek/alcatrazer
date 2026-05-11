@@ -395,6 +395,65 @@ class TestPromoteOnce(unittest.TestCase):
             self.assertNotIn("last_promoted", post_state)
             self.assertNotIn("last_promotion_time", post_state)
 
+    def test_resumes_after_recheckout_applies_piled_commits(self):
+        """Across two cycles separated by a recheckout:
+        1. Outer is off-pin, agent has one commit → HELD, no state change.
+        2. Agent commits two more (now 3 piled). User recheckouts the
+           pin. → next promote_once applies all 3 in one am, advances
+           state.last_promoted to inner's tip.
+
+        Spec: change_promotion_machinery.md L864-866 (Step 3.5).
+        """
+        from alcatrazer import state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            inner_root, _ = self._make_inner_with_agent_commits(inner, count=1)
+            self._make_outer_on_branch(outer, "main")
+            subprocess.run(
+                ["git", "-C", str(outer), "branch", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            # Cycle 1: HELD (outer on main, not on feat/X).
+            result1 = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+            self.assertEqual(result1.outcome, promote_mod.PromotionOutcome.HELD)
+
+            # Agent makes more commits while held.
+            for i in range(1, 3):
+                Path(inner, f"agent{i}.py").write_text(f"# agent {i}\n")
+                git(str(inner), "add", ".")
+                git(str(inner), "commit", "-m", f"agent: late commit {i}")
+            inner_tip = git(str(inner), "rev-parse", "HEAD")
+
+            # User recheckouts the pinned branch.
+            subprocess.run(
+                ["git", "-C", str(outer), "checkout", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+
+            # Cycle 2: PROMOTED with all 3 piled commits.
+            result2 = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+            self.assertEqual(result2.outcome, promote_mod.PromotionOutcome.PROMOTED)
+            self.assertEqual(result2.commit_count, 3)
+            # State.last_promoted == inner's tip after the apply.
+            self.assertEqual(
+                state.load_state(alcatraz_dir).get("last_promoted"), inner_tip
+            )
+
 
 class TestCheckPin(unittest.TestCase):
     """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
