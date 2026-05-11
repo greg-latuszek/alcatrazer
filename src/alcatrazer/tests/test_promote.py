@@ -41,6 +41,71 @@ def git(repo: str, *args: str) -> str:
 # ── Unit tests (no git repos needed) ────────────────────────────────
 
 
+class TestRewriteFromHeader(unittest.TestCase):
+    """Phase 2 (change_promotion_machinery.md L805-810): primitive
+    `rewrite_from_header` substitutes the `From:` line in an
+    mbox-format patch stream. Operates on bytes; preserves the
+    `From <sha>` separator (no colon) and any binary hunks
+    byte-for-byte.
+    """
+
+    def test_substitutes_from_in_real_mbox_with_binary(self):
+        """Real `git format-patch` output containing a binary file:
+        - `From:` header rewritten (Patricia -> Alice)
+        - `From <sha>` separator line untouched (different anchor)
+        - GIT binary-patch section preserved byte-for-byte
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            subprocess.run(
+                ["git", "init", "-b", "main", workspace],
+                capture_output=True,
+                check=True,
+            )
+            git(workspace, "config", "user.name", "Patricia Garcia")
+            git(workspace, "config", "user.email", "patricia@example.com")
+            git(workspace, "config", "commit.gpgsign", "false")
+            # 0..255 binary blob exercises non-UTF-8 bytes through the
+            # rewrite. format-patch --binary emits a GIT binary patch
+            # section that must pass through byte-identical.
+            Path(workspace, "blob.bin").write_bytes(bytes(range(256)))
+            Path(workspace, "text.txt").write_text("hello\n")
+            git(workspace, "add", "-A")
+            git(workspace, "commit", "-m", "Initial commit")
+
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    workspace,
+                    "format-patch",
+                    "--stdout",
+                    "--binary",
+                    "--keep-subject",
+                    "-1",
+                    "HEAD",
+                ],
+                capture_output=True,
+                check=True,
+            )
+            stream = result.stdout
+            self.assertIn(b"From: Patricia Garcia <patricia@example.com>", stream)
+            self.assertIn(b"GIT binary patch", stream)  # sanity
+
+            rewritten = promote_mod.rewrite_from_header(
+                stream, "Alice Example", "alice@example.com"
+            )
+
+            self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
+            self.assertNotIn(b"From: Patricia Garcia", rewritten)
+            # `From <sha> Mon Sep 17 ...` separator (no colon) must
+            # not match the `From: ` rewrite anchor.
+            self.assertRegex(rewritten, rb"\nFrom [0-9a-f]+ Mon Sep 17 00:00:00 2001\n")
+            # Binary patch section identical bytes after the marker.
+            marker = b"GIT binary patch"
+            self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
+
+
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
 
