@@ -187,10 +187,15 @@ def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
     #                           ^^^^^^^^^^^^^^^^^^^^^^^^^
     #                           git mbox-format SENTINEL — emitted
     #                           verbatim for every patch regardless
-    #                           of the commit's real date. The real
-    #                           commit date lives in the `Date:`
-    #                           header below. Stable in git for
-    #                           20+ years.
+    #                           of the commit's real date.
+    #                           Documented as a "fixed" datestamp in
+    #                           git-format-patch(1)'s DESCRIPTION
+    #                           section, used as a marker so file(1)
+    #                           and similar tools can recognize a
+    #                           git-format-patch byte stream. See
+    #                           https://git-scm.com/docs/git-format-patch.
+    #                           The real commit date lives in the
+    #                           `Date:` header below.
     #   From: <author name> <<author email>>            <- TARGET
     #   Date: <real commit date — RFC 2822 format>
     #   Subject: [PATCH] <subject>

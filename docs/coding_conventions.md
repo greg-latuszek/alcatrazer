@@ -76,7 +76,12 @@ pattern = re.compile(
 > for a 3-patch sample. All three patches show *different* real dates
 > in the `Date:` headers but the *identical* `Mon Sep 17 00:00:00 2001`
 > in the `From <sha>` separator. That's the git protocol invariant the
-> anchor relies on.
+> anchor relies on — git's own man page describes it as a *"fixed"*
+> datestamp used as a marker so tools like `file(1)` can recognize
+> the byte stream as git-format-patch output. The constancy is a
+> documented contract, not an accident of stability. See the
+> DESCRIPTION section of
+> [git-format-patch(1)](https://git-scm.com/docs/git-format-patch).
 
 ### Scope
 
