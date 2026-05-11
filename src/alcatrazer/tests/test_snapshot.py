@@ -1121,5 +1121,38 @@ class TestNonDefaultBranchWarning(unittest.TestCase):
             self.assertNotIn("currently on", output.lower())
 
 
+class TestSnapshotRecordsState(unittest.TestCase):
+    """Phase 1 (change_promotion_machinery.md §"Recording state",
+    L411-434): `snapshot_workspace` records workspace state in
+    `<alcatraz_dir>/state.json` after the initial commit.
+
+    Step 1.1 covers `inner_root` (SHA of the workspace's `Initial
+    commit`). It's the format-patch range boundary used by every
+    later promotion cycle, so the snapshot orchestrator is the
+    canonical writer (written once, never updated).
+    """
+
+    def test_records_inner_root_as_initial_commit_sha(self):
+        """`state.json.inner_root` equals `git rev-parse HEAD` of the
+        workspace, taken right after `create_initial_commit` runs.
+
+        Spec: change_promotion_machinery.md L774-777 (Step 1.1).
+        """
+        from alcatrazer import snapshot, state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            make_repo(outer)
+            init_workspace(workspace)
+
+            snapshot.snapshot_workspace(outer, workspace, str(alcatraz_dir))
+
+            expected_sha = git(workspace, "rev-parse", "HEAD")
+            recorded = state.load_state(alcatraz_dir).get("inner_root")
+            self.assertEqual(recorded, expected_sha)
+
+
 if __name__ == "__main__":
     unittest.main()
