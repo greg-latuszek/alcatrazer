@@ -127,11 +127,15 @@ class TestRewriteFromHeader(unittest.TestCase):
                 git(outer, "log", "-1", "--format=%an <%ae>"),
                 "Alice Example <alice@example.com>",
             )
-            # Patricia absent from author/committer log entirely.
-            self.assertNotIn(
-                "Patricia",
-                git(outer, "log", "--all", "--format=%an %ae %cn %ce"),
-            )
+            # Inner identity absent from author/committer log entirely
+            # — three layers (Patricia name, patricia email local-part
+            # lowercase, inner.example.com domain). Matches Step 2.7's
+            # pattern in TestApplyPatchStream. Single-case check would
+            # miss the lowercase email if it ever leaked.
+            log = git(outer, "log", "--all", "--format=%an %ae %cn %ce")
+            self.assertNotIn("Patricia", log)
+            self.assertNotIn("patricia", log)
+            self.assertNotIn("inner.example.com", log)
             # Ask the filesystem: binary content matches what inner
             # committed, byte-for-byte. This is the strongest binary-
             # passthrough check available — it verifies the entire
@@ -241,12 +245,18 @@ class TestRewriteFromHeader(unittest.TestCase):
             body = git(outer, "log", "-1", "--format=%B")
             self.assertIn("patricia@inner.example.com", body)
             self.assertIn("From: patricia@inner.example.com", body)
-            # And Patricia's name/email must NOT appear as author or
-            # committer in the outer's log (header rewrite is complete).
-            self.assertNotIn(
-                "Patricia",
-                git(outer, "log", "--all", "--format=%an %ae %cn %ce"),
-            )
+            # Inner identity must NOT appear as author or committer
+            # anywhere in the outer's log. Three layers (matching
+            # Step 2.7's pattern in TestApplyPatchStream):
+            #   - "Patricia"             — the name (capital P)
+            #   - "patricia"             — the email local-part (lower)
+            #   - "inner.example.com"    — the email domain
+            # Single-case check would miss the lowercase email; domain
+            # check catches any other lowercase leakage too.
+            log = git(outer, "log", "--all", "--format=%an %ae %cn %ce")
+            self.assertNotIn("Patricia", log)
+            self.assertNotIn("patricia", log)
+            self.assertNotIn("inner.example.com", log)
 
 
 class TestFormatPatchStream(unittest.TestCase):
