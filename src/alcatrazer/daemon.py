@@ -117,6 +117,62 @@ def remove_pid(pid_file: Path) -> None:
     pid_file.unlink(missing_ok=True)
 
 
+def _run_cycle_mirror(
+    source: Path,
+    target: Path,
+    alcatraz_dir: Path,
+    name: str,
+    email: str,
+    log: logging.Logger,
+    last_logged_status,
+):
+    """Run one mirror-mode promotion cycle and emit transition-only
+    log entries. Returns the resulting `PromotionOutcome` so the
+    caller can pass it as `last_logged_status` on the next call.
+
+    Logs (per change_promotion_machinery.md L346-354):
+      - On PROMOTED with N > 0 and no transition:    "Promoted N commit(s)"
+      - On HELD -> PROMOTED transition:              "Resumed: ... replaying N commits"
+      - On PAUSED -> PROMOTED transition:            "Resumed: working-tree conflict resolved"
+      - On (None / PROMOTED / PAUSED) -> HELD:       "Held: outer state not aligned (status=<pin>)"
+      - On (None / PROMOTED / HELD) -> PAUSED:       "Paused: working-tree conflict — <message>"
+      - On HELD -> HELD or PAUSED -> PAUSED:         (no log — transition-only suppression)
+      - On PROMOTED with N == 0 (steady-state poll): (no log)
+
+    Per change_promotion_machinery.md Phase 4 Step 4.4 (L915-919).
+    """
+    result = promote_mod.promote_once(source, target, alcatraz_dir, name, email)
+    outcome = result.outcome
+    PO = promote_mod.PromotionOutcome
+
+    if outcome is PO.PROMOTED:
+        if last_logged_status is PO.HELD:
+            log.info(
+                "Resumed: outer back on pinned branch, replaying %d commits",
+                result.commit_count,
+            )
+        elif last_logged_status is PO.PAUSED:
+            log.info("Resumed: working-tree conflict resolved")
+        elif result.commit_count > 0:
+            log.info("Promoted %d commit(s)", result.commit_count)
+        # else: PROMOTED with no transition + no work — silent steady-state poll
+    elif outcome is PO.HELD:
+        if last_logged_status is not PO.HELD:
+            pin_label = result.pin_status.value if result.pin_status else "unknown"
+            log.info(
+                "Held: outer state not aligned with pin (status=%s)",
+                pin_label,
+            )
+    elif outcome is PO.PAUSED:
+        if last_logged_status is not PO.PAUSED:
+            log.warning(
+                "Paused: working-tree conflict — %s",
+                result.conflict_message,
+            )
+
+    return outcome
+
+
 def _default_project_dir() -> Path:
     """Best-effort default for `--project-dir` when nothing is passed.
 
@@ -218,6 +274,11 @@ def main():
         mode,
     )
 
+    # Mirror-mode cycles track the previous outcome to enable
+    # transition-only logging via _run_cycle_mirror. alcatraz-tree
+    # mode is unchanged (retired in Phase 6).
+    last_logged_status = None
+
     # Shared between main-loop polls and the final-sync on shutdown —
     # extracted so the shutdown path doesn't duplicate branch-paused /
     # conflict-handling / marks-update logic.
@@ -225,37 +286,24 @@ def main():
         """Run one promote cycle. Returns the list of newly-promoted
         branch names (empty on alcatraz-tree mode or no-op poll). Logs
         conflicts as WARNING. Errors bubble up for the caller to log."""
+        nonlocal last_logged_status
         if mode == "mirror":
-            if paused_branches:
-                resolved = promote_mod.check_resolved_conflicts(
-                    target_repo,
-                    marks_dir,
-                    paused_branches,
-                )
-                for branch in resolved:
-                    paused_branches.discard(branch)
-                    log.info("Conflict resolved on branch %s — resuming promotion", branch)
-                if resolved:
-                    promote_mod.save_paused_branches(marks_dir, paused_branches)
-
-            results = promote_mod.promote_with_conflict_handling(
-                source_repo,
-                target_repo,
-                marks_dir,
-                name,
-                email,
-                branches=branches,
-                paused_branches=paused_branches,
+            # Phase 4: new pin-based mirror cycle via promote_once.
+            # All logging happens inside _run_cycle_mirror; the
+            # main loop's per-cycle "Promotion cycle complete: ..."
+            # log no longer fires for mirror because the structured
+            # transition log entries (Promoted N / Held / Paused /
+            # Resumed) replace it.
+            last_logged_status = _run_cycle_mirror(
+                source=source_repo,
+                target=target_repo,
+                alcatraz_dir=marks_dir,
+                name=name,
+                email=email,
+                log=log,
+                last_logged_status=last_logged_status,
             )
-            for branch, status in results.items():
-                if status == "conflict":
-                    log.warning(
-                        "CONFLICT on branch %s — promoted state "
-                        "saved to conflict/resolve-* branch. "
-                        "Resolve manually.",
-                        branch,
-                    )
-            return [b for b, s in results.items() if s == "promoted"]
+            return []
         if mode == "alcatraz-tree":
             promote_mod.promote(
                 source_repo,
@@ -275,11 +323,10 @@ def main():
             if shutdown_event.wait(timeout=interval):
                 break
             try:
-                promoted = run_cycle()
-                if mode == "mirror" and promoted:
-                    log.info("Promotion cycle complete: %s", ", ".join(promoted))
-                elif mode == "alcatraz-tree":
+                run_cycle()
+                if mode == "alcatraz-tree":
                     log.info("Promotion cycle complete (alcatraz-tree)")
+                # mirror mode logs its own transitions in _run_cycle_mirror.
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:
@@ -293,9 +340,9 @@ def main():
         shutdown_intent = state.load_state(alcatraz_dir).get("daemon_shutdown")
         prefix = "graceful shutdown" if shutdown_intent == "requested" else "unexpected shutdown"
         try:
-            promoted = run_cycle()
+            run_cycle()
             if mode == "mirror":
-                log.info("Final sync (%s): %d commit(s) synced", prefix, len(promoted))
+                log.info("Final sync (%s) complete", prefix)
             else:
                 log.info("Final sync (%s): alcatraz-tree cycle complete", prefix)
         except Exception as exc:
