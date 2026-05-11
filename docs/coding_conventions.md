@@ -43,10 +43,18 @@ Before each regex pattern, comment:
 ### Example template
 
 ```python
-# Input (one mbox message from `git format-patch --stdout`):
-#   From <40hex> Mon Sep 17 00:00:00 2001
-#   From: <author name> <<author email>>          <- target
-#   Date: <RFC 2822 timestamp>
+# Input (one mbox message from `git format-patch --stdout` — see
+# docs/git_patch_example.log for a real captured sample):
+#   From <40hex commit-sha> Mon Sep 17 00:00:00 2001
+#                           ^^^^^^^^^^^^^^^^^^^^^^^^^
+#                           git mbox-format SENTINEL DATE — emitted
+#                           verbatim by `git format-patch` for every
+#                           patch, regardless of the commit's real
+#                           date. Stable in git source for 20+ years.
+#                           The real commit date lives in the `Date:`
+#                           header below.
+#   From: <author name> <<author email>>          <- TARGET
+#   Date: <real commit date — RFC 2822>
 #   Subject: [PATCH] <subject line>
 #
 #   <commit body, possibly containing lines like "From: x@y" that
@@ -59,9 +67,16 @@ Before each regex pattern, comment:
 # `From <40hex> Mon Sep 17 00:00:00 2001` separator. Capture the
 # separator, replace only the line that follows it.
 pattern = re.compile(
-    rb"(?m)^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
+    rb"^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
+    re.MULTILINE,
 )
 ```
+
+> **Why this works in practice** — see `docs/git_patch_example.log`
+> for a 3-patch sample. All three patches show *different* real dates
+> in the `Date:` headers but the *identical* `Mon Sep 17 00:00:00 2001`
+> in the `From <sha>` separator. That's the git protocol invariant the
+> anchor relies on.
 
 ### Scope
 

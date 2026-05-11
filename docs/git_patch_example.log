@@ -1,0 +1,327 @@
+From 6d4f0cec537888f26b203fa432ad18155ffd6dc1 Mon Sep 17 00:00:00 2001
+From: Grzegorz Latuszek <latuszek.grzegorz@gmail.com>
+Date: Mon, 11 May 2026 16:54:17 +0200
+Subject: [PATCH 1/3] =?UTF-8?q?[RED]=20rewrite=5Ffrom=5Fheader=20=E2=80=94?=
+ =?UTF-8?q?=20regression=20test=20for=20commit-body=20over-match?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds test_does_not_rewrite_from_in_commit_message_body to
+TestRewriteFromHeader.
+
+Setup: workspace commit with a multi-line message whose BODY contains
+a line "From: spam@example.com". format-patch emits an mbox where:
+
+  From <sha> Mon Sep 17 00:00:00 2001
+  From: Patricia Garcia <patricia@inner.example.com>   <- header target
+  Date: ...
+  Subject: Subject line
+
+  Body mentions an email example.
+  From: spam@example.com                                 <- BODY line!
+  More body.
+  ---
+  diff ...
+
+Expected: rewrite_from_header rewrites the header to Alice (target),
+preserves "From: spam@example.com" in the body.
+
+Today's regex (^From: .+$ MULTILINE) over-matches: it rewrites BOTH
+the header AND the body's quoted email — corrupting the commit
+message. Failure asserted: body's "From: spam@example.com" not
+present in rewritten output.
+
+Next commit ([GREEN]) anchors the regex on the `From <sha>` mbox
+separator so only the line directly after it is rewritten, and adds
+the input-example comment per docs/coding_conventions.md.
+
+Surfaced by Greg's review of Phase 2 Step 2.2.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/alcatrazer/tests/test_promote.py | 64 ++++++++++++++++++++++++++++
+ 1 file changed, 64 insertions(+)
+
+diff --git a/src/alcatrazer/tests/test_promote.py b/src/alcatrazer/tests/test_promote.py
+index 406a9b9..b72fe70 100644
+--- a/src/alcatrazer/tests/test_promote.py
++++ b/src/alcatrazer/tests/test_promote.py
+@@ -107,6 +107,70 @@ class TestRewriteFromHeader(unittest.TestCase):
+             marker = b"GIT binary patch"
+             self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
+ 
++    def test_does_not_rewrite_from_in_commit_message_body(self):
++        """Regression test (caught by code review of Phase 2 Step 2.2):
++        the `From: ` rewrite must NOT touch lines starting with
++        `From: ` that appear inside a commit's MESSAGE BODY — only the
++        header line directly after the `From <sha>` mbox separator
++        gets rewritten.
++
++        Without proper anchoring, the regex matches every `From: ` in
++        the stream — corrupting body lines that quote emails or
++        contain example data. See docs/coding_conventions.md
++        "Regex parsing must be preceded by an input-example comment".
++        """
++        with tempfile.TemporaryDirectory() as tmp:
++            workspace = str(Path(tmp) / "workspace")
++            subprocess.run(
++                ["git", "init", "-b", "main", workspace],
++                capture_output=True,
++                check=True,
++            )
++            git(workspace, "config", "user.name", "Patricia Garcia")
++            git(workspace, "config", "user.email", "patricia@inner.example.com")
++            git(workspace, "config", "commit.gpgsign", "false")
++            Path(workspace, "file.txt").write_text("content\n")
++            git(workspace, "add", "file.txt")
++            # Multi-line commit message: subject, blank, body containing
++            # a `From: spam@example.com` line that must survive intact.
++            git(
++                workspace,
++                "commit",
++                "-m",
++                "Subject line\n\nBody mentions an email example.\n"
++                "From: spam@example.com\nMore body.",
++            )
++
++            result = subprocess.run(
++                [
++                    "git",
++                    "-C",
++                    workspace,
++                    "format-patch",
++                    "--stdout",
++                    "--binary",
++                    "--keep-subject",
++                    "-1",
++                    "HEAD",
++                ],
++                capture_output=True,
++                check=True,
++            )
++            stream = result.stdout
++            # Sanity: the stream really does contain the body's From: line.
++            self.assertIn(b"From: spam@example.com", stream)
++
++            rewritten = promote_mod.rewrite_from_header(
++                stream, "Alice Example", "alice@example.com"
++            )
++
++            # Header rewritten to Alice (the legitimate target).
++            self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
++            self.assertNotIn(b"From: Patricia Garcia", rewritten)
++            # Body's `From: spam@example.com` line preserved untouched —
++            # this is the over-match check.
++            self.assertIn(b"From: spam@example.com", rewritten)
++
+ 
+ class TestFormatPatchStream(unittest.TestCase):
+     """Phase 2 (change_promotion_machinery.md L812-818): primitive
+-- 
+2.43.0
+
+
+From 934211d76fc6b6f391e0b1829a2e4bf00cda2fde Mon Sep 17 00:00:00 2001
+From: Grzegorz Latuszek <latuszek.grzegorz@gmail.com>
+Date: Mon, 11 May 2026 16:55:00 +0200
+Subject: [PATCH 2/3] =?UTF-8?q?[GREEN]=20rewrite=5Ffrom=5Fheader=20?=
+ =?UTF-8?q?=E2=80=94=20anchor=20on=20mbox=20separator,=20document=20the=20?=
+ =?UTF-8?q?boundary?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replaces the naive `^From: .+$` regex (MULTILINE) with a tighter
+pattern that anchors on the `From <40hex> Mon Sep 17 ...` mbox
+separator and captures it into group 1, so only the line directly
+after the separator is replaced. Commit-message body lines starting
+with `From: ` no longer get rewritten.
+
+Old (over-matched body lines):
+  re.compile(rb"^From: .+$", re.MULTILINE)
+
+New (anchored on mbox separator):
+  re.compile(
+      rb"(?m)^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*"
+  )
+
+Replacement preserves the separator via \\1 backref and substitutes
+only the `From: ` line that follows it. The 40-hex + stable git
+separator timestamp anchor makes mis-match implausible.
+
+Adds the multi-line input-example comment required by
+docs/coding_conventions.md — input shape, target line, boundary,
+anchor rationale. Future readers can verify the pattern against the
+documented example without re-deriving git's mbox format.
+
+All 38 promote tests pass, including the new RED regression test
+for body-line preservation.
+
+Per docs/coding_conventions.md "Regex parsing must be preceded by an
+input-example comment" (rule discovered while reviewing this very
+function — credit: Greg).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/alcatrazer/promote.py | 43 +++++++++++++++++++++++++++++++--------
+ 1 file changed, 35 insertions(+), 8 deletions(-)
+
+diff --git a/src/alcatrazer/promote.py b/src/alcatrazer/promote.py
+index bb7143b..0590e0f 100755
+--- a/src/alcatrazer/promote.py
++++ b/src/alcatrazer/promote.py
+@@ -148,22 +148,49 @@ def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
+ 
+ 
+ def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
+-    """Substitute the `From: ` header line in an mbox-format patch
+-    stream with `From: <name> <<email>>`.
++    """Substitute the author `From: ` header line in an mbox-format
++    patch stream with `From: <name> <<email>>`.
+ 
+     Operates on raw bytes — `git format-patch --binary` emits binary
+-    file diffs that must pass through untouched. The anchor `^From: `
+-    (with colon and space) intentionally does NOT match the
+-    `From <sha> Mon Sep 17 ...` mbox separator line, which lacks the
+-    colon — only the actual author header is rewritten.
++    file diffs that must pass through untouched.
+ 
+     Per change_promotion_machinery.md Phase 2 (Step 2.2). Companion
+     primitive to `rewrite_identity` which operates on fast-export
+     streams; this one operates on `git format-patch` mbox streams used
+     by the new patch-stream-based promotion pipeline.
+     """
+-    pattern = re.compile(rb"^From: .+$", re.MULTILINE)
+-    replacement = b"From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
++    # Input (one mbox message from `git format-patch --stdout`):
++    #   From <40hex> Mon Sep 17 00:00:00 2001          <- mbox separator
++    #   From: <author name> <<author email>>           <- TARGET
++    #   Date: <RFC 2822 timestamp>
++    #   Subject: [PATCH] <subject>
++    #
++    #   <commit body, free-form text — may legitimately contain lines
++    #    starting with "From: ", e.g. an email quoted in the body or
++    #    a config-file example. Those MUST NOT match this regex.>
++    #   ---
++    #   <diff/patch content, possibly binary>
++    #
++    # Boundary: the legitimate target is the `From: ` line that
++    # appears IMMEDIATELY AFTER the `From <40hex> Mon Sep 17 ...`
++    # mbox separator line. A naive `^From: ` anchor (with colon) is
++    # not strict enough — it matches body lines and any other
++    # `From: ` in the patch content. So we capture the separator line
++    # in group 1 and replace only the line that directly follows it,
++    # preserving the separator unchanged.
++    #
++    # The 40-hex anchor + the literal `Mon Sep 17 00:00:00 2001`
++    # (git's stable mbox "From " separator timestamp) makes this
++    # match resilient: the only realistic way to mis-match would be
++    # if a commit body contained a forged line with that exact shape
++    # — and even then the *next* line would still need to start with
++    # `From: ` for the pattern to fire.
++    pattern = re.compile(
++        rb"(?m)^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
++    )
++    replacement = (
++        b"\\1From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
++    )
+     return pattern.sub(replacement, stream)
+ 
+ 
+-- 
+2.43.0
+
+
+From 87c03181a6fd373254efdabd8f046567fb289c24 Mon Sep 17 00:00:00 2001
+From: Grzegorz Latuszek <latuszek.grzegorz@gmail.com>
+Date: Mon, 11 May 2026 16:57:41 +0200
+Subject: [PATCH 3/3] [BLUE] retrofit rewrite_identity + rewrite_refs with
+ input-example comments
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Applies the docs/coding_conventions.md "Regex parsing must be preceded
+by an input-example comment" rule to the two existing high-risk regex
+sites in promote.py (per Greg's "high-risk only" call — simple
+sanitizers like docker_prison._BASENAME_INVALID_CHARS skipped).
+
+rewrite_identity — adds input example showing one commit object inside
+a fast-export stream (including the boundary distinction: data
+sections can contain "author "/"committer " text, but won't have the
+trailing `<unix_ts> <tz>` shape). The existing anchor on
+`(.+) <.+> (.+)$` already encoded the right boundary; now it's
+documented so a maintainer doesn't have to re-derive fast-export
+format to verify.
+
+rewrite_refs — adds input example showing `commit refs/heads/...` and
+`reset refs/heads/...` declarations. Boundary: those operator words at
+line start can never appear inside a `data N` block (binary blob
+content), so the simple `^(commit|reset) ` anchor is sufficient.
+
+No behavior change. 646/646 tests pass.
+
+Per docs/coding_conventions.md (new doc this session) and
+feature_regex_input_example memory entry.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/alcatrazer/promote.py | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/src/alcatrazer/promote.py b/src/alcatrazer/promote.py
+index 0590e0f..03b4cb6 100755
+--- a/src/alcatrazer/promote.py
++++ b/src/alcatrazer/promote.py
+@@ -132,6 +132,28 @@ def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
+     "author " or "committer " inside a data section.
+     """
+     repl = b"\\1 " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b"> \\2"
++    # Input (one commit object inside a `git fast-export` stream):
++    #   blob
++    #   mark :1
++    #   data 20
++    #   <20 bytes of arbitrary file content — may contain the literal
++    #    string "author " or "committer " followed by anything>
++    #
++    #   commit refs/heads/main
++    #   mark :2
++    #   author <name> <<email>> <unix_ts> <tz>       <- TARGET
++    #   committer <name> <<email>> <unix_ts> <tz>    <- TARGET
++    #   data 15
++    #   commit message
++    #   M 100644 :1 path/to/file
++    #
++    # Boundary: the legitimate header has the trailing
++    # `<unix-timestamp> <±tz-offset>` shape (e.g. "1700000000 +0200").
++    # Data sections can contain ANY bytes including text that starts
++    # with "author " or "committer ", but won't have that exact
++    # timestamp/tz shape at line end. Anchoring on `^(author)` and
++    # capturing the trailing timestamp+tz in group 2 ensures we only
++    # rewrite header lines.
+     stream = re.sub(
+         rb"^(author) .+ <.+> (.+)$",
+         repl,
+@@ -339,6 +361,18 @@ def rewrite_refs(stream: bytes, namespace: str) -> bytes:
+     refs/heads/main -> refs/heads/<namespace>/main
+     """
+     repl = b"\\1 refs/heads/" + namespace.encode("utf-8") + b"/\\2"
++    # Input (a fast-export ref declaration line):
++    #   commit refs/heads/main                           <- TARGET
++    #   reset refs/heads/feat/some-branch                <- TARGET
++    #
++    # Boundary: ref declarations occur at the start of a line as
++    # exactly `commit refs/heads/<name>` or `reset refs/heads/<name>`.
++    # Data sections in the stream can contain the literal text
++    # "commit refs/heads/..." but never at the start of a line within
++    # a `data N` block (those lines are prefixed by the binary blob
++    # bytes, not by `commit ` or `reset `). The `^(commit|reset) `
++    # anchor is therefore sufficient — captured operator in group 1,
++    # captured branch name in group 2.
+     return re.sub(
+         rb"^(commit|reset) refs/heads/(.+)$",
+         repl,
+-- 
+2.43.0
+
