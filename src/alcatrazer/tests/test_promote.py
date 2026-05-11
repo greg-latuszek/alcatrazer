@@ -110,14 +110,23 @@ class TestRewriteFromHeader(unittest.TestCase):
     def test_does_not_rewrite_from_in_commit_message_body(self):
         """Regression test (caught by code review of Phase 2 Step 2.2):
         the `From: ` rewrite must NOT touch lines starting with
-        `From: ` that appear inside a commit's MESSAGE BODY — only the
-        header line directly after the `From <sha>` mbox separator
+        `From: ` that appear inside a commit's MESSAGE BODY — only
+        the header line directly after the `From <sha>` mbox separator
         gets rewritten.
 
+        Realistic scenario: agent (inner identity Patricia Garcia)
+        writes a commit whose message body legitimately references its
+        own email — e.g. mentioning the email used for the agent
+        identity, or pasting a config snippet. After promotion to the
+        outer repo, the agent's identity is rewritten to the
+        developer's identity in the HEADER but the body's reference
+        to the agent's email MUST survive intact (we'd otherwise
+        rewrite content the agent deliberately wrote).
+
         Without proper anchoring, the regex matches every `From: ` in
-        the stream — corrupting body lines that quote emails or
-        contain example data. See docs/coding_conventions.md
-        "Regex parsing must be preceded by an input-example comment".
+        the stream — corrupting body lines too. See
+        docs/coding_conventions.md "Regex parsing must be preceded by
+        an input-example comment".
         """
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
@@ -126,19 +135,24 @@ class TestRewriteFromHeader(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
+            # Inner identity — both as the commit's author/committer
+            # (header) AND referenced inside the commit message body
+            # below. The promotion must rewrite the header but not
+            # touch the body reference.
             git(workspace, "config", "user.name", "Patricia Garcia")
             git(workspace, "config", "user.email", "patricia@inner.example.com")
             git(workspace, "config", "commit.gpgsign", "false")
             Path(workspace, "file.txt").write_text("content\n")
             git(workspace, "add", "file.txt")
-            # Multi-line commit message: subject, blank, body containing
-            # a `From: spam@example.com` line that must survive intact.
             git(
                 workspace,
                 "commit",
                 "-m",
-                "Subject line\n\nBody mentions an email example.\n"
-                "From: spam@example.com\nMore body.",
+                "Subject line\n\n"
+                "Body deliberately mentions the agent's own email, "
+                "e.g. as part of a config snippet:\n"
+                "From: patricia@inner.example.com\n"
+                "More body content after the deliberate reference.",
             )
 
             result = subprocess.run(
@@ -157,19 +171,33 @@ class TestRewriteFromHeader(unittest.TestCase):
                 check=True,
             )
             stream = result.stdout
-            # Sanity: the stream really does contain the body's From: line.
-            self.assertIn(b"From: spam@example.com", stream)
+            # Sanity — the inner email appears in the stream in two
+            # distinct shapes:
+            #   1. Inside the header: `From: Patricia Garcia <patricia@inner.example.com>`
+            #   2. As a standalone body line: `From: patricia@inner.example.com`
+            # Counting the bare email substring picks up both — total 2.
+            # If we got a different count, the test setup is wrong and
+            # the over-match check below would bite on the wrong shape.
+            self.assertEqual(stream.count(b"patricia@inner.example.com"), 2)
+            # And confirm the body line specifically is present (the
+            # form rewrite_from_header could over-match).
+            self.assertIn(b"From: patricia@inner.example.com", stream)
 
             rewritten = promote_mod.rewrite_from_header(
                 stream, "Alice Example", "alice@example.com"
             )
 
-            # Header rewritten to Alice (the legitimate target).
+            # Header rewritten to the outer identity.
             self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
-            self.assertNotIn(b"From: Patricia Garcia", rewritten)
-            # Body's `From: spam@example.com` line preserved untouched —
-            # this is the over-match check.
-            self.assertIn(b"From: spam@example.com", rewritten)
+            # Body's reference to the inner email is preserved — with
+            # the old (buggy) `^From: .+$` regex this line was also
+            # rewritten to Alice, corrupting deliberate agent content.
+            self.assertIn(b"From: patricia@inner.example.com", rewritten)
+            # Substring count: header occurrence (inside <...>) was
+            # replaced by alice@example.com, so the inner email now
+            # appears exactly once — in the body. If the regex over-
+            # matched, the count would be 0 (body line also replaced).
+            self.assertEqual(rewritten.count(b"patricia@inner.example.com"), 1)
 
 
 class TestFormatPatchStream(unittest.TestCase):
