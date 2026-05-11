@@ -865,9 +865,27 @@ clears `paused`.
 held state accumulates inner commits; recheckout pin → next call
 applies all piled commits in one `am`.
 
-**Step 3.6** `[RED]` — Test `promote_once` `--first-parent` flattens
-inner merges: inner has merge commit on `main`; stream contains one
-patch for it, side-branch commits absent.
+**Step 3.6** `[RED]` — Test `promote_once` handles inner merge
+commits cleanly: inner has a merge commit on `main` that brings in
+2 side-branch commits. Stream contains exactly **2 patches** (one
+per non-merge side commit); the merge commit itself does not
+become a patch.
+
+> **Revised from the original spec.** The original draft said
+> "`--first-parent` flattens inner merges: stream contains one
+> patch for it." Empirically that's not what `git format-patch`
+> does — it does NOT emit merge commits as patches under any flag
+> combination tested (`--first-parent`, `-m`, `--merges`,
+> `--diff-merges=first-parent`, `--cc`, `-c`). format-patch is
+> fundamentally designed for non-merge commits.
+>
+> The revised design (drop `--first-parent` entirely; let side
+> commits flow through as individual patches) is also product-
+> better: parallel-agent workflows (e.g. 10 agents on separate
+> branches that later merge to `main`) would otherwise produce
+> one giant squashed patch per merge — unreviewable. Alcatrazer's
+> "developer reviews before push" promise depends on the patches
+> being atomic and readable.
 
 **Step 3.7** `[RED]` — Test `promote_once` writes `paused` on
 conflict; leaves `last_promoted` and `last_promotion_time` untouched.

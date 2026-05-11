@@ -454,13 +454,19 @@ class TestPromoteOnce(unittest.TestCase):
                 state.load_state(alcatraz_dir).get("last_promoted"), inner_tip
             )
 
-    def test_first_parent_flattens_inner_merges(self):
-        """When inner's main has a merge commit bringing in side-branch
-        commits, --first-parent (used by format_patch_stream) keeps the
-        outer's history linear: one patch for the merge, side-branch
-        commits absent as individual entries.
+    def test_inner_merge_appears_as_individual_side_commits(self):
+        """When inner's main has a merge commit bringing in N
+        side-branch commits, the merge itself produces NO patch
+        (git format-patch's design) but each side commit produces
+        an individual patch. Outer's history therefore has the
+        side commits as separate atomic entries — reviewable by
+        the developer one-by-one before push. This is the revised
+        behavior per Step 3.6 (the original spec assumed
+        `--first-parent` could squash merges; empirically it
+        can't, and individual atomic commits are also product-
+        better for parallel-agent workflows).
 
-        Spec: change_promotion_machinery.md L868-870 (Step 3.6).
+        Spec: change_promotion_machinery.md L868-893 (Step 3.6, revised).
         """
         from alcatrazer import state
 
@@ -526,19 +532,25 @@ class TestPromoteOnce(unittest.TestCase):
                 inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
             )
 
-            # Exactly ONE patch applied — the merge commit, flattened.
+            # 2 patches applied — one per side commit. The merge
+            # commit itself does NOT produce a patch.
             self.assertEqual(result.outcome, promote_mod.PromotionOutcome.PROMOTED)
-            self.assertEqual(result.commit_count, 1)
-            # Outer has only 1 new commit (1 initial + 1 promoted = 2).
-            self.assertEqual(int(git(str(outer), "rev-list", "--count", "HEAD")), 2)
-            # The merge commit's combined diff applied: both side files
-            # are in outer's working tree.
+            self.assertEqual(result.commit_count, 2)
+            # Outer: 1 initial + 2 promoted = 3 commits.
+            self.assertEqual(int(git(str(outer), "rev-list", "--count", "HEAD")), 3)
+            # Both side files landed in outer's working tree.
             self.assertTrue(Path(outer, "side1.py").exists())
             self.assertTrue(Path(outer, "side2.py").exists())
-            # Side-branch commits NOT in outer's log as separate entries.
+            # Side-branch commits ARE in outer's log as separate atomic
+            # entries — each reviewable by the developer one-by-one
+            # before push. This is the reviewability property
+            # parallel-agent workflows depend on.
             log = git(str(outer), "log", "--all", "--format=%s")
-            self.assertNotIn("side: commit 1", log)
-            self.assertNotIn("side: commit 2", log)
+            self.assertIn("side: commit 1", log)
+            self.assertIn("side: commit 2", log)
+            # The merge commit's subject does NOT appear (format-patch
+            # skipped it — it has no individual patch representation).
+            self.assertNotIn("merge: pull in side work", log)
 
     def test_paused_on_conflict_writes_paused_preserves_advance_state(self):
         """Conflict path: outer has a local change on the same file

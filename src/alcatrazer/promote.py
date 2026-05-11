@@ -40,11 +40,12 @@ import os
 import re
 import subprocess
 import tomllib
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from alcatrazer import snapshot
+from alcatrazer import snapshot, state
 
 
 def resolve_branches(source: Path, branches_config) -> list[str]:
@@ -233,26 +234,40 @@ def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
 
 
 def format_patch_stream(source: Path, since_sha: str) -> bytes:
-    """Return an mbox-format patch stream for commits in
-    `<since_sha>..refs/heads/main` of the `source` workspace.
+    """Return an mbox-format patch stream for the non-merge commits
+    in `<since_sha>..refs/heads/main` of the `source` workspace.
 
     Wraps `git format-patch --stdout --binary --keep-subject
-    --first-parent <since>..refs/heads/main`:
+    <since>..refs/heads/main`:
 
     - `--stdout` — emit a single mbox stream
     - `--binary` — include GIT binary patch sections for binary files
       (otherwise they're silently skipped)
     - `--keep-subject` — don't prepend "[PATCH]" to Subject
-    - `--first-parent` — linearize merges; the outer repo receives
-      agent work as a chain on its pinned branch, not as a merged
-      topology
 
-    The `since_sha` boundary is exclusive — when the caller passes the
-    workspace's `inner_root` (the Initial commit, recorded by Phase 1
-    in state.json), `inner_root` itself does not appear in the stream;
-    only its descendants do.
+    The `since_sha` boundary is exclusive — when the caller passes
+    the workspace's `inner_root` (the Initial commit, recorded by
+    Phase 1 in state.json), `inner_root` itself does not appear in
+    the stream; only its descendants do.
 
-    Per change_promotion_machinery.md Phase 2 Step 2.4.
+    **Merge handling:** `git format-patch` is fundamentally designed
+    for non-merge commits — under any flag combination tested
+    (`--first-parent`, `-m`, `--merges`, `--diff-merges=first-parent`,
+    `--cc`, `-c`), it will NOT emit a patch for a merge commit. So
+    when inner has merges (e.g. parallel-agent workflows where each
+    agent commits on a side branch then merges to main), the merge
+    commit itself isn't represented in the outer; its constituent
+    side-branch commits ARE, as individual patches. This is the
+    revised behavior per change_promotion_machinery.md Phase 3
+    Step 3.6 (originally written with an `--first-parent` flag that
+    didn't do what the spec assumed; revised to use default
+    walking). The design is also product-better: individual atomic
+    commits are reviewable by the developer before push (the core
+    "review before push" promise of Alcatrazer); a single giant
+    squash-per-merge would defeat it.
+
+    Per change_promotion_machinery.md Phase 2 Step 2.4 (revised in
+    Phase 3 Step 3.6 — dropped `--first-parent`).
     """
     result = subprocess.run(
         [
@@ -263,7 +278,6 @@ def format_patch_stream(source: Path, since_sha: str) -> bytes:
             "--stdout",
             "--binary",
             "--keep-subject",
-            "--first-parent",
             f"{since_sha}..refs/heads/main",
         ],
         capture_output=True,
@@ -409,6 +423,119 @@ def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> No
             f"git am failed (exit {result.returncode}): "
             + result.stderr.decode("utf-8", errors="replace")
         )
+
+
+class PromotionOutcome(Enum):
+    """Outcome of a single promote_once cycle. Drives daemon logging
+    and `alcatrazer status` rendering (Phase 5)."""
+
+    PROMOTED = "promoted"  # patches applied (commit_count may be 0 = no-op)
+    HELD = "held"          # pin check failed; no apply attempted, no state change
+    PAUSED = "paused"      # apply raised PromotionConflictError; paused state recorded
+
+
+@dataclass(frozen=True)
+class PromotionResult:
+    """Structured result of a promote_once cycle. Fields are
+    populated based on the outcome:
+
+    - outcome=PROMOTED: commit_count = N patches applied (0 = no-op)
+    - outcome=HELD:     pin_status = why (OFF_PIN / DETACHED / PIN_DELETED)
+    - outcome=PAUSED:   conflict_message = stderr from `git am`
+    """
+
+    outcome: PromotionOutcome
+    commit_count: int = 0
+    pin_status: PinStatus | None = None
+    conflict_message: str = ""
+
+
+# Re-used in promote_once for counting patches in a format-patch stream.
+# Input shape is the same as rewrite_from_header's — see that function's
+# input-example comment. Anchored on the mbox-format constant separator.
+_MBOX_SEPARATOR_PATTERN = re.compile(
+    rb"^From [0-9a-f]{40} Mon Sep 17 00:00:00 2001",
+    re.MULTILINE,
+)
+
+
+def promote_once(
+    source: Path,
+    target: Path,
+    alcatraz_dir: Path,
+    name: str,
+    email: str,
+) -> PromotionResult:
+    """Run one promotion cycle against an Alcatrazer workspace.
+
+    Reads state (`pinned_branch`, `inner_root`, `last_promoted`) from
+    `alcatraz_dir/state.json`, checks the outer's pin, and either:
+
+    - **OK pin** — format-patches the range `<since>..refs/heads/main`
+      (where `since = last_promoted or inner_root`), applies via
+      apply_patch_stream, advances state (`last_promoted`,
+      `last_promotion_time`, `paused=None`), returns PROMOTED.
+    - **Non-OK pin** — returns HELD with the specific PinStatus.
+      No `git am`, no state mutation. The agent keeps committing
+      inside while we wait for the user to fix the outer state.
+    - **Apply conflict** — catches PromotionConflictError, writes
+      `paused={"reason": ...}`, leaves `last_promoted` /
+      `last_promotion_time` untouched (they only reflect SUCCESSFUL
+      promotions), returns PAUSED.
+
+    No-op steady state (no new agent commits since last_promoted) is
+    PROMOTED with commit_count=0. State is not advanced because
+    `last_promoted` is already at inner's tip.
+
+    Per change_promotion_machinery.md Phase 3 Step 3.8 (L875-876).
+    """
+    state_data = state.load_state(alcatraz_dir)
+    pinned_branch = state_data.get("pinned_branch")
+    inner_root = state_data.get("inner_root")
+    last_promoted = state_data.get("last_promoted") or inner_root
+
+    # 1. Pin check — anything but OK puts us on hold (no work, no state change).
+    pin = check_pin(target, pinned_branch)
+    if pin is not PinStatus.OK:
+        return PromotionResult(outcome=PromotionOutcome.HELD, pin_status=pin)
+
+    # 2. Format patches for inner's main since last_promoted (or inner_root).
+    stream = format_patch_stream(source, last_promoted)
+    commit_count = len(_MBOX_SEPARATOR_PATTERN.findall(stream))
+
+    # 3. Steady state — nothing new to promote.
+    if commit_count == 0:
+        return PromotionResult(outcome=PromotionOutcome.PROMOTED, commit_count=0)
+
+    # 4. Apply. On conflict, record paused state and return early.
+    try:
+        apply_patch_stream(target, stream, name, email)
+    except PromotionConflictError as exc:
+        state.update_state(alcatraz_dir, paused={"reason": str(exc)})
+        return PromotionResult(
+            outcome=PromotionOutcome.PAUSED,
+            conflict_message=str(exc),
+        )
+
+    # 5. Success — advance state. last_promoted moves to inner's tip;
+    # last_promotion_time stamped UTC ISO 8601; paused cleared.
+    inner_tip = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "refs/heads/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    state.update_state(
+        alcatraz_dir,
+        last_promoted=inner_tip,
+        last_promotion_time=datetime.now(timezone.utc).isoformat(),
+        paused=None,
+    )
+
+    return PromotionResult(
+        outcome=PromotionOutcome.PROMOTED,
+        commit_count=commit_count,
+    )
 
 
 def dry_run(
