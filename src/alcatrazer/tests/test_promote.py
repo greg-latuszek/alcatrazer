@@ -107,6 +107,70 @@ class TestRewriteFromHeader(unittest.TestCase):
             marker = b"GIT binary patch"
             self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
 
+    def test_does_not_rewrite_from_in_commit_message_body(self):
+        """Regression test (caught by code review of Phase 2 Step 2.2):
+        the `From: ` rewrite must NOT touch lines starting with
+        `From: ` that appear inside a commit's MESSAGE BODY — only the
+        header line directly after the `From <sha>` mbox separator
+        gets rewritten.
+
+        Without proper anchoring, the regex matches every `From: ` in
+        the stream — corrupting body lines that quote emails or
+        contain example data. See docs/coding_conventions.md
+        "Regex parsing must be preceded by an input-example comment".
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = str(Path(tmp) / "workspace")
+            subprocess.run(
+                ["git", "init", "-b", "main", workspace],
+                capture_output=True,
+                check=True,
+            )
+            git(workspace, "config", "user.name", "Patricia Garcia")
+            git(workspace, "config", "user.email", "patricia@inner.example.com")
+            git(workspace, "config", "commit.gpgsign", "false")
+            Path(workspace, "file.txt").write_text("content\n")
+            git(workspace, "add", "file.txt")
+            # Multi-line commit message: subject, blank, body containing
+            # a `From: spam@example.com` line that must survive intact.
+            git(
+                workspace,
+                "commit",
+                "-m",
+                "Subject line\n\nBody mentions an email example.\n"
+                "From: spam@example.com\nMore body.",
+            )
+
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    workspace,
+                    "format-patch",
+                    "--stdout",
+                    "--binary",
+                    "--keep-subject",
+                    "-1",
+                    "HEAD",
+                ],
+                capture_output=True,
+                check=True,
+            )
+            stream = result.stdout
+            # Sanity: the stream really does contain the body's From: line.
+            self.assertIn(b"From: spam@example.com", stream)
+
+            rewritten = promote_mod.rewrite_from_header(
+                stream, "Alice Example", "alice@example.com"
+            )
+
+            # Header rewritten to Alice (the legitimate target).
+            self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
+            self.assertNotIn(b"From: Patricia Garcia", rewritten)
+            # Body's `From: spam@example.com` line preserved untouched —
+            # this is the over-match check.
+            self.assertIn(b"From: spam@example.com", rewritten)
+
 
 class TestFormatPatchStream(unittest.TestCase):
     """Phase 2 (change_promotion_machinery.md L812-818): primitive
