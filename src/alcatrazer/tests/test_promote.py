@@ -348,6 +348,53 @@ class TestPromoteOnce(unittest.TestCase):
             # Paused cleared.
             self.assertIsNone(new_state.get("paused"))
 
+    def test_held_when_off_pin_no_state_change(self):
+        """Outer on a different branch than pinned: promote_once must
+        not call `git am`, must not mutate state, and must return
+        HELD with pin_status=OFF_PIN.
+
+        Spec: change_promotion_machinery.md L861-862 (Step 3.4).
+        """
+        from alcatrazer import state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            inner_root, _ = self._make_inner_with_agent_commits(inner, count=2)
+            # Outer on `main`; pinned_branch is feat/X but feat/X must
+            # exist so the failure mode is OFF_PIN, not PIN_DELETED.
+            self._make_outer_on_branch(outer, "main")
+            subprocess.run(
+                ["git", "-C", str(outer), "branch", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            pre_head = git(str(outer), "rev-parse", "HEAD")
+            pre_state = state.load_state(alcatraz_dir)
+
+            result = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+
+            self.assertEqual(result.outcome, promote_mod.PromotionOutcome.HELD)
+            self.assertEqual(result.pin_status, promote_mod.PinStatus.OFF_PIN)
+            # Outer HEAD untouched, no stale am state.
+            self.assertEqual(git(str(outer), "rev-parse", "HEAD"), pre_head)
+            self.assertFalse((outer / ".git" / "rebase-apply").exists())
+            # State byte-identical (no mutation in HELD path).
+            self.assertEqual(state.load_state(alcatraz_dir), pre_state)
+            # And specifically: no last_promoted / last_promotion_time.
+            post_state = state.load_state(alcatraz_dir)
+            self.assertNotIn("last_promoted", post_state)
+            self.assertNotIn("last_promotion_time", post_state)
+
 
 class TestCheckPin(unittest.TestCase):
     """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
