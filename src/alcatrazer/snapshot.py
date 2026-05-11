@@ -84,6 +84,28 @@ def detect_default_branch(repo: str) -> str | None:
     return None
 
 
+def is_detached_head(repo: str) -> bool:
+    """True iff `repo` is a git repo with commits but no branch checked
+    out (`git symbolic-ref --short HEAD` fails while `git rev-parse HEAD`
+    succeeds).
+
+    Distinguishes detached HEAD from two adjacent states that also lack
+    a branch but are NOT detached:
+    - non-git directory (`rev-parse HEAD` fails) — different problem
+    - empty git repo (`rev-parse HEAD` fails because no commits)
+      — greenfield, snapshot can still produce an empty workspace
+
+    Used by `start.cmd_start` to refuse before snapshot runs (Step 1.8 of
+    change_promotion_machinery.md): promotion is bound to a starting
+    branch, and detached HEAD has no branch to bind to.
+    """
+    has_head = _git(repo, "rev-parse", "HEAD").returncode == 0
+    if not has_head:
+        return False
+    on_branch = _git(repo, "symbolic-ref", "--short", "HEAD").returncode == 0
+    return not on_branch
+
+
 def current_branch(repo: str) -> str | None:
     """Return the currently checked-out branch name, or None when that
     concept doesn't apply (detached HEAD, or a freshly-init'd repo with

@@ -188,6 +188,21 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         )
         return 1
 
+    # Phase 1 (change_promotion_machinery.md, Step 1.8): promotion is
+    # bound to a starting branch (pinned_branch in state.json). Reject
+    # upfront when the outer repo is on detached HEAD — snapshot would
+    # otherwise silently produce a workspace with no branch to pin to.
+    # Non-git directories and greenfield (no-commits) repos are NOT
+    # detached and are handled by their own downstream paths.
+    if snapshot.is_detached_head(str(project_dir)):
+        print(
+            "alcatrazer start: the outer repository is on a detached HEAD.\n"
+            "Promotion is bound to a starting branch — please check out a\n"
+            "branch (e.g. `git checkout main`) before running alcatrazer start.",
+            file=sys.stderr,
+        )
+        return 1
+
     if prison is None:
         from alcatrazer.docker_prison import DockerPrison
 
