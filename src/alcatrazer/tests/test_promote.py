@@ -50,62 +50,99 @@ class TestRewriteFromHeader(unittest.TestCase):
     """
 
     def test_substitutes_from_in_real_mbox_with_binary(self):
-        """Real `git format-patch` output containing a binary file:
-        - `From:` header rewritten (Patricia -> Alice)
-        - `From <sha>` separator line untouched (different anchor)
-        - GIT binary-patch section preserved byte-for-byte
+        """Real `git format-patch` output containing a binary file,
+        rewritten and applied to an outer repo:
+
+        - Header rewritten — outer's resulting commit has Alice as
+          author, Patricia appears nowhere in the log.
+        - Binary file content survives the rewrite byte-for-byte
+          — outer's blob.bin equals the bytes inner committed.
+        - Text file content survives (sanity).
+        - git am succeeded, which implies the mbox stream was
+          well-formed after rewrite_from_header (a corrupted
+          separator or malformed binary section would fail parsing).
+
+        Method follows Step 2.7's pattern (and the body-line test
+        below): rewrite + apply via plain `git am` + query git/
+        filesystem for the semantic end effect. Plain `git am`
+        (not apply_patch_stream) keeps this test focused on
+        rewrite_from_header in isolation.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            workspace = str(Path(tmp) / "workspace")
+            inner = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner: initial empty commit (inner_root) + agent commit
+            # adding a binary blob and a text file.
             subprocess.run(
-                ["git", "init", "-b", "main", workspace],
+                ["git", "init", "-b", "main", inner],
                 capture_output=True,
                 check=True,
             )
-            git(workspace, "config", "user.name", "Patricia Garcia")
-            git(workspace, "config", "user.email", "patricia@example.com")
-            git(workspace, "config", "commit.gpgsign", "false")
-            # 0..255 binary blob exercises non-UTF-8 bytes through the
-            # rewrite. format-patch --binary emits a GIT binary patch
-            # section that must pass through byte-identical.
-            Path(workspace, "blob.bin").write_bytes(bytes(range(256)))
-            Path(workspace, "text.txt").write_text("hello\n")
-            git(workspace, "add", "-A")
-            git(workspace, "commit", "-m", "Initial commit")
+            git(inner, "config", "user.name", "Patricia Garcia")
+            git(inner, "config", "user.email", "patricia@inner.example.com")
+            git(inner, "config", "commit.gpgsign", "false")
+            git(inner, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(inner, "rev-parse", "HEAD")
+            # All 256 byte values — exercises non-UTF-8 bytes through
+            # the rewrite. format-patch --binary emits a GIT binary
+            # patch section that must survive intact end-to-end.
+            original_binary = bytes(range(256))
+            Path(inner, "blob.bin").write_bytes(original_binary)
+            Path(inner, "text.txt").write_text("hello\n")
+            git(inner, "add", "-A")
+            git(inner, "commit", "-m", "agent: add binary blob and text")
 
-            result = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    workspace,
-                    "format-patch",
-                    "--stdout",
-                    "--binary",
-                    "--keep-subject",
-                    "-1",
-                    "HEAD",
-                ],
-                capture_output=True,
-                check=True,
-            )
-            stream = result.stdout
-            self.assertIn(b"From: Patricia Garcia <patricia@example.com>", stream)
-            self.assertIn(b"GIT binary patch", stream)  # sanity
-
+            stream = promote_mod.format_patch_stream(Path(inner), inner_root)
             rewritten = promote_mod.rewrite_from_header(
                 stream, "Alice Example", "alice@example.com"
             )
 
-            self.assertIn(b"From: Alice Example <alice@example.com>", rewritten)
-            self.assertNotIn(b"From: Patricia Garcia", rewritten)
-            # `From <sha> Mon Sep 17 ...` separator (no colon) must
-            # not match the `From: ` rewrite anchor — the separator
-            # line stays intact (mbox stream starts with it; no
-            # surrounding-newline anchor since it's at position 0).
-            self.assertRegex(rewritten, rb"From [0-9a-f]{40} Mon Sep 17 00:00:00 2001")
-            # Binary patch section identical bytes after the marker.
-            marker = b"GIT binary patch"
-            self.assertEqual(stream[stream.index(marker) :], rewritten[rewritten.index(marker) :])
+            # Outer repo with one initial commit, ready to receive
+            # the rewritten patch on top.
+            subprocess.run(
+                ["git", "init", "-b", "main", outer],
+                capture_output=True,
+                check=True,
+            )
+            git(outer, "config", "user.name", "Outer User")
+            git(outer, "config", "user.email", "user@outer.example.com")
+            git(outer, "config", "commit.gpgsign", "false")
+            Path(outer, "README.md").write_text("# Project\n")
+            git(outer, "add", "README.md")
+            git(outer, "commit", "-m", "initial outer commit")
+
+            # Apply via plain `git am`. Success itself is an assertion:
+            # if rewrite_from_header had corrupted the separator or
+            # the binary section, git's parser would refuse here.
+            subprocess.run(
+                ["git", "-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
+                input=rewritten,
+                capture_output=True,
+                check=True,
+            )
+
+            # Ask git directly: top commit's author is Alice.
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%an <%ae>"),
+                "Alice Example <alice@example.com>",
+            )
+            # Patricia absent from author/committer log entirely.
+            self.assertNotIn(
+                "Patricia",
+                git(outer, "log", "--all", "--format=%an %ae %cn %ce"),
+            )
+            # Ask the filesystem: binary content matches what inner
+            # committed, byte-for-byte. This is the strongest binary-
+            # passthrough check available — it verifies the entire
+            # rewrite -> format-patch -> git am pipeline preserved
+            # every byte, not just one stage.
+            self.assertEqual(
+                Path(outer, "blob.bin").read_bytes(),
+                original_binary,
+            )
+            # Text file too — sanity.
+            self.assertEqual(Path(outer, "text.txt").read_text(), "hello\n")
 
     def test_does_not_rewrite_from_in_commit_message_body(self):
         """Regression test (caught by code review of Phase 2 Step 2.2):
