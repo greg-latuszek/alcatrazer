@@ -540,6 +540,86 @@ class TestPromoteOnce(unittest.TestCase):
             self.assertNotIn("side: commit 1", log)
             self.assertNotIn("side: commit 2", log)
 
+    def test_paused_on_conflict_writes_paused_preserves_advance_state(self):
+        """Conflict path: outer has a local change on the same file
+        the agent modified, so apply_patch_stream raises
+        PromotionConflictError. promote_once must:
+        - write state.paused = {"reason": "<message>"}
+        - leave state.last_promoted and state.last_promotion_time
+          UNTOUCHED (they reflect the LAST SUCCESSFUL promotion, not
+          this failed one)
+        - return PromotionResult(PAUSED, conflict_message=...)
+        - outer's HEAD unchanged (apply_patch_stream rolled back)
+
+        Spec: change_promotion_machinery.md L872-873 (Step 3.7).
+        """
+        from alcatrazer import state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            # Inner: shared.py = "v1" at initial, agent edits to "v2".
+            inner.mkdir()
+            subprocess.run(
+                ["git", "init", "-b", "main", str(inner)],
+                capture_output=True,
+                check=True,
+            )
+            git(str(inner), "config", "user.name", "Patricia Garcia")
+            git(str(inner), "config", "user.email", "patricia@inner.example.com")
+            git(str(inner), "config", "commit.gpgsign", "false")
+            Path(inner, "shared.py").write_text("v1\n")
+            git(str(inner), "add", "shared.py")
+            git(str(inner), "commit", "-m", "Initial commit")
+            inner_root = git(str(inner), "rev-parse", "HEAD")
+            Path(inner, "shared.py").write_text("v2 - agent\n")
+            git(str(inner), "add", ".")
+            git(str(inner), "commit", "-m", "agent: modify shared")
+
+            # Outer on feat/X with a conflicting local edit on shared.py.
+            outer.mkdir()
+            subprocess.run(
+                ["git", "init", "-b", "feat/X", str(outer)],
+                capture_output=True,
+                check=True,
+            )
+            git(str(outer), "config", "user.name", "Outer User")
+            git(str(outer), "config", "user.email", "user@outer.example.com")
+            git(str(outer), "config", "commit.gpgsign", "false")
+            Path(outer, "shared.py").write_text("v1\n")
+            git(str(outer), "add", "shared.py")
+            git(str(outer), "commit", "-m", "initial outer")
+            Path(outer, "shared.py").write_text("v2 - user\n")
+            git(str(outer), "add", ".")
+            git(str(outer), "commit", "-m", "user: modify shared differently")
+
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+            pre_head = git(str(outer), "rev-parse", "HEAD")
+
+            result = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+
+            # Outcome PAUSED with a non-empty conflict message.
+            self.assertEqual(result.outcome, promote_mod.PromotionOutcome.PAUSED)
+            self.assertNotEqual(result.conflict_message, "")
+            # State.paused recorded with a reason.
+            post_state = state.load_state(alcatraz_dir)
+            self.assertIsNotNone(post_state.get("paused"))
+            self.assertIn("reason", post_state["paused"])
+            # State.last_promoted / last_promotion_time NOT advanced
+            # — they should only reflect SUCCESSFUL promotions.
+            self.assertNotIn("last_promoted", post_state)
+            self.assertNotIn("last_promotion_time", post_state)
+            # Outer HEAD unchanged (apply rolled back via git am --abort).
+            self.assertEqual(git(str(outer), "rev-parse", "HEAD"), pre_head)
+            self.assertFalse((outer / ".git" / "rebase-apply").exists())
+
 
 class TestCheckPin(unittest.TestCase):
     """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
