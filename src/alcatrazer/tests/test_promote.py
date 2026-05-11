@@ -259,6 +259,96 @@ class TestRewriteFromHeader(unittest.TestCase):
             self.assertNotIn("inner.example.com", log)
 
 
+class TestPromoteOnce(unittest.TestCase):
+    """Phase 3 Steps 3.3-3.8 (change_promotion_machinery.md L857-876):
+    `promote_once` orchestrates a single promotion cycle: read state,
+    check pin, format-patch the inner range since last_promoted,
+    rewrite identity, apply via git am, write back state. Returns
+    PromotionResult so the daemon can log meaningfully.
+    """
+
+    def _make_inner_with_agent_commits(
+        self, inner: Path, count: int = 2
+    ) -> tuple[str, str]:
+        """Initialise inner with an Initial commit (would-be inner_root)
+        + `count` agent commits on top. Returns (inner_root, inner_tip).
+        """
+        inner.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main", str(inner)],
+            capture_output=True,
+            check=True,
+        )
+        git(str(inner), "config", "user.name", "Patricia Garcia")
+        git(str(inner), "config", "user.email", "patricia@inner.example.com")
+        git(str(inner), "config", "commit.gpgsign", "false")
+        git(str(inner), "commit", "--allow-empty", "-m", "Initial commit")
+        inner_root = git(str(inner), "rev-parse", "HEAD")
+        for i in range(count):
+            Path(inner, f"agent{i}.py").write_text(f"# agent {i}\n")
+            git(str(inner), "add", ".")
+            git(str(inner), "commit", "-m", f"agent: commit {i}")
+        inner_tip = git(str(inner), "rev-parse", "HEAD")
+        return inner_root, inner_tip
+
+    def _make_outer_on_branch(self, outer: Path, branch: str) -> None:
+        """Initialise outer as a git repo on `branch` with one commit."""
+        outer.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", branch, str(outer)],
+            capture_output=True,
+            check=True,
+        )
+        git(str(outer), "config", "user.name", "Outer User")
+        git(str(outer), "config", "user.email", "user@outer.example.com")
+        git(str(outer), "config", "commit.gpgsign", "false")
+        git(str(outer), "commit", "--allow-empty", "-m", "initial outer commit")
+
+    def test_active_path_applies_patches_and_advances_state(self):
+        """Active path (outer on pinned branch, agent has new commits):
+        - patches applied to outer
+        - last_promoted advanced to inner's tip
+        - last_promotion_time written
+        - paused cleared (set to None even if it had a prior reason)
+        - returns PromotionResult(PROMOTED, count=N)
+
+        Spec: change_promotion_machinery.md L857-859 (Step 3.3).
+        """
+        from alcatrazer import state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            inner_root, inner_tip = self._make_inner_with_agent_commits(inner, count=2)
+            self._make_outer_on_branch(outer, "feat/X")
+            # Pre-set a stale "paused" to verify the active path clears it.
+            state.update_state(
+                alcatraz_dir,
+                pinned_branch="feat/X",
+                inner_root=inner_root,
+                paused={"reason": "previous conflict"},
+            )
+
+            result = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+
+            # Outcome: PROMOTED, 2 commits applied.
+            self.assertEqual(result.outcome, promote_mod.PromotionOutcome.PROMOTED)
+            self.assertEqual(result.commit_count, 2)
+            # Outer branch advanced (1 initial + 2 promoted = 3 commits).
+            self.assertEqual(int(git(str(outer), "rev-list", "--count", "HEAD")), 3)
+            # State advanced.
+            new_state = state.load_state(alcatraz_dir)
+            self.assertEqual(new_state.get("last_promoted"), inner_tip)
+            self.assertIn("last_promotion_time", new_state)
+            # Paused cleared.
+            self.assertIsNone(new_state.get("paused"))
+
+
 class TestCheckPin(unittest.TestCase):
     """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
     classifies the outer's current HEAD against the recorded pin
