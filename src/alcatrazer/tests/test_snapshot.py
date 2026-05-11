@@ -1183,5 +1183,49 @@ class TestSnapshotRecordsState(unittest.TestCase):
             self.assertEqual(recorded, "feat/X")
 
 
+class TestSnapshotUsesCurrentBranchTree(unittest.TestCase):
+    """Phase 1 (change_promotion_machinery.md L790-795): the workspace
+    is built from outer's current branch tree, not the default branch.
+    Replaces the prior "main branch only" rule which is incompatible
+    with the starting-branch promotion contract.
+    """
+
+    def test_workspace_mirrors_current_branch_not_default(self):
+        """Outer on `feat/X` with a file absent from `main` — the
+        workspace must contain that file. Until Step 1.6, snapshot
+        extracts the default-branch tree, so the file is missing.
+
+        Spec: change_promotion_machinery.md L790-792 (Step 1.5).
+        """
+        from alcatrazer import snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            make_repo(outer, branch="main")
+            # Create feat/X with a file that is NOT on main.
+            subprocess.run(
+                ["git", "-C", outer, "checkout", "-b", "feat/X"],
+                capture_output=True,
+                check=True,
+            )
+            Path(outer, "feat_only.txt").write_text("feature work")
+            git(outer, "add", "feat_only.txt")
+            git(outer, "commit", "-m", "feat: feature-only file")
+            init_workspace(workspace)
+
+            snapshot.snapshot_workspace(outer, workspace, str(alcatraz_dir))
+
+            self.assertTrue(
+                Path(workspace, "feat_only.txt").exists(),
+                "workspace should contain feat/X's tree, not main's",
+            )
+            self.assertEqual(
+                Path(workspace, "feat_only.txt").read_text(),
+                "feature work",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
