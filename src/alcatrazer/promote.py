@@ -132,6 +132,28 @@ def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
     "author " or "committer " inside a data section.
     """
     repl = b"\\1 " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b"> \\2"
+    # Input (one commit object inside a `git fast-export` stream):
+    #   blob
+    #   mark :1
+    #   data 20
+    #   <20 bytes of arbitrary file content — may contain the literal
+    #    string "author " or "committer " followed by anything>
+    #
+    #   commit refs/heads/main
+    #   mark :2
+    #   author <name> <<email>> <unix_ts> <tz>       <- TARGET
+    #   committer <name> <<email>> <unix_ts> <tz>    <- TARGET
+    #   data 15
+    #   commit message
+    #   M 100644 :1 path/to/file
+    #
+    # Boundary: the legitimate header has the trailing
+    # `<unix-timestamp> <±tz-offset>` shape (e.g. "1700000000 +0200").
+    # Data sections can contain ANY bytes including text that starts
+    # with "author " or "committer ", but won't have that exact
+    # timestamp/tz shape at line end. Anchoring on `^(author)` and
+    # capturing the trailing timestamp+tz in group 2 ensures we only
+    # rewrite header lines.
     stream = re.sub(
         rb"^(author) .+ <.+> (.+)$",
         repl,
@@ -339,6 +361,18 @@ def rewrite_refs(stream: bytes, namespace: str) -> bytes:
     refs/heads/main -> refs/heads/<namespace>/main
     """
     repl = b"\\1 refs/heads/" + namespace.encode("utf-8") + b"/\\2"
+    # Input (a fast-export ref declaration line):
+    #   commit refs/heads/main                           <- TARGET
+    #   reset refs/heads/feat/some-branch                <- TARGET
+    #
+    # Boundary: ref declarations occur at the start of a line as
+    # exactly `commit refs/heads/<name>` or `reset refs/heads/<name>`.
+    # Data sections in the stream can contain the literal text
+    # "commit refs/heads/..." but never at the start of a line within
+    # a `data N` block (those lines are prefixed by the binary blob
+    # bytes, not by `commit ` or `reset `). The `^(commit|reset) `
+    # anchor is therefore sufficient — captured operator in group 1,
+    # captured branch name in group 2.
     return re.sub(
         rb"^(commit|reset) refs/heads/(.+)$",
         repl,
