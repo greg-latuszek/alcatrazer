@@ -179,8 +179,14 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
     breakage" rule.
     """
     require_git_repo(outer_repo)
-    branch = detect_default_branch(outer_repo)
-    _warn_if_on_non_default_branch(outer_repo, branch)
+    # Snapshot from whatever branch outer currently has checked out
+    # — this is the "starting branch" the workspace is bound to. The
+    # prior "default branch only" rule is retired per
+    # change_promotion_machinery.md (Step 1.6); detached-HEAD is
+    # rejected upstream in cmd_start (Step 1.8) so by the time we get
+    # here, current_branch returns a real branch name (or None for
+    # an empty outer repo, which extract_snapshot treats as a no-op).
+    branch = current_branch(outer_repo)
     extract_snapshot(outer_repo, branch, workspace)
     filter_gitignore(workspace)
     create_initial_commit(workspace)
@@ -193,31 +199,6 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
             inner_root=inner_root_sha,
             pinned_branch=pinned_branch,
         )
-
-
-def _warn_if_on_non_default_branch(outer_repo: str, default: str | None) -> None:
-    """Print a user-facing warning when the outer repo's current branch
-    isn't the one we're about to snapshot. Silent for detached HEAD or
-    when the user IS on the default branch — otherwise users learn to
-    ignore the message.
-
-    This is advisory only: the "Main Branch Only" design rule stands
-    (see docs/design_principles.md) and the snapshot still proceeds
-    from the default branch regardless.
-    """
-    if default is None:
-        return
-    head = current_branch(outer_repo)
-    if head is None or head == default:
-        return
-    print(
-        f"Note: you are currently on branch '{head}' in this repository.\n"
-        f"      Alcatrazer always snapshots from the default branch "
-        f"('{default}') and promotes agent commits back to '{default}',\n"
-        f"      regardless of what you have checked out. Your '{head}' "
-        f"branch will be neither read nor modified.\n"
-        f"      See README.md → 'Branch handling' for why."
-    )
 
 
 def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
