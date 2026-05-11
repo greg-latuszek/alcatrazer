@@ -454,6 +454,92 @@ class TestPromoteOnce(unittest.TestCase):
                 state.load_state(alcatraz_dir).get("last_promoted"), inner_tip
             )
 
+    def test_first_parent_flattens_inner_merges(self):
+        """When inner's main has a merge commit bringing in side-branch
+        commits, --first-parent (used by format_patch_stream) keeps the
+        outer's history linear: one patch for the merge, side-branch
+        commits absent as individual entries.
+
+        Spec: change_promotion_machinery.md L868-870 (Step 3.6).
+        """
+        from alcatrazer import state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "inner"
+            outer = Path(tmp) / "outer"
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            alcatraz_dir.mkdir()
+
+            # Inner: initial commit + side branch with 2 commits +
+            # merge back to main. main's first-parent line is
+            # inner_root -> merge. Side commits exist but only on
+            # the second-parent line of the merge.
+            inner.mkdir()
+            subprocess.run(
+                ["git", "init", "-b", "main", str(inner)],
+                capture_output=True,
+                check=True,
+            )
+            git(str(inner), "config", "user.name", "Patricia Garcia")
+            git(str(inner), "config", "user.email", "patricia@inner.example.com")
+            git(str(inner), "config", "commit.gpgsign", "false")
+            git(str(inner), "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(str(inner), "rev-parse", "HEAD")
+
+            subprocess.run(
+                ["git", "-C", str(inner), "checkout", "-b", "side"],
+                capture_output=True,
+                check=True,
+            )
+            Path(inner, "side1.py").write_text("# side 1\n")
+            git(str(inner), "add", "side1.py")
+            git(str(inner), "commit", "-m", "side: commit 1")
+            Path(inner, "side2.py").write_text("# side 2\n")
+            git(str(inner), "add", "side2.py")
+            git(str(inner), "commit", "-m", "side: commit 2")
+            subprocess.run(
+                ["git", "-C", str(inner), "checkout", "main"],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(inner),
+                    "merge",
+                    "--no-ff",
+                    "-m",
+                    "merge: pull in side work",
+                    "side",
+                ],
+                capture_output=True,
+                check=True,
+            )
+
+            self._make_outer_on_branch(outer, "feat/X")
+            state.update_state(
+                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
+            )
+
+            result = promote_mod.promote_once(
+                inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
+            )
+
+            # Exactly ONE patch applied — the merge commit, flattened.
+            self.assertEqual(result.outcome, promote_mod.PromotionOutcome.PROMOTED)
+            self.assertEqual(result.commit_count, 1)
+            # Outer has only 1 new commit (1 initial + 1 promoted = 2).
+            self.assertEqual(int(git(str(outer), "rev-list", "--count", "HEAD")), 2)
+            # The merge commit's combined diff applied: both side files
+            # are in outer's working tree.
+            self.assertTrue(Path(outer, "side1.py").exists())
+            self.assertTrue(Path(outer, "side2.py").exists())
+            # Side-branch commits NOT in outer's log as separate entries.
+            log = git(str(outer), "log", "--all", "--format=%s")
+            self.assertNotIn("side: commit 1", log)
+            self.assertNotIn("side: commit 2", log)
+
 
 class TestCheckPin(unittest.TestCase):
     """Phase 3 (change_promotion_machinery.md L851-855): `check_pin`
