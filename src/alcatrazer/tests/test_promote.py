@@ -528,6 +528,96 @@ class TestApplyPatchStream(unittest.TestCase):
             # No stale am state — `git am --abort` ran cleanly.
             self.assertFalse((Path(outer) / ".git" / "rebase-apply").exists())
 
+    def test_inner_split_author_committer_collapsed_to_outer_identity(self):
+        """Lock-in test for the asymmetric author/committer handling:
+
+        When the agent commits inside the workspace with SPLIT
+        author/committer (via GIT_AUTHOR_*/GIT_COMMITTER_* env vars
+        at commit time — e.g. author="Jane", committer="John"), the
+        resulting outer commit must show the configured outer
+        identity in BOTH fields. The agent's inner committer is
+        not allowed to leak through.
+
+        Underlying mechanism (this test pins it):
+        - `git format-patch` carries author in the `From:` header
+          but emits NO Committer header — committer info is dropped
+          at the patch boundary. (Verified empirically:
+          docs/git_patch_example.log shows no Committer line; the
+          conversation around this test documents the experiment.)
+        - `rewrite_from_header` rewrites the patch's `From:` line,
+          so author becomes the configured outer identity.
+        - `apply_patch_stream` sets GIT_COMMITTER_NAME/EMAIL env
+          when calling `git am`, so the new commit's committer is
+          the configured outer identity.
+
+        The asymmetric design (stream rewrite for author, env for
+        committer) is forced by git: there is no `git am` flag to
+        override the author, and there is no committer info in the
+        format-patch stream to rewrite.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner: initial empty commit (inner_root) + agent commit
+            # with SPLIT author/committer.
+            subprocess.run(
+                ["git", "init", "-b", "main", inner],
+                capture_output=True,
+                check=True,
+            )
+            git(inner, "config", "user.name", "Default Inner")
+            git(inner, "config", "user.email", "default@inner.example.com")
+            git(inner, "config", "commit.gpgsign", "false")
+            git(inner, "commit", "--allow-empty", "-m", "Initial commit")
+            inner_root = git(inner, "rev-parse", "HEAD")
+
+            Path(inner, "file.txt").write_text("content\n")
+            git(inner, "add", "file.txt")
+            split_env = os.environ.copy()
+            split_env["GIT_AUTHOR_NAME"] = "Jane Author"
+            split_env["GIT_AUTHOR_EMAIL"] = "jane@inner.example.com"
+            split_env["GIT_COMMITTER_NAME"] = "John Committer"
+            split_env["GIT_COMMITTER_EMAIL"] = "john@inner.example.com"
+            subprocess.run(
+                ["git", "-C", inner, "commit", "-m", "agent: split-identity commit"],
+                env=split_env,
+                capture_output=True,
+                check=True,
+            )
+            # Sanity: inner really has the split identity we set up.
+            self.assertEqual(
+                git(inner, "log", "-1", "--format=%an <%ae>"),
+                "Jane Author <jane@inner.example.com>",
+            )
+            self.assertEqual(
+                git(inner, "log", "-1", "--format=%cn <%ce>"),
+                "John Committer <john@inner.example.com>",
+            )
+
+            stream = promote_mod.format_patch_stream(Path(inner), inner_root)
+
+            self._make_outer_with_one_commit(outer)
+            promote_mod.apply_patch_stream(
+                Path(outer), stream, "Alice Example", "alice@example.com"
+            )
+
+            # Both fields of the promoted commit are Alice.
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%an <%ae>"),
+                "Alice Example <alice@example.com>",
+            )
+            self.assertEqual(
+                git(outer, "log", "-1", "--format=%cn <%ce>"),
+                "Alice Example <alice@example.com>",
+            )
+            # Neither inner identity (Jane / John, or the domain)
+            # appears anywhere in the outer's log — five-layer leak
+            # check (each name in both casings + domain).
+            log = git(outer, "log", "--all", "--format=%an %ae %cn %ce")
+            for token in ("Jane", "jane", "John", "john", "inner.example.com"):
+                self.assertNotIn(token, log, f"inner identity leak: {token!r}")
+
     def test_drops_empty_patches(self):
         """Inner has an empty agent commit (created with --allow-empty);
         its representation in the mbox stream lacks a diff section.

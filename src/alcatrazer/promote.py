@@ -288,6 +288,17 @@ def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> No
     - Committer is rewritten via `GIT_COMMITTER_NAME` /
       `GIT_COMMITTER_EMAIL` env vars passed to `git am`.
 
+    The asymmetric channels reflect git's design: `git format-patch`
+    carries author in the `From:` header but emits NO committer
+    info — committer is dropped at the patch boundary — and
+    `git am` has no flag to override the patch's author. So author
+    rewrite must happen on the stream, and committer rewrite at
+    apply-time via env. Even when the agent commits with SPLIT
+    author/committer inside the workspace (via GIT_AUTHOR_*/
+    GIT_COMMITTER_* env vars), only the author survives
+    format-patch, and our env override sets committer correctly.
+    See `test_inner_split_author_committer_collapsed_to_outer_identity`.
+
     `git am` flags:
     - `--committer-date-is-author-date` — committer timestamp equals
       author timestamp (no time drift across promotion)
