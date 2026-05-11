@@ -29,10 +29,11 @@ Read these in order. Stop when you have enough for the task.
 ```
 1. THIS FILE (index.md)               — what's where, invariants, conventions
 2. docs/design_principles.md          — architectural ethics — load always
-3. docs/prds/PRD-001-alcatrazer.md    — vision + requirements — load for product work
-4. docs/architecture.md               — system synthesis — load for any non-trivial code task
-5. docs/source-tree-analysis.md       — module map — load when navigating unfamiliar code
-6. docs/features/<topic>.md           — feature-level design — load for that feature's work
+3. docs/coding_conventions.md         — implementation rules (regex commenting, …) — load for any code change
+4. docs/prds/PRD-001-alcatrazer.md    — vision + requirements — load for product work
+5. docs/architecture.md               — system synthesis — load for any non-trivial code task
+6. docs/source-tree-analysis.md       — module map — load when navigating unfamiliar code
+7. docs/features/<topic>.md           — feature-level design — load for that feature's work
 ```
 
 **Don't load the whole PRD on a tiny task.** A typo fix or one-line CLI
