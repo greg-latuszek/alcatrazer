@@ -36,6 +36,7 @@ if sys.version_info < (3, 11):
 import argparse
 import fnmatch
 import json
+import os
 import re
 import subprocess
 import tomllib
@@ -204,6 +205,75 @@ def format_patch_stream(source: Path, since_sha: str) -> bytes:
         check=True,
     )
     return result.stdout
+
+
+class PromotionConflictError(Exception):
+    """Raised by apply_patch_stream when `git am` fails to apply the
+    stream (typically a working-tree / history divergence between
+    outer and the patch's expected base). The aborted patch series
+    is rolled back via `git am --abort` before this is raised, so
+    outer's HEAD and working tree are byte-identical to the pre-call
+    state.
+    """
+
+
+def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> None:
+    """Apply an mbox-format patch stream to `target` via `git am`,
+    rewriting both author and committer identity to (name, email).
+
+    - Author is rewritten via `rewrite_from_header` on the input stream
+      (substitutes the `From: ` line).
+    - Committer is rewritten via `GIT_COMMITTER_NAME` /
+      `GIT_COMMITTER_EMAIL` env vars passed to `git am`.
+
+    `git am` flags:
+    - `--committer-date-is-author-date` — committer timestamp equals
+      author timestamp (no time drift across promotion)
+    - `--keep-non-patch` — keep Subject content even if not patch-shaped
+    - `--whitespace=nowarn` — don't reject patches with whitespace
+      issues; we control both sides of the pipeline
+    - `--empty=drop` — silently skip e-mails with no diff (empty
+      commits) rather than failing or pausing
+
+    On non-zero exit, runs `git am --abort` to clean up the partial
+    apply, then raises PromotionConflictError with captured stderr.
+
+    Per change_promotion_machinery.md Phase 2 Step 2.10.
+    """
+    rewritten = rewrite_from_header(stream, name, email)
+
+    env = os.environ.copy()
+    env["GIT_COMMITTER_NAME"] = name
+    env["GIT_COMMITTER_EMAIL"] = email
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(target),
+            "am",
+            "--committer-date-is-author-date",
+            "--keep-non-patch",
+            "--whitespace=nowarn",
+            "--empty=drop",
+        ],
+        input=rewritten,
+        capture_output=True,
+        env=env,
+    )
+    if result.returncode != 0:
+        # Roll back the partial `am` so outer's HEAD + tree return to
+        # the pre-call state. `--abort` is itself best-effort: failure
+        # to abort is rare but if it happens we still raise the
+        # original conflict so the caller knows the operation failed.
+        subprocess.run(
+            ["git", "-C", str(target), "am", "--abort"],
+            capture_output=True,
+        )
+        raise PromotionConflictError(
+            f"git am failed (exit {result.returncode}): "
+            + result.stderr.decode("utf-8", errors="replace")
+        )
 
 
 def dry_run(
