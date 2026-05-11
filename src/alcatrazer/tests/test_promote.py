@@ -312,6 +312,71 @@ class TestApplyPatchStream(unittest.TestCase):
                 "Outer User <user@outer.example.com>",
             )
 
+    def test_aborts_cleanly_on_conflict(self):
+        """Outer has its own conflicting edit on the same file; apply
+        raises PromotionConflictError and the outer's HEAD + working
+        tree are byte-identical to the pre-call state. No leftover
+        `.git/rebase-apply/` directory (git am --abort cleaned up).
+
+        Spec: change_promotion_machinery.md L834-837 (Step 2.8).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            inner_ws = str(Path(tmp) / "inner")
+            outer = str(Path(tmp) / "outer")
+
+            # Inner: initial commit with shared.py = "original",
+            # then agent modifies it to "agent change".
+            subprocess.run(
+                ["git", "init", "-b", "main", inner_ws],
+                capture_output=True,
+                check=True,
+            )
+            git(inner_ws, "config", "user.name", "Patricia Garcia")
+            git(inner_ws, "config", "user.email", "patricia@inner.example.com")
+            git(inner_ws, "config", "commit.gpgsign", "false")
+            Path(inner_ws, "shared.py").write_text("original\n")
+            git(inner_ws, "add", "shared.py")
+            git(inner_ws, "commit", "-m", "Initial commit")
+            inner_root = git(inner_ws, "rev-parse", "HEAD")
+            Path(inner_ws, "shared.py").write_text("agent change\n")
+            git(inner_ws, "add", ".")
+            git(inner_ws, "commit", "-m", "agent: modify shared")
+            stream = promote_mod.format_patch_stream(Path(inner_ws), inner_root)
+
+            # Outer: shared.py starts at "original" (matching the patch's
+            # base) but is then modified by the user to "user change".
+            # The patch will conflict because its base contents diverge
+            # from outer's HEAD contents.
+            subprocess.run(
+                ["git", "init", "-b", "main", outer],
+                capture_output=True,
+                check=True,
+            )
+            git(outer, "config", "user.name", "Outer User")
+            git(outer, "config", "user.email", "user@outer.example.com")
+            git(outer, "config", "commit.gpgsign", "false")
+            Path(outer, "shared.py").write_text("original\n")
+            git(outer, "add", "shared.py")
+            git(outer, "commit", "-m", "initial outer")
+            Path(outer, "shared.py").write_text("user change\n")
+            git(outer, "add", ".")
+            git(outer, "commit", "-m", "user: modify shared")
+
+            pre_head = git(outer, "rev-parse", "HEAD")
+            pre_file = Path(outer, "shared.py").read_text()
+
+            with self.assertRaises(promote_mod.PromotionConflictError):
+                promote_mod.apply_patch_stream(
+                    Path(outer), stream, "Outer User", "user@outer.example.com"
+                )
+
+            # HEAD unchanged.
+            self.assertEqual(git(outer, "rev-parse", "HEAD"), pre_head)
+            # File contents unchanged.
+            self.assertEqual(Path(outer, "shared.py").read_text(), pre_file)
+            # No stale am state — `git am --abort` ran cleanly.
+            self.assertFalse((Path(outer) / ".git" / "rebase-apply").exists())
+
 
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
