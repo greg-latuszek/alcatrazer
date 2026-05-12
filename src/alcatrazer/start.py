@@ -28,7 +28,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from alcatrazer import identity, snapshot
+from alcatrazer import identity, snapshot, state
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import (
     launch_daemon_and_print,
@@ -223,8 +223,9 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         coding_env = _load_coding_environment(project_dir)
         current_hash = prison.recipe_hash(coding_env)
         if not prison.image_matches(current_hash) or not workspace_ready:
-            return _first_run_after_init(project_dir, prison=prison)
-        return _subsequent_run(project_dir, prison=prison)
+            rc = _first_run_after_init(project_dir, prison=prison)
+        else:
+            rc = _subsequent_run(project_dir, prison=prison)
     except UnsupportedSchemaVersionError as e:
         # Both routing branches load coding-environment.toml as their first
         # real step; either can raise this. We print the validator's own
@@ -243,6 +244,26 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Phase 5 Step 5.6: post-success user-facing message. Names the
+    # branch the workspace is bound to (read from state.json, set by
+    # snapshot.py during workspace bring-up) and explains the
+    # hold-on-switch contract so the user isn't surprised when
+    # syncing pauses after `git checkout otherbranch`. Vocabulary
+    # follows docs/coding_conventions.md "User-facing strings".
+    if rc == 0:
+        pinned = state.load_state(alcatraz_dir).get("pinned_branch")
+        if pinned:
+            print()
+            print(f"Alcatrazer is running, started on branch '{pinned}'.")
+            print(
+                f"Agent commits will be applied to '{pinned}' as the agent works."
+            )
+            print(
+                "If you switch to a different branch, syncing pauses until you return."
+            )
+
+    return rc
 
 
 def _host_has_claude_creds() -> bool:
