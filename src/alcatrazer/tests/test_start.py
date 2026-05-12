@@ -4498,5 +4498,92 @@ class CmdClearDiscardPendingTests(_CmdStatusTestBase):
         self.assertNotIn("cannot clear", message.lower())
 
 
+class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.9 (change_promotion_machinery.md L963-965):
+    `alcatrazer clear` on-pin with pending commits — the case the
+    block in Step 5.7 is NOT supposed to catch. The user is on the
+    branch their agent has been syncing to; their pending commits
+    are safe by definition (they're already destined for the branch
+    the user is on). cmd_clear MUST proceed normally:
+
+      - rc == 0
+      - prison.stop / shutdown / prison.remove all called in order
+      - shutdown_sync_daemon does the final sync drain onto the
+        pinned branch (here mocked to return synced_count=3 so we
+        can assert the count flows through to the user)
+      - NO block-message ("cannot clear", "--discard-pending")
+      - cmd_clear emits a user-facing acknowledgment naming the
+        pending count AND the pinned branch — so the user sees
+        what's being synced before the workspace is torn down.
+
+    The acknowledgment is the new content GREEN 5.10 must add. It
+    makes this test cleanly RED today (today's cmd_clear stdout
+    is silent about pending count / branch when proceeding).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from alcatrazer.daemon_lifecycle import ShutdownResult
+
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        # Pretend the daemon drained 3 commits during its final sync.
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="synced", synced_count=3, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        # Real print_shutdown_result so the user-facing message
+        # composition (which IS the contract) is exercised.
+
+    def test_on_pin_with_pending_proceeds_and_acknowledges_drain(self):
+        from alcatrazer import state
+
+        # Outer ON the pin (feat/X). 3 pending agent commits in the
+        # workspace — the drain target.
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        out = stdout.getvalue()
+        err = stderr.getvalue()
+        message = out + err
+
+        # Proceeds — full tear-down ran.
+        self.assertEqual(rc, 0)
+        prison.stop.assert_called_once()
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
+        prison.remove.assert_called_once()
+
+        # No block content — this path is the safe one.
+        lower = message.lower()
+        self.assertNotIn("cannot clear", lower)
+        self.assertNotIn("--discard-pending", message)
+
+        # New GREEN 5.10 content: cmd_clear acknowledges what it's
+        # about to do, naming the pending count + pinned branch so
+        # the user sees the drain happen, not silence.
+        self.assertRegex(message, r"\b3\b")
+        self.assertIn("'feat/X'", message)
+
+        # User-language: forbidden jargon absent.
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 if __name__ == "__main__":
     unittest.main()
