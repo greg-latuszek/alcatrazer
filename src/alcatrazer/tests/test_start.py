@@ -3935,6 +3935,108 @@ class CliRunSelftestFlagTests(unittest.TestCase):
         mock_selftest.assert_not_called()
 
 
+class CmdStartPostSuccessMessageTests(unittest.TestCase):
+    """Phase 5 Step 5.5 (change_promotion_machinery.md L937-939):
+    On successful cmd_start, a user-facing message must:
+    - confirm Alcatrazer started
+    - name the branch the workspace is bound to
+    - explain that switching branches puts syncing on hold
+
+    Per docs/coding_conventions.md "User-facing strings speak the
+    user's language" — uses git vocabulary, no tool jargon.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Initialise project_dir as a real git repo on feat/X so
+        # cmd_start's detached-HEAD precondition (Phase 1) passes.
+        subprocess.run(
+            ["git", "init", "-b", "feat/X", str(self.project_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Outer User"),
+            ("user.email", "user@outer.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.project_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "commit", "--allow-empty", "-m", "initial"],
+            capture_output=True,
+            check=True,
+        )
+
+        # Minimal configs cmd_start expects.
+        (self.alcatraz_dir / "config.toml").write_text(
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\nmanager = "pip"\n'
+        )
+        # Workspace pointer (workspace dir itself doesn't need to
+        # exist; we mock the success routes below).
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-test\n")
+
+        # State: pinned_branch is what the post-success message
+        # references. snapshot.py sets this on real first run; for
+        # the test we pre-populate it.
+        from alcatrazer import state
+
+        state.update_state(self.alcatraz_dir, pinned_branch="feat/X")
+
+    def _prison_ok(self) -> Mock:
+        p = Mock(spec=Alcatraz)
+        p.recipe_hash.return_value = "h"
+        p.image_matches.return_value = True
+        return p
+
+    def test_post_success_message_names_branch_and_explains_hold(self):
+        """Run cmd_start with both routes mocked to return 0 (success).
+        Expected stdout (or stderr):
+        - some confirmation Alcatrazer started
+        - the branch name 'feat/X'
+        - guidance about switching branches putting things on hold
+        - no project jargon (pinned / promotion / outer / inner)
+        """
+        prison = self._prison_ok()
+        # Force first-run path so workspace setup isn't checked at all.
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0),
+            patch.object(start, "_subsequent_run", return_value=0),
+        ):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = start.cmd_start(self.project_dir, prison=prison)
+
+        self.assertEqual(rc, 0)
+        out = stdout.getvalue() + stderr.getvalue()
+        # Branch name appears verbatim (with quotes per house style).
+        self.assertIn("'feat/X'", out)
+        # Confirmation language present (started or running).
+        self.assertRegex(out, r"\b(started|running)\b")
+        # The hold-on-switch guidance: must mention switching branches
+        # AND the "hold"/"pause" concept.
+        lower = out.lower()
+        self.assertIn("switch", lower)
+        self.assertTrue(
+            "hold" in lower or "pause" in lower,
+            f"expected 'hold' or 'pause' in post-success message, got: {out!r}",
+        )
+        # User-language: no project jargon.
+        for jargon in ("pinned", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 class _CmdStatusTestBase(unittest.TestCase):
     """Shared fixtures for cmd_status tests (Phase 5 Steps 5.1-5.3).
 
