@@ -267,9 +267,7 @@ class TestPromoteOnce(unittest.TestCase):
     PromotionResult so the daemon can log meaningfully.
     """
 
-    def _make_inner_with_agent_commits(
-        self, inner: Path, count: int = 2
-    ) -> tuple[str, str]:
+    def _make_inner_with_agent_commits(self, inner: Path, count: int = 2) -> tuple[str, str]:
         """Initialise inner with an Initial commit (would-be inner_root)
         + `count` agent commits on top. Returns (inner_root, inner_tip).
         """
@@ -372,9 +370,7 @@ class TestPromoteOnce(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             pre_head = git(str(outer), "rev-parse", "HEAD")
             pre_state = state.load_state(alcatraz_dir)
@@ -419,9 +415,7 @@ class TestPromoteOnce(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             # Cycle 1: HELD (outer on main, not on feat/X).
             result1 = promote_mod.promote_once(
@@ -450,9 +444,7 @@ class TestPromoteOnce(unittest.TestCase):
             self.assertEqual(result2.outcome, promote_mod.PromotionOutcome.PROMOTED)
             self.assertEqual(result2.commit_count, 3)
             # State.last_promoted == inner's tip after the apply.
-            self.assertEqual(
-                state.load_state(alcatraz_dir).get("last_promoted"), inner_tip
-            )
+            self.assertEqual(state.load_state(alcatraz_dir).get("last_promoted"), inner_tip)
 
     def test_inner_merge_appears_as_individual_side_commits(self):
         """When inner's main has a merge commit bringing in N
@@ -524,9 +516,7 @@ class TestPromoteOnce(unittest.TestCase):
             )
 
             self._make_outer_on_branch(outer, "feat/X")
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             result = promote_mod.promote_once(
                 inner, outer, alcatraz_dir, "Alice Example", "alice@example.com"
@@ -608,9 +598,7 @@ class TestPromoteOnce(unittest.TestCase):
             git(str(outer), "add", ".")
             git(str(outer), "commit", "-m", "user: modify shared differently")
 
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
             pre_head = git(str(outer), "rev-parse", "HEAD")
 
             result = promote_mod.promote_once(

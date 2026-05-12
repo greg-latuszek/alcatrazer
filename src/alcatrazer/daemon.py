@@ -192,8 +192,7 @@ def _run_cycle_mirror(
             pin = result.pin_status
             if pin is promote_mod.PinStatus.DETACHED:
                 log.info(
-                    "Held: your repository has a detached HEAD. "
-                    "Check out branch %r to resume.",
+                    "Held: your repository has a detached HEAD. Check out branch %r to resume.",
                     pinned_branch,
                 )
             elif pin is promote_mod.PinStatus.PIN_DELETED:

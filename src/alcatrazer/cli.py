@@ -20,6 +20,7 @@ from pathlib import Path
 
 from alcatrazer import __version__
 from alcatrazer import start as start_module
+from alcatrazer import status as status_module
 
 
 def run_tests(smoke: bool = False) -> int:
@@ -136,8 +137,6 @@ def main():
     elif args.command == "clear":
         sys.exit(start_module.cmd_clear(Path.cwd(), discard_pending=args.discard_pending))
     elif args.command == "status":
-        from alcatrazer import status as status_module
-
         sys.exit(status_module.cmd_status(Path.cwd()))
     elif args.command == "test":
         sys.exit(run_tests(smoke=args.smoke))

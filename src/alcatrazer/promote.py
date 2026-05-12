@@ -41,7 +41,7 @@ import re
 import subprocess
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -227,9 +227,7 @@ def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
         rb"^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
         re.MULTILINE,
     )
-    replacement = (
-        b"\\1From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
-    )
+    replacement = b"\\1From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
     return pattern.sub(replacement, stream)
 
 
@@ -430,8 +428,8 @@ class PromotionOutcome(Enum):
     and `alcatrazer status` rendering (Phase 5)."""
 
     PROMOTED = "promoted"  # patches applied (commit_count may be 0 = no-op)
-    HELD = "held"          # pin check failed; no apply attempted, no state change
-    PAUSED = "paused"      # apply raised PromotionConflictError; paused state recorded
+    HELD = "held"  # pin check failed; no apply attempted, no state change
+    PAUSED = "paused"  # apply raised PromotionConflictError; paused state recorded
 
 
 @dataclass(frozen=True)
@@ -528,7 +526,7 @@ def promote_once(
     state.update_state(
         alcatraz_dir,
         last_promoted=inner_tip,
-        last_promotion_time=datetime.now(timezone.utc).isoformat(),
+        last_promotion_time=datetime.now(UTC).isoformat(),
         paused=None,
     )
 

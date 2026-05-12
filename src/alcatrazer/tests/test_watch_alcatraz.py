@@ -1301,9 +1301,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 check=True,
             ).stdout.strip()
 
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             log, records = self._capturing_logger()
 
@@ -1380,9 +1378,7 @@ class TestRunCycleMirror(unittest.TestCase):
             alcatraz_dir.mkdir()
 
             inner_root = self._make_inner(inner)
-            self._agent_commit(
-                inner, "f1.py", "# agent 1\n", "agent: commit 1"
-            )
+            self._agent_commit(inner, "f1.py", "# agent 1\n", "agent: commit 1")
 
             # Outer initialised on `main`; feat/X exists but isn't
             # checked out (so check_pin returns OFF_PIN, not PIN_DELETED).
@@ -1392,9 +1388,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 capture_output=True,
                 check=True,
             )
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             log, records = self._capturing_logger()
 
@@ -1456,9 +1450,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=status2,
             )
             self.assertEqual(status3, PromotionOutcome.PROMOTED)
-            new_messages = "\n".join(
-                r.getMessage() for r in records[records_after_cycle1:]
-            )
+            new_messages = "\n".join(r.getMessage() for r in records[records_after_cycle1:])
             # Resumed message names the branch and the count, uses
             # "agent commit(s)" not "commits" (git-native).
             self.assertIn("Resumed", new_messages)
@@ -1577,9 +1569,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 check=True,
             )
 
-            state.update_state(
-                alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root
-            )
+            state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             log, records = self._capturing_logger()
 
@@ -1624,9 +1614,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 last_logged_status=status1,
             )
             self.assertEqual(status2, PromotionOutcome.PROMOTED)
-            new_messages = "\n".join(
-                r.getMessage() for r in records[records_after_cycle1:]
-            )
+            new_messages = "\n".join(r.getMessage() for r in records[records_after_cycle1:])
             # Resumed log names the branch and says "conflict ...
             # resolved" — git vocabulary, branch named.
             self.assertIn("Resumed", new_messages)

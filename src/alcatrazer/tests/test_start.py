@@ -23,6 +23,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -4217,7 +4218,7 @@ class CmdStatusHeldStateTests(_CmdStatusTestBase):
     """
 
     def test_off_pin_held_state_names_both_branches_and_pending_count(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from alcatrazer import state
 
@@ -4233,7 +4234,7 @@ class CmdStatusHeldStateTests(_CmdStatusTestBase):
         # 3 agent commits piled in workspace — pending count == 3.
         self._add_agent_commits(3)
         self._write_workspace_pointer()
-        old = (datetime.now(timezone.utc) - timedelta(minutes=23)).isoformat()
+        old = (datetime.now(UTC) - timedelta(minutes=23)).isoformat()
         state.update_state(
             self.alcatraz_dir,
             pinned_branch="feat/X",
@@ -4281,14 +4282,14 @@ class CmdStatusActiveStateTests(_CmdStatusTestBase):
     """
 
     def test_active_state_renders_pid_branch_pending_zero_and_recent_sync(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from alcatrazer import state
 
         self._outer_on("feat/X")
         inner_root = self._workspace_with_initial()
         self._write_workspace_pointer()
-        recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        recent = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
         state.update_state(
             self.alcatraz_dir,
             pinned_branch="feat/X",

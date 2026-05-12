@@ -1374,9 +1374,8 @@ def cmd_clear(
 
     pending = 0
     if pinned_branch and last_promoted:
-        from alcatrazer.status import count_pending_commits
-
         from alcatrazer import promote
+        from alcatrazer.status import count_pending_commits
 
         workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
         if workspace_name:

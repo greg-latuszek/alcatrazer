@@ -26,6 +26,7 @@ Usage:
 """
 
 import sys
+import textwrap
 
 if sys.version_info < (3, 11):
     print(
@@ -38,7 +39,7 @@ import argparse
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from alcatrazer import identity, promote, snapshot, state
@@ -107,8 +108,8 @@ def _format_relative_time(iso_time: str | None) -> str:
     except (ValueError, TypeError):
         return "unknown"
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - then
+        then = then.replace(tzinfo=UTC)
+    delta = datetime.now(UTC) - then
     seconds = max(0, int(delta.total_seconds()))
     if seconds < 60:
         return f"{seconds} second{'s' if seconds != 1 else ''} ago"
@@ -124,10 +125,7 @@ def _format_relative_time(iso_time: str | None) -> str:
 
 def _render_explanation_lines(message: str, indent: str = " " * 20, width: int = 58) -> list[str]:
     """Wrap a multi-sentence explanation into indented lines so it
-    fits cleanly under the `Started from:` label. Stdlib-only word
-    wrap (no `textwrap` import needed for this simple case)."""
-    import textwrap
-
+    fits cleanly under the `Started from:` label."""
     return [indent + line for line in textwrap.wrap(message, width=width)]
 
 
