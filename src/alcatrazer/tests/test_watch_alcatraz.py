@@ -10,13 +10,19 @@ Tests the Python daemon's core logic:
 Uses only stdlib (unittest, tempfile, subprocess, etc.)
 """
 
+import logging
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+
+from alcatrazer import daemon, state
+from alcatrazer.promote import PromotionOutcome
 
 
 def project_dir():
@@ -29,8 +35,6 @@ def python_bin():
     python_file = project_dir() / ".alcatrazer" / "python"
     if python_file.is_symlink() or python_file.exists():
         return str(python_file.resolve())
-    import sys
-
     return sys.executable
 
 
@@ -71,8 +75,6 @@ class TestConfigLoading(unittest.TestCase):
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_config(self, content):
@@ -203,8 +205,6 @@ class TestWorkspaceCheck(unittest.TestCase):
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _run_daemon(self) -> subprocess.CompletedProcess:
@@ -271,8 +271,6 @@ class TestPidGuard(unittest.TestCase):
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
@@ -377,8 +375,6 @@ class TestSignalHandling(unittest.TestCase):
                 time.sleep(0.5)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_sigterm_exits_cleanly(self):
@@ -495,8 +491,6 @@ class TestDaemonPromotion(unittest.TestCase):
                 time.sleep(1)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
@@ -714,8 +708,6 @@ class TestLogRotation(unittest.TestCase):
                 time.sleep(1)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_log_rotates_when_exceeding_max_size(self):
@@ -805,8 +797,6 @@ class TestBranchFiltering(unittest.TestCase):
                 time.sleep(1)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_toml(self, branches_value):
@@ -935,8 +925,6 @@ class _ConflictTestBase(unittest.TestCase):
                 time.sleep(1)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _start_daemon(self):
@@ -1244,8 +1232,6 @@ class TestRunCycleMirror(unittest.TestCase):
 
     def _capturing_logger(self):
         """Logger that captures all records into a list for assertion."""
-        import logging
-
         records: list[logging.LogRecord] = []
         log = logging.getLogger(f"test-{id(records)}")
         log.handlers.clear()
@@ -1280,9 +1266,6 @@ class TestRunCycleMirror(unittest.TestCase):
         - returns PromotionOutcome.PROMOTED
         - log contains "Promoted 1 commit(s)"
         """
-        from alcatrazer import daemon, state
-        from alcatrazer.promote import PromotionOutcome
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -1368,9 +1351,6 @@ class TestRunCycleMirror(unittest.TestCase):
         3. user recheckouts feat/X; cycle 3 returns PROMOTED, log emits
            "Resumed: ... replaying N commits" with the piled count.
         """
-        from alcatrazer import daemon, state
-        from alcatrazer.promote import PromotionOutcome
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -1473,9 +1453,6 @@ class TestRunCycleMirror(unittest.TestCase):
         state.paused, returns PROMOTED. log emits "Resumed: working-
         tree conflict resolved" entry.
         """
-        from alcatrazer import daemon, state
-        from alcatrazer.promote import PromotionOutcome
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -1636,8 +1613,6 @@ class TestStatusLogTail(unittest.TestCase):
         os.makedirs(self.alcatraz_dir)
 
     def tearDown(self):
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_exits_when_no_log_file(self):
@@ -1715,8 +1690,6 @@ class TestAlcatrazTreeMode(unittest.TestCase):
                 time.sleep(1)
             except (ProcessLookupError, ValueError):
                 pass
-        import shutil
-
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_promotes_into_alcatraz_namespace(self):

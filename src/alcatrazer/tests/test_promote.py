@@ -6,6 +6,7 @@ Unit tests use mocking for identity resolution and stream rewriting.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from unittest.mock import patch
 # TODO: Remove once pyproject.toml handles src layout (Step 0.9)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 from alcatrazer import promote as promote_mod
+from alcatrazer import state
 
 SEED_SCRIPT = str(Path(__file__).resolve().parent / "seed_alcatraz.sh")
 
@@ -312,8 +314,6 @@ class TestPromoteOnce(unittest.TestCase):
 
         Spec: change_promotion_machinery.md L857-859 (Step 3.3).
         """
-        from alcatrazer import state
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -353,8 +353,6 @@ class TestPromoteOnce(unittest.TestCase):
 
         Spec: change_promotion_machinery.md L861-862 (Step 3.4).
         """
-        from alcatrazer import state
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -400,8 +398,6 @@ class TestPromoteOnce(unittest.TestCase):
 
         Spec: change_promotion_machinery.md L864-866 (Step 3.5).
         """
-        from alcatrazer import state
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -460,8 +456,6 @@ class TestPromoteOnce(unittest.TestCase):
 
         Spec: change_promotion_machinery.md L868-893 (Step 3.6, revised).
         """
-        from alcatrazer import state
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -555,8 +549,6 @@ class TestPromoteOnce(unittest.TestCase):
 
         Spec: change_promotion_machinery.md L872-873 (Step 3.7).
         """
-        from alcatrazer import state
-
         with tempfile.TemporaryDirectory() as tmp:
             inner = Path(tmp) / "inner"
             outer = Path(tmp) / "outer"
@@ -714,8 +706,6 @@ class TestFormatPatchStream(unittest.TestCase):
         commits → stream has exactly N patches, not N+1. Counting
         patches via the mbox `From <sha> Mon Sep 17 ...` separator.
         """
-        import re
-
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             subprocess.run(
@@ -1199,8 +1189,6 @@ class TestResolveIdentity(unittest.TestCase):
 
     def test_missing_identity_exits(self):
         # Override HOME to isolate from global git config
-        import os
-
         fake_home = os.path.join(self.tmpdir, "fakehome")
         os.makedirs(fake_home)
         env_patch = {"HOME": fake_home, "GIT_CONFIG_GLOBAL": "/dev/null"}

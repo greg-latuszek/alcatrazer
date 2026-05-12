@@ -17,18 +17,21 @@ import contextlib
 import hashlib
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from alcatrazer import __version__, cli, identity, languages, selftest, start
+from alcatrazer import __version__, cli, identity, languages, selftest, start, state
+from alcatrazer import status as status_mod
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
+from alcatrazer.daemon_lifecycle import ShutdownResult
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
@@ -1191,8 +1194,6 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         """When the user doesn't pick [os] or [startup] at init time, the
         generated file carries commented-out example blocks (so they can
         edit and run `alcatrazer start` later) but NOT an active header."""
-        import re
-
         data = {"languages": {"python": {"version": "3.12"}}}
         content = start.write_coding_environment_toml(self.project_dir, data).read_text()
 
@@ -1204,8 +1205,6 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         self.assertRegex(content, r"(?m)^# \[startup\]")
         # And parses cleanly as TOML (commented blocks don't break it).
         tomllib.loads(content)
-        # Keep the `re` import from being flagged as unused if the assertRegex
-        # implementation is reshuffled later.
         self.assertTrue(re.compile(r"^# \[os\]", re.MULTILINE).search(content))
 
     def test_shows_commented_example_for_a_language_user_didnt_pick(self):
@@ -1886,8 +1885,6 @@ class WriteGitExcludeTests(unittest.TestCase):
 
     def test_creates_info_dir_when_missing(self):
         # .git exists but .git/info does not — must create it.
-        import shutil
-
         shutil.rmtree(self.project_dir / ".git" / "info")
         start.write_git_exclude(self.project_dir, ".devspace-abcd")
         self.assertTrue((self.project_dir / ".git" / "info" / "exclude").is_file())
@@ -2645,9 +2642,7 @@ class SubsequentRunTests(unittest.TestCase):
         self._run(prison, env_changed=True)  # force recreate so we exercise save path
         last_path = self.alcatraz_dir / "env.hash.last"
         self.assertTrue(last_path.exists())
-        import hashlib as _h
-
-        expected = _h.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
+        expected = hashlib.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
         self.assertEqual(last_path.read_text().strip(), expected)
 
     def test_startup_failure_skips_both_snapshot_saves(self):
@@ -3541,8 +3536,6 @@ class CmdStopTests(unittest.TestCase):
 
         # Patch daemon-lifecycle helpers — cmd_stop always calls them;
         # tests control the outcome via the return value.
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -3676,8 +3669,6 @@ class CmdClearTests(unittest.TestCase):
 
         # Patch daemon-lifecycle helpers — cmd_clear always calls them;
         # tests control the outcome via the return value.
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -3991,8 +3982,6 @@ class CmdStartPostSuccessMessageTests(unittest.TestCase):
         # State: pinned_branch is what the post-success message
         # references. snapshot.py sets this on real first run; for
         # the test we pre-populate it.
-        from alcatrazer import state
-
         state.update_state(self.alcatraz_dir, pinned_branch="feat/X")
 
     def _prison_ok(self) -> Mock:
@@ -4144,8 +4133,6 @@ class _CmdStatusTestBase(unittest.TestCase):
 
     def _run_status(self) -> tuple[int, str, str]:
         """Run cmd_status and return (rc, stdout, stderr)."""
-        from alcatrazer import status as status_mod
-
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             rc = status_mod.cmd_status(self.project_dir)
@@ -4165,8 +4152,6 @@ class CmdStatusPausedStateTests(_CmdStatusTestBase):
     """
 
     def test_paused_state_renders_conflict_message_and_never_last_sync(self):
-        from alcatrazer import state
-
         # Outer on the pinned branch (so the held state isn't OFF_PIN —
         # the conflict is at the apply layer, not the pin layer).
         self._outer_on("feat/X")
@@ -4218,10 +4203,6 @@ class CmdStatusHeldStateTests(_CmdStatusTestBase):
     """
 
     def test_off_pin_held_state_names_both_branches_and_pending_count(self):
-        from datetime import datetime, timedelta
-
-        from alcatrazer import state
-
         # Outer initialised on 'main'; feat/X also exists (so the
         # state is OFF_PIN, not PIN_DELETED).
         self._outer_on("main")
@@ -4282,10 +4263,6 @@ class CmdStatusActiveStateTests(_CmdStatusTestBase):
     """
 
     def test_active_state_renders_pid_branch_pending_zero_and_recent_sync(self):
-        from datetime import datetime, timedelta
-
-        from alcatrazer import state
-
         self._outer_on("feat/X")
         inner_root = self._workspace_with_initial()
         self._write_workspace_pointer()
@@ -4353,8 +4330,6 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
         # pre-check logic in Step 5.10 must short-circuit BEFORE
         # either is invoked — so we mock them out and assert "not
         # called" below.
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -4373,8 +4348,6 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
         return rc, stdout.getvalue(), stderr.getvalue()
 
     def test_blocks_when_off_pin_with_pending_commits(self):
-        from alcatrazer import state
-
         # Outer on 'main' but pin is 'feat/X' (which also exists) —
         # this is the OFF_PIN case, the common "user wandered" scenario.
         self._outer_on("main")
@@ -4445,8 +4418,6 @@ class CmdClearDiscardPendingTests(_CmdStatusTestBase):
 
     def setUp(self):
         super().setUp()
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -4459,8 +4430,6 @@ class CmdClearDiscardPendingTests(_CmdStatusTestBase):
         self.addCleanup(print_patcher.stop)
 
     def test_discard_pending_flag_proceeds_through_teardown(self):
-        from alcatrazer import state
-
         self._outer_on("main")
         subprocess.run(
             ["git", "-C", str(self.project_dir), "branch", "feat/X"],
@@ -4524,8 +4493,6 @@ class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
 
     def setUp(self):
         super().setUp()
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -4538,8 +4505,6 @@ class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
         # composition (which IS the contract) is exercised.
 
     def test_on_pin_with_pending_proceeds_and_acknowledges_drain(self):
-        from alcatrazer import state
-
         # Outer ON the pin (feat/X). 3 pending agent commits in the
         # workspace — the drain target.
         self._outer_on("feat/X")

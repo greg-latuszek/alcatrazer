@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 from alcatrazer import daemon_lifecycle, state
+from alcatrazer.daemon import DEFAULTS
 from alcatrazer.daemon_lifecycle import launch_sync_daemon, shutdown_sync_daemon
 
 
@@ -121,8 +122,6 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         (self.alcatraz_dir / "config.toml").unlink()
         info = launch_sync_daemon(self.project_dir)
         # Daemon's default from DEFAULTS dict.
-        from alcatrazer.daemon import DEFAULTS
-
         self.assertEqual(info.interval, DEFAULTS["interval"])
 
     def test_launch_info_paths_point_into_alcatraz_dir(self):

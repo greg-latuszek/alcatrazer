@@ -17,6 +17,7 @@
 
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -1060,8 +1061,6 @@ class DockerPrisonResumeTests(unittest.TestCase):
         self.assertEqual(mock_run.call_args.args[0], ["docker", "start", expected_container])
 
     def test_raises_prison_start_error_on_failure(self):
-        from alcatrazer.alcatraz import PrisonStartError
-
         with (
             patch.object(
                 docker_prison.subprocess,
@@ -1252,8 +1251,6 @@ class DockerfileConfigHashLabelTests(unittest.TestCase):
     def _extract_label(self, content: str) -> str:
         """Return the value of the alcatrazer.config_hash LABEL, or '' if
         the LABEL is absent."""
-        import re
-
         m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', content)
         return m.group(1) if m else ""
 
@@ -1336,8 +1333,6 @@ class DockerPrisonRecipeHashTests(unittest.TestCase):
         data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
         prison.generate_prison(data)
         dockerfile = (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
-        import re
-
         m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', dockerfile)
         self.assertIsNotNone(m)
         self.assertEqual(prison.recipe_hash(data), m.group(1))
