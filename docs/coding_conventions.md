@@ -196,3 +196,51 @@ starting points, not ceilings — clarity wins when they conflict.
 - Test names and assertions (developer-facing).
 - Feature docs in `docs/features/` (design-level — though clarity is
   still preferred where it doesn't cost ambiguity).
+
+---
+
+## Run `mise format` at the end of every coding phase
+
+A "coding phase" is any [RED] / [GREEN] / [BLUE] cycle (or a
+self-contained chunk of edits ready to commit). Before you commit
+the phase's work, run:
+
+```
+mise format
+```
+
+This runs `ruff format src` followed by `ruff check --fix src`
+(scoped to `src/`, which holds both the package and its tests at
+`src/alcatrazer/tests/` — the tests ship with the wheel as
+`alcatrazer test` validation for end users). The task must exit
+green: `All checks passed!`.
+
+### Why this rule exists
+
+Per-file `ruff format <one-file.py>` runs done in the middle of an
+edit catch the diff you just wrote, but they miss cross-file lint
+debts that accumulate over a phase (unused imports left after a
+refactor, `SIM102` nested-`if` regressions in an adjacent module,
+`F841` unused locals left from a deleted code path). One
+project-scoped `mise format` at the end catches them as a batch,
+keeps `main` permanently lintable, and matches what CI enforces —
+so you find the failure now, not after pushing.
+
+### When `mise format` reports new fixable issues
+
+If `ruff check --fix src` auto-fixed something, treat the fix as
+**part of the phase's commit** when it's small + obviously
+mechanical (whitespace, import sort, formatter quirks). When the
+fix is a meaningful refactor (collapsing a nested `if`, removing
+an unused variable that was visibly there for a reason), split it
+into its own `[BLUE] format only refactoring` commit so the
+behavior-bearing GREEN/RED commit stays scoped to its test.
+
+### Scope (what `mise format` looks at)
+
+`src/` only. Anything outside `src/` is either generated build
+output, AI-tool scaffolding installed in the working tree, or
+docs — none of which are ours to lint. If you find ruff
+complaining about a path under `src/`, fix the code; if it's
+complaining about a path outside `src/`, the task's scope is
+wrong, not the code.

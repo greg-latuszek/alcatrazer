@@ -211,14 +211,13 @@ def _run_cycle_mirror(
                     pinned_branch,
                     pinned_branch,
                 )
-    elif outcome is PO.PAUSED:
-        if last_logged_status is not PO.PAUSED:
-            log.warning(
-                "Paused: your working tree on branch %r overlaps with an "
-                "agent commit. Commit or stash your changes and Alcatrazer "
-                "will resume.",
-                pinned_branch,
-            )
+    elif outcome is PO.PAUSED and last_logged_status is not PO.PAUSED:
+        log.warning(
+            "Paused: your working tree on branch %r overlaps with an "
+            "agent commit. Commit or stash your changes and Alcatrazer "
+            "will resume.",
+            pinned_branch,
+        )
 
     return outcome
 
@@ -315,7 +314,6 @@ def main():
     log.addHandler(handler)
     branches = config["branches"]
     mode = config["mode"]
-    paused_branches = promote_mod.load_paused_branches(marks_dir)
     log.info(
         "Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
         os.getpid(),
