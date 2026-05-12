@@ -3935,5 +3935,163 @@ class CliRunSelftestFlagTests(unittest.TestCase):
         mock_selftest.assert_not_called()
 
 
+class _CmdStatusTestBase(unittest.TestCase):
+    """Shared fixtures for cmd_status tests (Phase 5 Steps 5.1-5.3).
+
+    Each test bootstraps:
+    - project_dir as outer git repo on a named branch
+    - workspace_dir (sibling .devspace-test) as inner repo with
+      'Initial commit' inner_root
+    - .alcatrazer/ with workspace-dir pointer + state.json
+    - .alcatrazer/promotion-daemon.pid pointing at current process
+      (so cmd_status's daemon-alive check passes)
+    """
+
+    WORKSPACE_NAME = ".devspace-test"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.workspace_dir = self.project_dir / self.WORKSPACE_NAME
+        self.addCleanup(self.tmp.cleanup)
+
+    def _outer_on(self, branch: str) -> None:
+        subprocess.run(
+            ["git", "init", "-b", branch, str(self.project_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Outer User"),
+            ("user.email", "user@outer.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.project_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "commit", "--allow-empty", "-m", "initial outer"],
+            capture_output=True,
+            check=True,
+        )
+
+    def _workspace_with_initial(self) -> str:
+        """Initialise inner repo + one empty Initial commit. Return inner_root SHA."""
+        self.workspace_dir.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main", str(self.workspace_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Patricia Garcia"),
+            ("user.email", "patricia@inner.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(self.workspace_dir), "commit", "--allow-empty", "-m", "Initial commit"],
+            capture_output=True,
+            check=True,
+        )
+        return subprocess.run(
+            ["git", "-C", str(self.workspace_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _add_agent_commits(self, n: int) -> None:
+        for i in range(n):
+            Path(self.workspace_dir, f"agent{i}.py").write_text(f"# agent {i}\n")
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "add", "."],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "commit", "-m", f"agent: {i}"],
+                capture_output=True,
+                check=True,
+            )
+
+    def _write_workspace_pointer(self) -> None:
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+
+    def _write_daemon_pid(self) -> None:
+        """Write current process PID so cmd_status's `os.kill(pid, 0)`
+        liveness check passes."""
+        Path(self.alcatraz_dir, "promotion-daemon.pid").write_text(f"{os.getpid()}\n")
+
+    def _run_status(self) -> tuple[int, str, str]:
+        """Run cmd_status and return (rc, stdout, stderr)."""
+        from alcatrazer import status as status_mod
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = status_mod.cmd_status(self.project_dir)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+
+class CmdStatusActiveStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.1 (change_promotion_machinery.md L923-925):
+    cmd_status active-state output.
+
+    Expected (spec L286-291, revised per user-language rule):
+      Sync daemon running (PID <pid>)
+        Started from:     '<branch>'  active
+        Pending commits:  0
+        Last sync:        <relative time, e.g. "2 minutes ago">
+    """
+
+    def test_active_state_renders_pid_branch_pending_zero_and_recent_sync(self):
+        from datetime import datetime, timedelta, timezone
+
+        from alcatrazer import state
+
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._write_workspace_pointer()
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            # No pending: last_promoted == workspace tip (= inner_root since
+            # no agent commits yet).
+            last_promoted=inner_root,
+            last_promotion_time=recent,
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Daemon line names the PID.
+        self.assertIn(str(os.getpid()), out)
+        # Active state marker.
+        self.assertIn("active", out)
+        # Started-from line names the branch.
+        self.assertIn("Started from", out)
+        self.assertIn("feat/X", out)
+        # Pending commits = 0.
+        self.assertRegex(out, r"Pending commits:\s*0\b")
+        # Last sync line carries a relative time including "minute".
+        self.assertIn("Last sync", out)
+        self.assertRegex(out, r"\d+\s*minute")
+        # User-language: forbidden jargon does not appear (case-insensitive).
+        lower = out.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 if __name__ == "__main__":
     unittest.main()
