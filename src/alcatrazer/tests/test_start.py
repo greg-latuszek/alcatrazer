@@ -4041,6 +4041,67 @@ class _CmdStatusTestBase(unittest.TestCase):
         return rc, stdout.getvalue(), stderr.getvalue()
 
 
+class CmdStatusHeldStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.2 (change_promotion_machinery.md L927-929):
+    cmd_status held-state output when outer is off-pin (most common
+    held case). The block must:
+
+    - say the state is "on hold"
+    - name BOTH branches (current + started-on) in the explanation
+    - count pending commits accurately
+    - render last sync time
+    - give an actionable next step (the `git checkout <branch>` hint)
+    """
+
+    def test_off_pin_held_state_names_both_branches_and_pending_count(self):
+        from datetime import datetime, timedelta, timezone
+
+        from alcatrazer import state
+
+        # Outer initialised on 'main'; feat/X also exists (so the
+        # state is OFF_PIN, not PIN_DELETED).
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        # 3 agent commits piled in workspace — pending count == 3.
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=23)).isoformat()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,  # nothing promoted yet; 3 pending
+            last_promotion_time=old,
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Held marker.
+        self.assertIn("on hold", out.lower())
+        # Both branch names named (current AND started-on).
+        self.assertIn("'main'", out)
+        self.assertIn("'feat/X'", out)
+        # Started-from line.
+        self.assertIn("Started from", out)
+        # Pending commit count = 3.
+        self.assertRegex(out, r"Pending commits:\s*3\b")
+        # Last sync uses minute-based relative time (23 minutes ago).
+        self.assertRegex(out, r"\d+\s*minute")
+        # Actionable hint: a git checkout command naming the branch.
+        self.assertIn("git checkout feat/X", out)
+        # User-language: forbidden jargon absent.
+        lower = out.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 class CmdStatusActiveStateTests(_CmdStatusTestBase):
     """Phase 5 Step 5.1 (change_promotion_machinery.md L923-925):
     cmd_status active-state output.
