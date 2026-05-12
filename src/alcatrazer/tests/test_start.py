@@ -4041,6 +4041,59 @@ class _CmdStatusTestBase(unittest.TestCase):
         return rc, stdout.getvalue(), stderr.getvalue()
 
 
+class CmdStatusPausedStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.3 (change_promotion_machinery.md L931-932):
+    cmd_status paused-state output when state.paused is non-null
+    (working-tree conflict). The block must:
+
+    - say the state is "paused"
+    - name the pinned branch
+    - emit the working-tree-conflict explanation with the
+      Commit-or-stash actionable next step
+    - render "Last sync: never" when last_promotion_time absent
+    """
+
+    def test_paused_state_renders_conflict_message_and_never_last_sync(self):
+        from alcatrazer import state
+
+        # Outer on the pinned branch (so the held state isn't OFF_PIN —
+        # the conflict is at the apply layer, not the pin layer).
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(1)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+            # last_promotion_time deliberately absent — paused before
+            # ever applying anything successfully.
+            paused={"reason": "git am failed (exit 128): patch does not apply"},
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Paused marker.
+        self.assertIn("paused", out.lower())
+        # Started-from line names the branch.
+        self.assertIn("Started from", out)
+        self.assertIn("'feat/X'", out)
+        # Working-tree conflict explanation + actionable next step.
+        self.assertIn("working tree", out.lower())
+        self.assertRegex(out, r"[Cc]ommit or stash")
+        # Pending commits = 1 (the agent commit waiting to apply).
+        self.assertRegex(out, r"Pending commits:\s*1\b")
+        # Last sync: never (last_promotion_time absent).
+        self.assertIn("never", out.lower())
+        # User-language: forbidden jargon absent.
+        lower = out.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 class CmdStatusHeldStateTests(_CmdStatusTestBase):
     """Phase 5 Step 5.2 (change_promotion_machinery.md L927-929):
     cmd_status held-state output when outer is off-pin (most common
