@@ -256,12 +256,8 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         if pinned:
             print()
             print(f"Alcatrazer is running, started on branch '{pinned}'.")
-            print(
-                f"Agent commits will be applied to '{pinned}' as the agent works."
-            )
-            print(
-                "If you switch to a different branch, syncing pauses until you return."
-            )
+            print(f"Agent commits will be applied to '{pinned}' as the agent works.")
+            print("If you switch to a different branch, syncing pauses until you return.")
 
     return rc
 
@@ -1311,7 +1307,11 @@ def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
     return 0
 
 
-def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
+def cmd_clear(
+    project_dir: Path,
+    prison: Alcatraz | None = None,
+    discard_pending: bool = False,
+) -> int:
     """`alcatrazer clear` — throw away the Alcatraz runtime, preserve
     the workspace.
 
@@ -1327,7 +1327,21 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
     - user repo-root files (`coding-environment.toml`, `.env`,
       `.env.example`).
 
-    Ordering (Step 5.7 non-negotiable rule, same as cmd_stop):
+    Four-case pre-check (Phase 5 Step 5.10, spec L315-343):
+
+    | Outer state | Pending | Behavior                                |
+    | ----------- | ------- | --------------------------------------- |
+    | on pin      |  0      | proceed silently                        |
+    | on pin      |  >0     | acknowledge → drain via final sync      |
+    | off pin     |  0      | proceed silently                        |
+    | off pin     |  >0     | BLOCK unless --discard-pending          |
+
+    Default-deny on the last row prevents `git checkout main → clear`
+    muscle-memory from silently dropping N hours of agent work. The
+    --discard-pending flag is the explicit opt-in (e.g. abandoning a
+    failed experiment).
+
+    Tear-down ordering when proceeding (same as cmd_stop — race-free):
     1. `docker stop` — agents frozen.
     2. `shutdown_sync_daemon` — daemon runs final sync against the
        frozen inner repo, exits. Any commits it can't sync stay in
@@ -1339,7 +1353,8 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
     with docker rm (unsynced commits live in the preserved workspace)
     but returns non-zero so the user is aware.
     """
-    if not (project_dir / ".alcatrazer").exists():
+    alcatraz_dir = project_dir / ".alcatrazer"
+    if not alcatraz_dir.exists():
         print(
             "No alcatrazer setup in this repository — run `alcatrazer init` first.",
             file=sys.stderr,
@@ -1350,6 +1365,58 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
         from alcatrazer.docker_prison import DockerPrison
 
         prison = DockerPrison(project_dir)
+
+    # Pre-check: read state, classify pin status, count pending. This
+    # decides whether we block or proceed BEFORE touching docker.
+    state_data = state.load_state(alcatraz_dir)
+    pinned_branch = state_data.get("pinned_branch")
+    last_promoted = state_data.get("last_promoted")
+
+    pending = 0
+    if pinned_branch and last_promoted:
+        from alcatrazer.status import count_pending_commits
+
+        from alcatrazer import promote
+
+        workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+        if workspace_name:
+            pending = count_pending_commits(project_dir / workspace_name, last_promoted)
+        pin = promote.check_pin(project_dir, pinned_branch)
+
+        # Off-pin + pending + no override → block.
+        if pin is not promote.PinStatus.OK and pending > 0 and not discard_pending:
+            current = snapshot.current_branch(str(project_dir)) or "<unknown>"
+            plural = "" if pending == 1 else "s"
+            print(
+                f"alcatrazer: cannot clear — {pending} agent commit{plural} "
+                f"haven't been synced to branch '{pinned_branch}' yet, "
+                f"but your repository is on '{current}'.",
+                file=sys.stderr,
+            )
+            print(file=sys.stderr)
+            print(
+                f"Alcatrazer was started on branch '{pinned_branch}' and "
+                f"can only sync commits back to that branch.",
+                file=sys.stderr,
+            )
+            print(file=sys.stderr)
+            print(
+                f"  To keep the agent work:    git checkout {pinned_branch} && alcatrazer clear",
+                file=sys.stderr,
+            )
+            print(
+                "  To discard pending work:   alcatrazer clear --discard-pending",
+                file=sys.stderr,
+            )
+            return 1
+
+        # On-pin + pending → acknowledge so the user sees the drain.
+        if pin is promote.PinStatus.OK and pending > 0:
+            plural = "" if pending == 1 else "s"
+            print(
+                f"Syncing {pending} pending agent commit{plural} to "
+                f"branch '{pinned_branch}' before clearing…"
+            )
 
     # Step 1 — docker down first.
     if prison.is_running():

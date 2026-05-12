@@ -67,10 +67,11 @@ def _read_daemon_pid(pid_file: Path) -> int | None:
         return pid
 
 
-def _count_pending_commits(workspace: Path, last_promoted: str | None) -> int:
+def count_pending_commits(workspace: Path, last_promoted: str | None) -> int:
     """Count commits in workspace's main branch that are NOT yet
     reachable from `last_promoted`. Used by `alcatrazer status` to
-    render the "Pending commits: N" line.
+    render the "Pending commits: N" line, and by `cmd_clear` to
+    decide whether the four-case block applies.
 
     Falls back to 0 when:
       - the workspace doesn't exist or isn't a git repo
@@ -127,10 +128,7 @@ def _render_explanation_lines(message: str, indent: str = " " * 20, width: int =
     wrap (no `textwrap` import needed for this simple case)."""
     import textwrap
 
-    return [
-        indent + line
-        for line in textwrap.wrap(message, width=width)
-    ]
+    return [indent + line for line in textwrap.wrap(message, width=width)]
 
 
 def cmd_status(project_dir: Path) -> int:
@@ -166,10 +164,7 @@ def cmd_status(project_dir: Path) -> int:
     # 1. Daemon alive?
     pid = _read_daemon_pid(pid_file)
     if pid is None:
-        print(
-            "No sync daemon running. Run `alcatrazer start` to bring up "
-            "the workspace."
-        )
+        print("No sync daemon running. Run `alcatrazer start` to bring up the workspace.")
         return 0
 
     # 2. Read state (single load) — Phase 5 spec, no new state files.
@@ -219,7 +214,7 @@ def cmd_status(project_dir: Path) -> int:
     workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
     pending = 0
     if workspace_name:
-        pending = _count_pending_commits(project_dir / workspace_name, last_promoted)
+        pending = count_pending_commits(project_dir / workspace_name, last_promoted)
 
     # 5. Last sync as relative time.
     last_sync = _format_relative_time(last_promotion_time)

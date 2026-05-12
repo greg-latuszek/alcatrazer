@@ -78,9 +78,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Freeze the Alcatraz (writable layer preserved for a later resume)",
     )
 
-    subparsers.add_parser(
+    clear_parser = subparsers.add_parser(
         "clear",
         help="Throw away the Alcatraz (next start recreates; image kept)",
+    )
+    clear_parser.add_argument(
+        "--discard-pending",
+        action="store_true",
+        help=(
+            "Proceed even when there are unsynced agent commits in the "
+            "workspace and your repository is on a different branch than "
+            "the one Alcatrazer was started on. Without this flag, "
+            "`alcatrazer clear` refuses in that case to protect the "
+            "pending work."
+        ),
     )
 
     subparsers.add_parser(
@@ -123,7 +134,7 @@ def main():
     elif args.command == "stop":
         sys.exit(start_module.cmd_stop(Path.cwd()))
     elif args.command == "clear":
-        sys.exit(start_module.cmd_clear(Path.cwd()))
+        sys.exit(start_module.cmd_clear(Path.cwd(), discard_pending=args.discard_pending))
     elif args.command == "status":
         from alcatrazer import status as status_module
 
