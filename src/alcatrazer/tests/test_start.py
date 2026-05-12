@@ -4424,5 +4424,79 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
             self.assertNotIn(jargon, lower)
 
 
+class CmdClearDiscardPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.8 (change_promotion_machinery.md L960-961):
+    `alcatrazer clear --discard-pending` is the explicit override
+    of the Step 5.7 block — when the user knowingly wants to throw
+    away unsynced agent commits (e.g. an experiment that turned
+    out worse than `main`), the flag MUST let cmd_clear proceed
+    with the normal tear-down sequence.
+
+    Same setup as Step 5.7 (off-pin + pending — the case that
+    would otherwise block), but with the flag set:
+      - rc == 0
+      - prison.stop / prison.remove called as usual
+      - shutdown_sync_daemon called (final reap of the daemon)
+      - the block-message vocabulary ("cannot clear", recovery
+        hints) does NOT appear — the user got what they asked for
+        without lecture.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from alcatrazer.daemon_lifecycle import ShutdownResult
+
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    def test_discard_pending_flag_proceeds_through_teardown(self):
+        from alcatrazer import state
+
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison, discard_pending=True)
+        out = stdout.getvalue()
+        err = stderr.getvalue()
+
+        # Override succeeded; full tear-down ran.
+        self.assertEqual(rc, 0)
+        prison.stop.assert_called_once()
+        prison.remove.assert_called_once()
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
+
+        # No block-message content (the user explicitly opted in;
+        # don't lecture them on the way out).
+        message = out + err
+        self.assertNotIn("cannot clear", message.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
