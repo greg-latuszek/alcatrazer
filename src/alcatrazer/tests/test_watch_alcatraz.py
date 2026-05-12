@@ -1642,6 +1642,10 @@ class TestStatusLogTail(unittest.TestCase):
         self.assertIn("Tailing", stdout.decode())
 
 
+# Phase 6 Step 6.2 removed the alcatraz-tree branch from daemon.run_cycle —
+# the daemon now always runs the mirror cycle and ignores config "mode".
+# These tests still exercise the now-gone namespace promotion behavior, so
+# they're marked expectedFailure here and deleted entirely in Step 6.4.
 class TestAlcatrazTreeMode(unittest.TestCase):
     """Integration test: daemon promotes into alcatraz/* namespace."""
 
@@ -1692,6 +1696,7 @@ class TestAlcatrazTreeMode(unittest.TestCase):
                 pass
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    @unittest.expectedFailure
     def test_promotes_into_alcatraz_namespace(self):
         """In alcatraz-tree mode, inner main becomes outer alcatraz/main."""
         proc = subprocess.Popen(
@@ -1720,6 +1725,7 @@ class TestAlcatrazTreeMode(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
+    @unittest.expectedFailure
     def test_no_conflicts_in_alcatraz_tree_mode(self):
         """alcatraz-tree mode should never conflict — separate namespace."""
         # Do initial promotion

@@ -322,48 +322,26 @@ def main():
         mode,
     )
 
-    # Mirror-mode cycles track the previous outcome to enable
-    # transition-only logging via _run_cycle_mirror. alcatraz-tree
-    # mode is unchanged (retired in Phase 6).
+    # Track the previous outcome to enable transition-only logging
+    # via _run_cycle_mirror (only logs on state changes, not every poll).
     last_logged_status = None
 
     # Shared between main-loop polls and the final-sync on shutdown —
-    # extracted so the shutdown path doesn't duplicate branch-paused /
-    # conflict-handling / marks-update logic.
-    def run_cycle() -> list[str]:
-        """Run one promote cycle. Returns the list of newly-promoted
-        branch names (empty on alcatraz-tree mode or no-op poll). Logs
-        conflicts as WARNING. Errors bubble up for the caller to log."""
+    # extracted so the shutdown path doesn't duplicate logging.
+    def run_cycle() -> None:
+        """Run one promote cycle. All logging happens inside
+        _run_cycle_mirror; this function returns silently. Errors
+        bubble up for the caller to log."""
         nonlocal last_logged_status
-        if mode == "mirror":
-            # Phase 4: new pin-based mirror cycle via promote_once.
-            # All logging happens inside _run_cycle_mirror; the
-            # main loop's per-cycle "Promotion cycle complete: ..."
-            # log no longer fires for mirror because the structured
-            # transition log entries (Promoted N / Held / Paused /
-            # Resumed) replace it.
-            last_logged_status = _run_cycle_mirror(
-                source=source_repo,
-                target=target_repo,
-                alcatraz_dir=marks_dir,
-                name=name,
-                email=email,
-                log=log,
-                last_logged_status=last_logged_status,
-            )
-            return []
-        if mode == "alcatraz-tree":
-            promote_mod.promote(
-                source_repo,
-                target_repo,
-                marks_dir,
-                name,
-                email,
-                branches=branches,
-                namespace="alcatraz",
-            )
-            return []
-        return []
+        last_logged_status = _run_cycle_mirror(
+            source=source_repo,
+            target=target_repo,
+            alcatraz_dir=marks_dir,
+            name=name,
+            email=email,
+            log=log,
+            last_logged_status=last_logged_status,
+        )
 
     # --- Main polling loop ---
     try:
@@ -372,9 +350,6 @@ def main():
                 break
             try:
                 run_cycle()
-                if mode == "alcatraz-tree":
-                    log.info("Promotion cycle complete (alcatraz-tree)")
-                # mirror mode logs its own transitions in _run_cycle_mirror.
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:
@@ -382,17 +357,14 @@ def main():
         # between the last poll and SIGTERM. Docker is down by contract
         # (alcatrazer stop/clear order: docker first, then daemon
         # signal) so this is safe in the graceful case; in the
-        # unexpected case it's best-effort and the marks-file eventual-
-        # consistency guarantee catches any miss on the next start.
+        # unexpected case it's best-effort and the next start picks up
+        # from `last_promoted` in state.json.
         # Only the log prefix branches on intent — behavior does not.
         shutdown_intent = state.load_state(alcatraz_dir).get("daemon_shutdown")
         prefix = "graceful shutdown" if shutdown_intent == "requested" else "unexpected shutdown"
         try:
             run_cycle()
-            if mode == "mirror":
-                log.info("Final sync (%s) complete", prefix)
-            else:
-                log.info("Final sync (%s): alcatraz-tree cycle complete", prefix)
+            log.info("Final sync (%s) complete", prefix)
         except Exception as exc:
             log.error("Final sync (%s) failed: %s", prefix, exc)
 
