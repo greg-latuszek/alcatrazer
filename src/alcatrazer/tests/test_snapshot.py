@@ -583,6 +583,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             # 1 initial + 3 work commits = 4 total unpromoted
             self.assertEqual(count, 4)
 
+    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
     def test_zero_after_full_promotion(self):
         """After promoting all commits, count should be 0."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -609,6 +610,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
             self.assertEqual(count, 0)
 
+    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
     def test_partial_promotion(self):
         """Promote some commits, add more — count reflects only new ones."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -831,6 +833,7 @@ class TestResetUnpromotedWarning(unittest.TestCase):
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
             self.assertEqual(count, 3)
 
+    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
     def test_reset_detects_zero_after_full_promotion(self):
         """After promoting everything, reset should show no warning."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -866,6 +869,7 @@ class TestResetUnpromotedWarning(unittest.TestCase):
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
             self.assertEqual(count, 0)
 
+    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
     def test_reset_scenario_partial_promotion(self):
         """Promote some work, agent adds more — reset detects the new ones."""
         with tempfile.TemporaryDirectory() as tmp:

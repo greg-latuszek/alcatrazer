@@ -1093,6 +1093,9 @@ class TestApplyPatchStream(unittest.TestCase):
             self.assertEqual(post_count, pre_count)
 
 
+# Phase 6 Step 6.1 removed rewrite_identity (and the whole fast-export
+# promotion pipeline). Step 6.4 deletes the class entirely.
+@unittest.skip("rewrite_identity removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestRewriteIdentity(unittest.TestCase):
     """Unit tests for the fast-export stream rewriting."""
 
@@ -1243,6 +1246,10 @@ class PromotionTestBase(unittest.TestCase):
         return buf.getvalue()
 
 
+# Phase 6 Step 6.1 removed the promote() function (fast-export pipeline).
+# Step 6.4 deletes this class entirely. Same for the four classes below
+# that share PromotionTestBase.
+@unittest.skip("promote() removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestInitialPromotion(PromotionTestBase):
     """Tests after the first full promotion."""
 
@@ -1306,6 +1313,7 @@ class TestInitialPromotion(PromotionTestBase):
         self.assertEqual(committers, {f"{PROMOTED_NAME} <{PROMOTED_EMAIL}>"})
 
 
+@unittest.skip("promote() removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestIncrementalPromotion(PromotionTestBase):
     """Tests for second promotion run after adding new commits."""
 
@@ -1334,6 +1342,7 @@ class TestIncrementalPromotion(PromotionTestBase):
         self.assertEqual(author, f"{PROMOTED_NAME} <{PROMOTED_EMAIL}>")
 
 
+@unittest.skip("dry_run() removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestDryRun(PromotionTestBase):
     """Tests for dry_run()."""
 
@@ -1379,6 +1388,7 @@ class TestDryRun(PromotionTestBase):
         self.assertEqual(count_before, count_after)
 
 
+@unittest.skip("promote() removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestBinaryBlobPromotion(PromotionTestBase):
     """Promote a repo whose history contains a non-UTF-8 blob.
 
@@ -1430,6 +1440,7 @@ class TestBinaryBlobPromotion(PromotionTestBase):
         self.assertIn("text commit after blob", msgs)
 
 
+@unittest.skip("promote()/rewrite_refs removed in Phase 6 Step 6.1; class deleted in Step 6.4")
 class TestNamespacePromotion(PromotionTestBase):
     """Tests for promoting into a namespace (alcatraz-tree mode)."""
 
