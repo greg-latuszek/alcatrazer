@@ -4147,8 +4147,12 @@ class CmdStatusHeldStateTests(_CmdStatusTestBase):
         self.assertRegex(out, r"Pending commits:\s*3\b")
         # Last sync uses minute-based relative time (23 minutes ago).
         self.assertRegex(out, r"\d+\s*minute")
-        # Actionable hint: a git checkout command naming the branch.
-        self.assertIn("git checkout feat/X", out)
+        # Actionable hint: the `git checkout <branch>` command appears
+        # somewhere in the output. textwrap may split it across line
+        # boundaries (e.g. "...(`git\n  checkout feat/X`)..."), so we
+        # normalize whitespace before searching for the command.
+        normalized = " ".join(out.split())
+        self.assertIn("git checkout feat/X", normalized)
         # User-language: forbidden jargon absent.
         lower = out.lower()
         for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):

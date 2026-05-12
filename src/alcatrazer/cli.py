@@ -83,6 +83,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Throw away the Alcatraz (next start recreates; image kept)",
     )
 
+    subparsers.add_parser(
+        "status",
+        help="Show sync-daemon status (active / on hold / paused), pending commits, last sync",
+    )
+
     test_parser = subparsers.add_parser(
         "test",
         help="Run bundled tests to verify installation",
@@ -119,6 +124,10 @@ def main():
         sys.exit(start_module.cmd_stop(Path.cwd()))
     elif args.command == "clear":
         sys.exit(start_module.cmd_clear(Path.cwd()))
+    elif args.command == "status":
+        from alcatrazer import status as status_module
+
+        sys.exit(status_module.cmd_status(Path.cwd()))
     elif args.command == "test":
         sys.exit(run_tests(smoke=args.smoke))
 
