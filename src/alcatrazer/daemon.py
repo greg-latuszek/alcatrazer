@@ -40,8 +40,6 @@ from alcatrazer import promote as promote_mod
 
 DEFAULTS = {
     "interval": 5,
-    "branches": "all",
-    "mode": "mirror",
     "verbosity": "normal",
     "max_log_size": 512,
 }
@@ -312,14 +310,10 @@ def main():
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
-    branches = config["branches"]
-    mode = config["mode"]
     log.info(
-        "Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
+        "Daemon started (PID %d, interval=%ds)",
         os.getpid(),
         interval,
-        branches,
-        mode,
     )
 
     # Track the previous outcome to enable transition-only logging

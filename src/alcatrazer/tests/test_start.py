@@ -1697,8 +1697,6 @@ class WriteAlcatrazerConfigTests(unittest.TestCase):
         path = start.write_alcatrazer_config(self.project_dir, "A", "a@e")
         daemon = self._parse(path)["promotion-daemon"]
         self.assertEqual(daemon["interval"], 5)
-        self.assertEqual(daemon["branches"], "all")
-        self.assertEqual(daemon["mode"], "mirror")
         self.assertEqual(daemon["verbosity"], "normal")
         self.assertEqual(daemon["max_log_size"], 512)
 

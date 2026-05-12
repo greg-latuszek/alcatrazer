@@ -16,17 +16,6 @@ email = "your@email.com"
 # Polling interval in seconds.
 interval = 5
 
-# Which branches to promote from the inner repo:
-#   "all" — every branch
-#   A branch name — e.g. "main"
-#   A list of patterns — e.g. ["main", "feature/*"]
-branches = "all"
-
-# Conflict handling mode:
-#   "mirror"        — promote to same branch names (default)
-#   "alcatraz-tree" — promote to alcatraz/* namespace
-mode = "mirror"
-
 # Logging verbosity: "normal" or "detailed".
 verbosity = "normal"
 
