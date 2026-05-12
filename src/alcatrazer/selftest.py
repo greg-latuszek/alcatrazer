@@ -35,6 +35,7 @@ import unittest
 from pathlib import Path
 
 from alcatrazer.alcatraz import Alcatraz
+from alcatrazer.docker_prison import DockerPrison
 
 # Whitelist of env-var name patterns that ARE allowed to carry secret-like
 # values inside the sandbox (LLM API keys the user opted into via .env).
@@ -237,7 +238,6 @@ def make_alcatraz_selftest_testcase(project_dir: Path) -> type[unittest.TestCase
     exists only for the caller (never picked up by `unittest discover`).
     Intended for `unittest.TestLoader().loadTestsFromTestCase(...)`.
     """
-    from alcatrazer.docker_prison import DockerPrison
 
     class SelftestAlcatraz(_AlcatrazSecurityInvariants, unittest.TestCase):
         @classmethod

@@ -24,18 +24,21 @@ import secrets
 import shutil
 import subprocess
 import sys
+import textwrap
 import tomllib
 import unittest
 from pathlib import Path
 
-from alcatrazer import identity, snapshot, state
+from alcatrazer import identity, promote, selftest, snapshot, state
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import (
     launch_daemon_and_print,
     print_shutdown_result,
     shutdown_sync_daemon,
 )
+from alcatrazer.docker_prison import DockerPrison
 from alcatrazer.languages import SUPPORTED_LANGUAGES
+from alcatrazer.status import count_pending_commits
 
 # --- Coding-environment schema version --------------------------------------
 #
@@ -204,8 +207,6 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     alcatraz_dir = project_dir / ".alcatrazer"
@@ -299,8 +300,6 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     # `.alcatrazer/` is cmd_init's own directory — create it explicitly
@@ -402,8 +401,6 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     "Build & Startup Error Handling" contract, and returned as non-zero.
     """
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     alcatrazer_dir = project_dir / ".alcatrazer"
@@ -555,8 +552,6 @@ def _ask_version(language: str) -> str:
         # Blank line goes BEFORE the tip (Phase 1.2.3): visually groups
         # the tip with the upcoming `Version for X:` prompt rather than
         # orphaning it to the previous prompt's answer.
-        import textwrap
-
         print()
         print(
             textwrap.fill(
@@ -600,8 +595,6 @@ def _ask_manager(language: str) -> str:
 
     tip = lang.get("manager_tip")
     if tip:
-        import textwrap
-
         print()
         print(
             textwrap.fill(
@@ -827,8 +820,6 @@ def _render_coding_environment(data: dict) -> str:
         # gave them.
         version_tip = lang_meta.get("version_tip")
         if version_tip:
-            import textwrap
-
             lines += textwrap.wrap(
                 version_tip,
                 width=76,
@@ -844,8 +835,6 @@ def _render_coding_environment(data: dict) -> str:
         # longer gated on whether the user overrode the default.
         manager_tip = lang_meta.get("manager_tip")
         if manager_tip:
-            import textwrap
-
             lines += textwrap.wrap(
                 manager_tip,
                 width=76,
@@ -1260,8 +1249,6 @@ def cmd_selftest(project_dir: Path) -> int:
     """Run `--run-selftest`: execute the bundled security invariants against
     the Alcatraz just started at `project_dir`. Returns 0 on success or
     non-zero on failure (count of failures is shown by the test runner)."""
-    from alcatrazer import selftest
-
     TestCase = selftest.make_alcatraz_selftest_testcase(project_dir)
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
@@ -1294,8 +1281,6 @@ def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
         )
         return 1
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
     if not prison.is_running():
         print(
@@ -1362,8 +1347,6 @@ def cmd_clear(
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     # Pre-check: read state, classify pin status, count pending. This
@@ -1374,9 +1357,6 @@ def cmd_clear(
 
     pending = 0
     if pinned_branch and last_promoted:
-        from alcatrazer import promote
-        from alcatrazer.status import count_pending_commits
-
         workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
         if workspace_name:
             pending = count_pending_commits(project_dir / workspace_name, last_promoted)
@@ -1466,8 +1446,6 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     # Step 1 — docker down first (agents frozen).
@@ -1515,8 +1493,6 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     success so a retry sees the same drift signals.
     """
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     coding_env = _load_coding_environment(project_dir)

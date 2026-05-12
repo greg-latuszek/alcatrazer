@@ -7,6 +7,7 @@ Copies the current state of the outer repo's main branch into
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from alcatrazer import state
@@ -259,8 +260,6 @@ def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <outer-repo> <workspace>", file=sys.stderr)
         sys.exit(1)

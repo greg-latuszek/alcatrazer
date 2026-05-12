@@ -244,3 +244,75 @@ docs — none of which are ours to lint. If you find ruff
 complaining about a path under `src/`, fix the code; if it's
 complaining about a path outside `src/`, the task's scope is
 wrong, not the code.
+
+---
+
+## Imports live at the top of the file
+
+All imports — stdlib, third-party, and intra-package — go in a
+single block at the top of the module, in the standard isort
+order (stdlib → third-party → first-party `alcatrazer`). No
+function-scoped imports, no method-scoped imports, no
+`if __name__ == "__main__":`-scoped imports.
+
+```python
+# Good
+import textwrap
+from alcatrazer import promote
+from alcatrazer.docker_prison import DockerPrison
+
+def cmd_clear(project_dir, prison=None):
+    if prison is None:
+        prison = DockerPrison(project_dir)
+    ...
+
+# Bad — local imports clutter the function body, hide module
+# dependencies from anyone scanning the top of the file, and
+# break the "every dependency this file uses is visible
+# immediately" contract.
+def cmd_clear(project_dir, prison=None):
+    if prison is None:
+        from alcatrazer.docker_prison import DockerPrison
+        prison = DockerPrison(project_dir)
+    ...
+```
+
+### Why this rule exists
+
+A file's import block is its dependency declaration — what
+external code does this module reach into? When some of that
+declaration is hidden inside function bodies, a reader
+auditing the module (for circular dependencies, for the
+trust surface, for what would have to change if a dependency
+moves) has to grep the whole file instead of reading the top
+fifteen lines. The hidden cost compounds in code review,
+refactoring, and onboarding.
+
+Lazy imports were sometimes argued as performance optimization
+(don't pay the import cost until the function runs) — but at
+this project's scale that's measuring noise, and the
+readability cost is real.
+
+### Narrow, intentional exceptions
+
+These are the *only* cases where a non-top-level import is
+acceptable, and each must carry a one-line comment naming
+which exception applies:
+
+1. **Breaking a real import cycle.** If `from alcatrazer.X
+   import Y` at the top of `alcatrazer.A` actually fails with
+   `ImportError`, a local import inside the function that
+   needs `Y` is the standard workaround. Prefer redesigning
+   to avoid the cycle.
+2. **Optional dependency probing.** Importing an optional
+   third-party package gated behind a `try: import …
+   except ImportError:` pattern, where the calling code
+   degrades gracefully if the package is absent. (Currently
+   none in Alcatrazer — we're stdlib-only inside `src/`.)
+3. **Avoiding a heavy side-effect at import time.** A module
+   whose top-level import triggers a network call, a
+   subprocess, or hundreds of MB of memory allocation. Rare
+   and worth a comment explaining the specific cost.
+
+`if __name__ == "__main__":` blocks are NOT an exception —
+move their `import sys` etc. to the file's import block.
