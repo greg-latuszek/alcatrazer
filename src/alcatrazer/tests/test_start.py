@@ -4100,7 +4100,15 @@ class _CmdStatusTestBase(unittest.TestCase):
                 check=True,
             )
         subprocess.run(
-            ["git", "-C", str(self.workspace_dir), "commit", "--allow-empty", "-m", "Initial commit"],
+            [
+                "git",
+                "-C",
+                str(self.workspace_dir),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
+            ],
             capture_output=True,
             check=True,
         )
@@ -4309,6 +4317,109 @@ class CmdStatusActiveStateTests(_CmdStatusTestBase):
         self.assertRegex(out, r"\d+\s*minute")
         # User-language: forbidden jargon does not appear (case-insensitive).
         lower = out.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
+class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.7 (change_promotion_machinery.md L957-958):
+    `alcatrazer clear` MUST block — with a user-friendly error and
+    a non-zero exit — when the outer repo is off the start branch
+    (or detached / start branch deleted) AND the workspace has
+    pending agent commits not yet synced.
+
+    Why default-deny: losing N hours of agent work because the user
+    did `git checkout main` to inspect something and then ran
+    `alcatrazer clear` from muscle memory is a real failure mode
+    (spec L339-342). The explicit override is `--discard-pending`,
+    tested separately in Step 5.8.
+
+    Required behavior:
+      - rc != 0
+      - prison.stop / prison.remove NOT called (no docker damage)
+      - shutdown_sync_daemon NOT called (no daemon reap)
+      - error message names the pending count, BOTH branches
+        (started-on + current), and BOTH recovery paths
+        (`git checkout <branch>` and `--discard-pending`)
+      - vocabulary follows the user-language rule (docs/
+        coding_conventions.md): branch / commit / repository,
+        no `pin` / `promotion` / `outer` / `inner` jargon.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # cmd_clear today calls these unconditionally. The new
+        # pre-check logic in Step 5.10 must short-circuit BEFORE
+        # either is invoked — so we mock them out and assert "not
+        # called" below.
+        from alcatrazer.daemon_lifecycle import ShutdownResult
+
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    def _run_clear(self, prison):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_blocks_when_off_pin_with_pending_commits(self):
+        from alcatrazer import state
+
+        # Outer on 'main' but pin is 'feat/X' (which also exists) —
+        # this is the OFF_PIN case, the common "user wandered" scenario.
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        # 3 agent commits in workspace past last_promoted = inner_root.
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        rc, out, err = self._run_clear(prison=prison)
+
+        # Non-zero exit; no destructive action taken.
+        self.assertNotEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        self.mock_shutdown.assert_not_called()
+
+        # Block message — accept either stream so we don't bind the
+        # GREEN impl to a specific stream.
+        message = out + err
+        # Names the pending count (3 commits at stake).
+        self.assertRegex(message, r"\b3\b")
+        # Names BOTH branches (started-on + current).
+        self.assertIn("'feat/X'", message)
+        self.assertIn("'main'", message)
+        # Names BOTH recovery paths. `git checkout <branch>` may be
+        # broken across lines by wrap; normalize whitespace first.
+        normalized = " ".join(message.split())
+        self.assertIn("git checkout feat/X", normalized)
+        self.assertIn("--discard-pending", message)
+        # User-language: forbidden jargon absent.
+        lower = message.lower()
         for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
             self.assertNotIn(jargon, lower)
 
