@@ -17,7 +17,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 
-from alcatrazer import promote as promote_mod
 from alcatrazer import snapshot, state
 
 
@@ -583,67 +582,6 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             # 1 initial + 3 work commits = 4 total unpromoted
             self.assertEqual(count, 4)
 
-    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
-    def test_zero_after_full_promotion(self):
-        """After promoting all commits, count should be 0."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = str(Path(tmp) / "workspace")
-            target = str(Path(tmp) / "target")
-            marks_dir = str(Path(tmp) / "marks")
-            os.makedirs(marks_dir)
-
-            self._make_workspace_with_commits(workspace, 2)
-            # Create target repo and promote
-            subprocess.run(
-                ["git", "init", target],
-                capture_output=True,
-                check=True,
-            )
-            promote_mod.promote(
-                source=Path(workspace),
-                target=Path(target),
-                name="Test",
-                email="test@test.com",
-                marks_dir=Path(marks_dir),
-            )
-
-            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
-            self.assertEqual(count, 0)
-
-    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
-    def test_partial_promotion(self):
-        """Promote some commits, add more — count reflects only new ones."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = str(Path(tmp) / "workspace")
-            target = str(Path(tmp) / "target")
-            marks_dir = str(Path(tmp) / "marks")
-            os.makedirs(marks_dir)
-
-            self._make_workspace_with_commits(workspace, 2)
-            subprocess.run(
-                ["git", "init", target],
-                capture_output=True,
-                check=True,
-            )
-            promote_mod.promote(
-                source=Path(workspace),
-                target=Path(target),
-                name="Test",
-                email="test@test.com",
-                marks_dir=Path(marks_dir),
-            )
-
-            # Add 2 more commits after promotion
-            Path(workspace, "new1.txt").write_text("new")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "new commit 1")
-            Path(workspace, "new2.txt").write_text("newer")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "new commit 2")
-
-            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
-            self.assertEqual(count, 2)
-
     def test_workspace_with_no_commits(self):
         """Empty workspace (git init, no commits) returns 0."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -832,86 +770,6 @@ class TestResetUnpromotedWarning(unittest.TestCase):
             # All 3 commits (initial + 2 agent) are unpromoted
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
             self.assertEqual(count, 3)
-
-    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
-    def test_reset_detects_zero_after_full_promotion(self):
-        """After promoting everything, reset should show no warning."""
-        with tempfile.TemporaryDirectory() as tmp:
-            outer = str(Path(tmp) / "outer")
-            workspace = str(Path(tmp) / "workspace")
-            target = str(Path(tmp) / "target")
-            marks_dir = str(Path(tmp) / "marks")
-            os.makedirs(marks_dir)
-
-            make_repo(outer)
-            init_workspace(workspace)
-            snapshot.snapshot_workspace(outer, workspace)
-
-            # Agent work
-            Path(workspace, "feature.py").write_text("# feature")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "agent: feature")
-
-            # Promote everything to outer
-            subprocess.run(
-                ["git", "init", target],
-                capture_output=True,
-                check=True,
-            )
-            promote_mod.promote(
-                source=Path(workspace),
-                target=Path(target),
-                name="Dev",
-                email="dev@example.com",
-                marks_dir=Path(marks_dir),
-            )
-
-            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
-            self.assertEqual(count, 0)
-
-    @unittest.skip("promote() removed in Phase 6 Step 6.1; test deleted in Step 6.4")
-    def test_reset_scenario_partial_promotion(self):
-        """Promote some work, agent adds more — reset detects the new ones."""
-        with tempfile.TemporaryDirectory() as tmp:
-            outer = str(Path(tmp) / "outer")
-            workspace = str(Path(tmp) / "workspace")
-            target = str(Path(tmp) / "target")
-            marks_dir = str(Path(tmp) / "marks")
-            os.makedirs(marks_dir)
-
-            make_repo(outer)
-            init_workspace(workspace)
-            snapshot.snapshot_workspace(outer, workspace)
-
-            # First batch of agent work
-            Path(workspace, "batch1.py").write_text("# batch 1")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "agent: batch 1")
-
-            # Promote
-            subprocess.run(
-                ["git", "init", target],
-                capture_output=True,
-                check=True,
-            )
-            promote_mod.promote(
-                source=Path(workspace),
-                target=Path(target),
-                name="Dev",
-                email="dev@example.com",
-                marks_dir=Path(marks_dir),
-            )
-
-            # Second batch — not promoted
-            Path(workspace, "batch2.py").write_text("# batch 2")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "agent: batch 2")
-            Path(workspace, "batch3.py").write_text("# batch 3")
-            git(workspace, "add", ".")
-            git(workspace, "commit", "-m", "agent: batch 3")
-
-            count = snapshot.count_unpromoted_commits(workspace, marks_dir)
-            self.assertEqual(count, 2)
 
 
 # ── current_branch + non-default-branch warning ──────────────────────
