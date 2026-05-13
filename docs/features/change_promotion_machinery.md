@@ -494,19 +494,28 @@ Decision: **no automatic migration.** Instead:
   alcatrazer: this directory was set up by an older version (schema 1).
   v0.1.1 reworks promotion and is not backwards compatible.
 
-  To upgrade:
+  To upgrade from pre-v0.1.1:
     1. If a daemon is running: alcatrazer stop      (using your previous version)
     2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
     3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
     4. alcatrazer init                              (using v0.1.1)
     5. alcatrazer start
 
+  Step 2 needs `sudo` because pre-v0.1.1's `alcatrazer clear` left
+  the container-owned inner workspace files on the host filesystem.
+  From v0.1.1 onwards, `alcatrazer clear` wipes the inner workspace
+  itself — this manual step is a one-time upgrade procedure, not a
+  general fresh-start workflow.
+
   See CHANGELOG for what changed and why.
   ```
 
 - CHANGELOG entry calls out the breaking change explicitly and
-  re-states the upgrade steps (root-owned inner workspace files
-  require `sudo` to remove — that's why step 2 is separate).
+  re-states the upgrade steps. The `sudo` on step 2 is needed because
+  pre-v0.1.1's `clear` didn't wipe the inner workspace — the
+  container-owned files (agent UID inside, phantom UID on host)
+  survived to be cleaned up manually by the host user. v0.1.1's
+  `clear` handles the wipe automatically.
 
 Pre-1.0.0, this is the right tradeoff: explicit user action over
 silent migration code that nobody benefits from.

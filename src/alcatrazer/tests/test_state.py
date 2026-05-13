@@ -210,9 +210,10 @@ class ValidateSchemaVersionTests(unittest.TestCase):
 
     def test_message_includes_five_upgrade_steps(self):
         """Per the spec block: stop daemon, sudo-remove the inner
-        workspace (root-owned container output requires sudo),
-        rm -rf .alcatrazer/, init, start. All five cited explicitly so
-        the user can copy-paste without re-reading the design doc."""
+        workspace (container-owned files, agent UID inside / phantom
+        UID on host, so the host user needs sudo), rm -rf .alcatrazer/,
+        init, start. All five cited explicitly so the user can copy-
+        paste without re-reading the design doc."""
         msg = self._msg_for({"schema_version": 1})
         self.assertIn("alcatrazer stop", msg)
         self.assertIn("sudo rm -rf", msg)
@@ -221,6 +222,30 @@ class ValidateSchemaVersionTests(unittest.TestCase):
         self.assertIn("coding-environment.toml", msg)
         self.assertIn("alcatrazer init", msg)
         self.assertIn("alcatrazer start", msg)
+
+    def test_message_flags_sudo_step_as_pre_v0_1_1_one_off(self):
+        """Phase 9 Step 9.4: the manual `sudo rm` of the inner
+        workspace is needed only because v0.1.0's `alcatrazer clear`
+        didn't wipe it. v0.1.1+ `clear` handles the wipe via a one-
+        shot side container, so this manual step is a one-time
+        upgrade procedure — not the way fresh-starts will work going
+        forward. The message must say so explicitly so a user
+        bookmarking this procedure doesn't keep running step 2 every
+        time they want to reset Alcatrazer."""
+        msg = self._msg_for({"schema_version": 1})
+        lower = msg.lower()
+        # Names what changed in v0.1.1 about clear.
+        self.assertIn("v0.1.1", lower)
+        self.assertTrue(
+            "clear wipes" in lower or ("clear" in lower and "wipes" in lower),
+            f"message must explain that v0.1.1's clear now wipes; got: {msg!r}",
+        )
+        # Calls out the one-time / upgrade-only nature so the user
+        # doesn't internalize step 2 as a permanent ritual.
+        self.assertTrue(
+            "one-time" in lower or "upgrade procedure" in lower,
+            f"message must flag this as a one-time upgrade step; got: {msg!r}",
+        )
 
     def test_message_points_to_changelog(self):
         """CHANGELOG carries the 'what changed and why' that motivates

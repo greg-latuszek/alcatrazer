@@ -149,8 +149,13 @@ def _upgrade_message(
     gate (only set on artifact-based refusal).
 
     Step ordering matches docs/features/change_promotion_machinery.md
-    "Breaking-change posture". Step 2's `sudo` is required because the
-    inner workspace is owned by the container's agent user.
+    "Breaking-change posture". Step 2's `sudo` is a one-time pre-v0.1.1
+    upgrade artefact: v0.1.0's `alcatrazer clear` did not remove the
+    inner workspace, so its container-owned files (agent UID inside,
+    phantom UID on host) survived for the host user to clean up
+    manually. From v0.1.1 onwards, `alcatrazer clear` wipes the inner
+    workspace itself (via a one-shot side container) and step 2 is no
+    longer needed.
     """
     lines = [
         f"alcatrazer: this directory was set up by an older version ({schema_label}).",
@@ -162,13 +167,19 @@ def _upgrade_message(
         lines += ["", f"Detected legacy artifact: {legacy_artifact}"]
     lines += [
         "",
-        "To upgrade:",
+        "To upgrade from pre-v0.1.1:",
         "  1. If a daemon is running: alcatrazer stop      (using your previous version)",
         "  2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)",
         "  3. rm -rf .alcatrazer/                          "
         "(your coding-environment.toml is preserved)",
         "  4. alcatrazer init                              (using v0.1.1)",
         "  5. alcatrazer start",
+        "",
+        "Step 2 needs `sudo` because pre-v0.1.1's `alcatrazer clear` left",
+        "the container-owned inner workspace files on the host filesystem.",
+        "From v0.1.1 onwards, `alcatrazer clear` wipes the inner workspace",
+        "itself — this manual step is a one-time upgrade procedure, not a",
+        "general fresh-start workflow.",
         "",
         "See CHANGELOG for what changed and why.",
     ]

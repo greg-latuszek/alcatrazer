@@ -56,11 +56,12 @@ The rewrite is structural — `git fast-export | git fast-import` (whose semanti
 Workspaces created by Alcatrazer 0.0.x or 0.1.0 will be refused at first contact with a verbatim upgrade message. The five-step procedure:
 
 ```
-1. If a daemon is running: alcatrazer stop      (using your previous version)
-2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
-3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
-4. alcatrazer init                              (using v0.1.1)
-5. alcatrazer start
+To upgrade from pre-v0.1.1:
+  1. If a daemon is running: alcatrazer stop      (using your previous version)
+  2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
+  3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
+  4. alcatrazer init                              (using v0.1.1)
+  5. alcatrazer start
 ```
 
 Step 2 needs `sudo` because the inner workspace's files are owned by the container's agent UID, which won't match your host user UID. From 0.1.1 onwards, `alcatrazer clear` does this teardown itself (no `sudo` needed) — the manual `sudo rm` is a one-time procedure for users coming from a pre-0.1.1 install.
