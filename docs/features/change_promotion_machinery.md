@@ -1207,32 +1207,56 @@ succeeds without elevation.
 
 #### Detailed Implementation Plan
 
-**Step 9.1** `[RED]` — Test `Alcatraz.wipe_workspace_contents` on
-DockerPrison: pre-populate the workspace with files (including a
-hidden `.git` dir), call the method, assert the workspace dir exists
-and is empty (mount point preserved, contents gone). Requires the
-container to be running.
+**Step 9.1** `[RED]` — Unit tests for the port-method contract:
+- `Alcatraz.__abstractmethods__` declares `wipe_workspace_contents`.
+- `DockerPrison.wipe_workspace_contents` delegates to
+  `self.exec(["find", "/workspace", "-mindepth", "1", "-delete"])`
+  (verified via mocked `subprocess.run`).
+- Returns `None` on success (state-mutating contract, matches
+  `start`/`stop`/`remove`).
+- Raises `PrisonError` when the exec returns non-zero so cmd_clear
+  can abort its teardown rather than continue with stale files on
+  disk.
 
-**Step 9.2** `[RED]` — Test that after `cmd_clear`:
-- the workspace directory exists but is empty
-- `.alcatrazer/state.json` is gone (or its `pinned_branch` field is
-  absent)
-- `.alcatrazer/config.toml` survives unchanged
-- the docker container + image are in the same post-clear state as
-  today (container removed, image preserved)
+**Step 9.2** `[RED]` — End-to-end integration test of the switch-
+branch flow. Lives in `src/alcatrazer/integration_tests/` next to
+`test_smoke.py` (different purpose: smoke covers security invariants
+and tooling availability; this covers a user-flow). Drives the real
+`alcatrazer init` / `start` / `clear` sequence against a real
+`DockerPrison` + real container — no mocks at the prison layer, no
+host-side simulation of the wipe.
 
-**Step 9.3** `[RED]` — Integration test for the switch-branch flow:
-start on `feat/X`, agents commit, `cmd_clear`, `git checkout
-other-branch`, `cmd_start`. Assert the new `state.json.pinned_branch`
-== `"other-branch"` (today's behavior keeps `"feat/X"`).
+Phases in a single stateful test method (line number on failure
+points at which phase broke):
 
-**Step 9.4** `[GREEN]` — Add `wipe_workspace_contents` to the
+  1. Outer on `feat/X`, `cmd_start` → assert `state.json.pinned_branch`
+     == `"feat/X"`.
+  2. Make an inner commit via `prison.query` (docker exec), wait for
+     the daemon to promote it to outer `feat/X` (the realistic
+     "agents have done work" precondition for clear).
+  3. `cmd_clear` → assert `state.json` is gone AND the workspace dir
+     exists but is empty (mount point preserved, all contents
+     including `.git/` removed by the wipe).
+  4. `git checkout -b other-branch`, second `cmd_start` → assert
+     `state.json.pinned_branch` == `"other-branch"` AND the previous
+     workspace's files (e.g. `agent.txt`) are absent.
+
+The choice not to write a parallel mocked unit-level test for
+`cmd_clear`'s post-state (an earlier draft of the plan called this
+out as Step 9.2): a `Mock(spec=Alcatraz)` whose
+`wipe_workspace_contents` is fed a Python side-effect doesn't verify
+that `find -mindepth 1 -delete` does what it promises inside a real
+container as agent UID — it verifies the mock setup. The integration
+test is the source of truth here; duplicating with mocks adds
+maintenance burden with no incremental verification.
+
+**Step 9.3** `[GREEN]` — Add `wipe_workspace_contents` to the
 `Alcatraz` ABC, implement on `DockerPrison`. Extend `cmd_clear` with
 the resume → wipe → stop → remove → unlink sequence. Update
 `cmd_clear`'s post-success message to reflect the new teardown
 (drop the "workspace preserved on the host" line).
 
-**Step 9.5** `[BLUE]` — Update the upgrade-refusal message in
+**Step 9.4** `[BLUE]` — Update the upgrade-refusal message in
 `state._upgrade_message`: now that v0.1.1's `clear` handles teardown,
 the manual `sudo rm -rf $(cat .alcatrazer/workspace-dir)` step is
 only needed for users upgrading from v0.1.0 (whose `clear` doesn't
