@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from alcatrazer import state
+from alcatrazer import schema, state
 
 
 class LoadStateTests(unittest.TestCase):
@@ -361,6 +361,103 @@ class RequireCompatibleWorkspaceTests(unittest.TestCase):
         leave the user stranded without recovery instructions."""
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "paused-branches.json").write_text("{}")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        msg = str(cm.exception)
+        self.assertIn("alcatrazer stop", msg)
+        self.assertIn("alcatrazer init", msg)
+        self.assertIn("alcatrazer start", msg)
+        self.assertIn("CHANGELOG", msg)
+
+    # --- .alcatrazer/config.toml signals (Step 7.4) ---
+    #
+    # v0.1.0's config.toml had no schema_version field at all; v0.1.1
+    # introduces the field plus removes [promotion-daemon].mode and
+    # [promotion-daemon].branches. The gate fires on three sub-signals
+    # so workspaces upgraded by hand (rather than via re-init) still
+    # get caught:
+    #
+    #   - schema_version field absent → v0.1.0 config
+    #   - schema_version < current → manually bumped to wrong version
+    #   - obsolete [promotion-daemon].mode / .branches keys still
+    #     present → defence-in-depth against half-upgrades
+
+    def _config_current_version(self) -> int:
+        """The version the gate currently considers 'current' for
+        .alcatrazer/config.toml. Used to keep the silent-when-current
+        test in lockstep with future schemas.json bumps."""
+        return schema.ALCATRAZER_CONFIG.current_version
+
+    def test_raises_when_config_toml_lacks_schema_version(self):
+        """v0.1.0's .alcatrazer/config.toml had no schema_version
+        field. The absence IS the signal — no released alcatrazer ever
+        omitted it on purpose."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+        )
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("config.toml", str(cm.exception))
+
+    def test_raises_when_config_toml_schema_version_is_old(self):
+        """Hand-crafted intermediate or partial migration — defence-
+        in-depth catches it even though no released alcatrazer ever
+        wrote schema_version=1 in config.toml."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            'schema_version = 1\n[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+        )
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.require_compatible_workspace(self.alcatraz_dir)
+
+    def test_raises_when_config_toml_has_legacy_mode_key(self):
+        """Even a current-version-stamped config trips the gate when
+        the obsolete [promotion-daemon].mode is still present —
+        protects users who hand-bumped schema_version without removing
+        the deprecated keys. The legacy key takes precedence over the
+        version field."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {self._config_current_version()}\n"
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+            '[promotion-daemon]\nmode = "mirror"\n'
+        )
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("mode", str(cm.exception))
+
+    def test_raises_when_config_toml_has_legacy_branches_key(self):
+        """Same defence-in-depth check for [promotion-daemon].branches."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {self._config_current_version()}\n"
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+            '[promotion-daemon]\nbranches = "all"\n'
+        )
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("branches", str(cm.exception))
+
+    def test_silent_when_config_toml_is_current_with_no_legacy_keys(self):
+        """A current-version, legacy-key-free config passes through.
+        Uses schema.ALCATRAZER_CONFIG.current_version so the test
+        tracks future bumps automatically."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {self._config_current_version()}\n"
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+            "[promotion-daemon]\ninterval = 5\n"
+        )
+        state.require_compatible_workspace(self.alcatraz_dir)
+
+    def test_config_toml_refusal_message_includes_upgrade_steps(self):
+        """Config-toml-based refusal must surface the same upgrade
+        steps as the state.json and legacy-artifact refusals."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "config.toml").write_text(
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+        )
         with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
             state.require_compatible_workspace(self.alcatraz_dir)
         msg = str(cm.exception)
