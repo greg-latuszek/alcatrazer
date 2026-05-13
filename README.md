@@ -111,7 +111,7 @@ your_repo/                              <-- outer repo (your identity, has GitHu
 │   │                                       created during first `alcatrazer start`, gone after `clear`
 │   ├── promotion-daemon.pid            <-- daemon PID (single-instance guard)
 │   └── promotion-daemon.log            <-- daemon activity log
-└── .<workspace>-<random>/              <-- gitignored, randomly named (e.g., .devspace-7f3a/)
+└── .<workspace>-<random>/              <-- gitignored via .git/info/exclude, randomly named (e.g., .devspace-7f3a/)
     ├── .git/                           <-- inner git (random agent identity, no remote)
     └── ... agent work ...
 ```
