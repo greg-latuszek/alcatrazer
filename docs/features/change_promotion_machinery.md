@@ -1094,12 +1094,19 @@ checks.
 
 ### Phase 8: Documentation
 
+> Step 8.2 (README rewrite) depends on Phase 9 having landed first —
+> the "switch branch via `clear + start`" flow that the new README
+> describes only becomes true behavior after Phase 9 extends
+> `cmd_clear` to wipe the inner workspace and unpin. Phases 8.1, 8.3,
+> 8.4 don't depend on Phase 9 and can land in either order.
+
 **Step 8.1** `[BLUE]` — Update `docs/design_principles.md` Promotion
 section's "Daemon Watches from Outside" with the new one-liner.
 
 **Step 8.2** `[BLUE]` — Rewrite README's "Promotion" subsection for
 the new flow (branch off main → alcatrazer start → agents commit →
-your branch grows → push for PR).
+your branch grows → push for PR). Includes the
+`clear + start` switch-branch description that Phase 9 makes accurate.
 
 **Step 8.3** `[BLUE]` — Add CHANGELOG entry with the breaking-change
 notice and the four cleanup steps.
@@ -1108,6 +1115,129 @@ notice and the four cleanup steps.
 backfill any "Implementation Notes" subsection with decisions
 resolved during implementation (mirroring the
 `start_from_existing_repo.md` pattern).
+
+### Phase 9: `clear` is terminal — wipe inner workspace + unpin
+
+Phase 9 makes `alcatrazer clear` match its intent: a terminal teardown
+that leaves the project in a state where the next `alcatrazer start`
+is a fresh first-run on whatever branch the user is currently on.
+Today's clear stops + removes the container and prints "workspace
+preserved on the host"; the workspace dir + `state.json`'s
+`pinned_branch` persist, so a subsequent `start` reuses the old pin
+instead of re-snapshotting. That gap was caught by a manual test
+during Phase 8 (see Implementation Notes).
+
+The intended user-facing flow Phase 9 enables:
+
+- `alcatrazer stop` + `alcatrazer start` — freeze-restart loop, **same
+  pin**. For pausing the workspace temporarily.
+- `alcatrazer clear` + `alcatrazer start` — terminal teardown +
+  fresh start, **new pin to current branch**. The "switch branch"
+  workflow.
+
+Both paths already wait for the daemon to drain pending commits before
+the daemon exits, so the commits are durably in outer before Phase 9
+removes the inner workspace.
+
+#### Wipe-from-inside vs. chown-back (stealth)
+
+Two ways the host could remove agent-UID-owned files in the workspace
+bind-mount. Wipe-from-inside is strictly better:
+
+- **chown-back** — container chowns `/workspace` back to host's
+  UID/GID before stop; host's plain `rm -rf` then works. Cost: agent
+  observes its workspace ownership shift to a foreign UID — a
+  fingerprint of the user the host runs as. Violates Principle 2
+  (the agent must not be able to tell it's inside Alcatraz, much
+  less learn anything about the host user).
+- **wipe-from-inside** (chosen) — container removes its own files as
+  agent UID via the Alcatraz port. Agent only ever sees its own
+  files being removed, which it could already do at will. No host
+  identity leakage; no chown.
+
+#### Ordering — keep "stop-first" race safety
+
+The current `cmd_clear` order — stop → daemon-final-sync → remove —
+guards against an agent committing AFTER the final sync but BEFORE
+removal. The wipe needs `exec` access, which requires a running
+container. Solution: resume the same stopped container briefly for
+the wipe step. Resume runs only `sleep infinity` (the container's
+CMD); no claude-code, no `[startup]` re-execution, no agents active.
+
+```
+1. (pre-checks: pin status + pending count — unchanged)
+2. prison.stop()                      # agents frozen
+3. shutdown_sync_daemon()             # final sync drains pending
+4. prison.resume()                    # container back up, no agents
+5. prison.wipe_workspace_contents()   # NEW — port method, runs as
+                                      # agent UID inside container
+6. prison.stop()
+7. prison.remove()
+8. (alcatraz_dir / "state.json").unlink(missing_ok=True)  # unpin
+```
+
+The workspace directory itself stays (empty, same name) as the bind-
+mount target for the next `start`. `.alcatrazer/config.toml` is
+preserved so identity + daemon settings carry over —
+`alcatrazer init` is not required between `clear` and `start`.
+
+#### Alcatraz port addition
+
+New abstract method on `Alcatraz` (`src/alcatrazer/alcatraz.py`):
+
+```python
+@abstractmethod
+def wipe_workspace_contents(self) -> None:
+    """Remove every file inside the workspace bind-mount, from inside
+    the container.
+
+    Required state: container is running (resume first if it was
+    stopped). Stealth-preserving: removal runs as the agent UID
+    against agent-owned files; the host UID is never exposed inside
+    the container (no chown).
+    """
+```
+
+`DockerPrison.wipe_workspace_contents` implements via
+`self.exec(["find", "/workspace", "-mindepth", "1", "-delete"])`.
+The `-mindepth 1` keeps the mount-point `/workspace` itself in place
+— only its contents are removed. The agent UID owns those contents
+(the container chowns `/workspace` at startup), so `find -delete`
+succeeds without elevation.
+
+#### Detailed Implementation Plan
+
+**Step 9.1** `[RED]` — Test `Alcatraz.wipe_workspace_contents` on
+DockerPrison: pre-populate the workspace with files (including a
+hidden `.git` dir), call the method, assert the workspace dir exists
+and is empty (mount point preserved, contents gone). Requires the
+container to be running.
+
+**Step 9.2** `[RED]` — Test that after `cmd_clear`:
+- the workspace directory exists but is empty
+- `.alcatrazer/state.json` is gone (or its `pinned_branch` field is
+  absent)
+- `.alcatrazer/config.toml` survives unchanged
+- the docker container + image are in the same post-clear state as
+  today (container removed, image preserved)
+
+**Step 9.3** `[RED]` — Integration test for the switch-branch flow:
+start on `feat/X`, agents commit, `cmd_clear`, `git checkout
+other-branch`, `cmd_start`. Assert the new `state.json.pinned_branch`
+== `"other-branch"` (today's behavior keeps `"feat/X"`).
+
+**Step 9.4** `[GREEN]` — Add `wipe_workspace_contents` to the
+`Alcatraz` ABC, implement on `DockerPrison`. Extend `cmd_clear` with
+the resume → wipe → stop → remove → unlink sequence. Update
+`cmd_clear`'s post-success message to reflect the new teardown
+(drop the "workspace preserved on the host" line).
+
+**Step 9.5** `[BLUE]` — Update the upgrade-refusal message in
+`state._upgrade_message`: now that v0.1.1's `clear` handles teardown,
+the manual `sudo rm -rf $(cat .alcatrazer/workspace-dir)` step is
+only needed for users upgrading from v0.1.0 (whose `clear` doesn't
+wipe). Clarify the wording so the user knows step 2 is a one-time
+v0.1.0-upgrade step, not a general fresh-start procedure.
 
 ### Implementation Notes
 
@@ -1142,3 +1272,21 @@ JSON (`src/alcatrazer/schemas.json`), Python loader
 `docs/coding_conventions.md` rule "Schema changes must land in
 schemas.json + CHANGELOG before release", and a cross-check test
 suite that holds version constants and JSON entries in lockstep.
+
+**Phase 9 emerged from a Phase 8 manual test.** While drafting the
+README rewrite for Step 8.2, a draft paragraph claimed `alcatrazer
+clear` followed by `git checkout` + `alcatrazer start` would
+re-snapshot bound to the new branch. The user tested it: clear
+preserves the workspace dir + `state.json` (`pinned_branch` carries
+over), so the second start reuses the old pin and `alcatrazer status`
+shows ⚠ on hold on the new branch. The two paths the design intended
+to distinguish — `stop`/`start` for freeze-restart, `clear`/`start`
+for fresh-on-current-branch — collapsed into the same behavior because
+`clear` wasn't terminal enough.
+
+Phase 9 fixes this by extending `cmd_clear` to wipe the inner
+workspace contents via a new Alcatraz port method
+(`wipe_workspace_contents`) and unlink `state.json`, keeping
+`.alcatrazer/config.toml` so identity + daemon settings carry over.
+The wipe runs from inside the container as agent UID to preserve
+Principle 2 (no host UID exposure via chown-back).
