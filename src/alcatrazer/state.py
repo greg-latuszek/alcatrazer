@@ -21,6 +21,7 @@ a CLI write) never observe a half-written file.
 
 import json
 import os
+import tomllib
 from pathlib import Path
 
 from alcatrazer import schema
@@ -113,6 +114,15 @@ _LEGACY_ARTIFACTS = (
     "promote-import-marks",
 )
 
+# Obsolete keys under [promotion-daemon] in .alcatrazer/config.toml.
+# v0.1.0 declared these; v0.1.1 removes them because promotion is now
+# always bound to the branch alcatrazer started from. Their presence
+# in a config trips the gate even when schema_version is current-stamped
+# (defence-in-depth against half-finished manual upgrades).
+_LEGACY_CONFIG_KEYS = ("mode", "branches")
+
+_CONFIG_FILE = "config.toml"
+
 
 def _upgrade_message(
     schema_label: str,
@@ -176,6 +186,57 @@ def validate_schema_version(data: dict) -> None:
     raise UnsupportedStateSchemaVersionError(_upgrade_message(label, summary))
 
 
+def _check_alcatrazer_config(alcatraz_dir: Path) -> None:
+    """Refuse a `.alcatrazer/config.toml` whose layout predates v0.1.1.
+
+    Three sub-signals, in order of "what trips first":
+
+      1. Obsolete `[promotion-daemon].mode` or `.branches` key present
+         (defence-in-depth — catches a hand-edited config that bumped
+         schema_version but kept the deprecated keys).
+      2. `schema_version` field absent (v0.1.0 had none).
+      3. `schema_version != alcatrazer_config.current_version` —
+         either too old, or a hand-crafted intermediate.
+
+    Silent when the config is missing (mid-init), unreadable, or
+    matches the current shape with no legacy keys.
+    """
+    config_path = alcatraz_dir / _CONFIG_FILE
+    if not config_path.exists():
+        return
+    try:
+        config = tomllib.loads(config_path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        # Best-effort: a corrupt config gets surfaced by the regular
+        # config-loading path (daemon.load_config, etc.) with a more
+        # specific error than this gate could give.
+        return
+
+    summary = schema.ALCATRAZER_CONFIG.revision(1)
+    summary_text = summary.summary if summary else None
+
+    promotion_daemon = config.get("promotion-daemon", {})
+    for key in _LEGACY_CONFIG_KEYS:
+        if key in promotion_daemon:
+            raise UnsupportedStateSchemaVersionError(
+                _upgrade_message(
+                    f"obsolete [promotion-daemon].{key} in config.toml",
+                    summary=summary_text,
+                    legacy_artifact=f"config.toml: [promotion-daemon].{key}",
+                )
+            )
+
+    current = schema.ALCATRAZER_CONFIG.current_version
+    version = config.get("schema_version")
+    if version == current:
+        return
+    if version is None:
+        label = "config.toml has no schema_version field"
+    else:
+        label = f"config.toml schema {version}"
+    raise UnsupportedStateSchemaVersionError(_upgrade_message(label, summary=summary_text))
+
+
 def require_compatible_workspace(alcatraz_dir: Path) -> None:
     """Refuse a workspace that was set up by a pre-v0.1.1 alcatrazer.
 
@@ -183,14 +244,16 @@ def require_compatible_workspace(alcatraz_dir: Path) -> None:
     cmd_start, cmd_status, cmd_clear) — before any state read happens,
     so a refusal short-circuits the rest of the operation.
 
-    Three classes of signal, checked in order:
+    Four classes of signal, checked in order:
       1. `alcatraz_dir` doesn't exist → silent (pre-init).
       2. A legacy v0.1.0 side file is present in `alcatraz_dir` →
-         raise, message names the artifact. Checked before state.json
-         because legacy artifacts are written every daemon cycle in
-         v0.1.0 (regardless of state.json), so they're the signal that
+         raise, message names the artifact. Checked first because
+         legacy artifacts are written every daemon cycle in v0.1.0
+         (regardless of state.json), so they're the signal that
          catches workspaces v0.1.0 never wrote state.json for.
-      3. state.json is present and stamped with `schema_version <
+      3. `.alcatrazer/config.toml` carries legacy keys or an old
+         `schema_version` → raise via `_check_alcatrazer_config`.
+      4. state.json is present and stamped with `schema_version <
          SCHEMA_VERSION` → raise via `validate_schema_version`.
 
     Returns silently when none of the above fires — that's either a
@@ -209,5 +272,7 @@ def require_compatible_workspace(alcatraz_dir: Path) -> None:
                     legacy_artifact=name,
                 )
             )
+
+    _check_alcatrazer_config(alcatraz_dir)
 
     validate_schema_version(load_state(alcatraz_dir))

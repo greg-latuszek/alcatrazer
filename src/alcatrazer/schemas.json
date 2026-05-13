@@ -52,6 +52,19 @@
           ],
           "fields_removed": [],
           "fields_changed": []
+        },
+        {
+          "version": 2,
+          "release": "v0.1.1",
+          "summary": "Adds the schema_version field (v0.1.0 had none) and removes [promotion-daemon].mode and [promotion-daemon].branches — promotion is now bound to the branch alcatrazer started from, no per-branch routing config.",
+          "fields_added": [
+            "schema_version"
+          ],
+          "fields_removed": [
+            "[promotion-daemon].mode",
+            "[promotion-daemon].branches"
+          ],
+          "fields_changed": []
         }
       ]
     },

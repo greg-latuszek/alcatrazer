@@ -16,7 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
-from alcatrazer import daemon_lifecycle, state
+from alcatrazer import daemon_lifecycle, schema, state
 from alcatrazer.daemon import DEFAULTS
 from alcatrazer.daemon_lifecycle import launch_sync_daemon, shutdown_sync_daemon
 
@@ -54,6 +54,7 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         # Config with promotion identity (so daemon's resolve_identity works)
         # and a short interval to keep tests fast.
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             '[promotion]\nname = "Test User"\nemail = "test@example.com"\n'
             "[promotion-daemon]\ninterval = 1\n"
         )
@@ -220,6 +221,7 @@ class ShutdownSyncDaemonTests(unittest.TestCase):
         _git(self.project_dir, "add", "seed.txt")
         _git(self.project_dir, "commit", "-m", "init outer")
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             '[promotion]\nname = "Test User"\nemail = "test@example.com"\n'
             "[promotion-daemon]\ninterval = 1\n"
         )

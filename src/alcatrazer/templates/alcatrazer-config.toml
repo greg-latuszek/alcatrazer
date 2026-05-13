@@ -2,6 +2,12 @@
 # Lives at .alcatrazer/config.toml in the target repository.
 # Gitignored via .git/info/exclude — never enters the agent workspace.
 
+# File-format version. Bumped when the structure of this file changes
+# in an incompatible way (see src/alcatrazer/schemas.json for history).
+# Older tooling refuses newer schemas rather than silently misreading;
+# v0.1.0 had no schema_version field at all — v0.1.1 introduced it.
+schema_version = 2
+
 # Path to the coding environment definition, relative to repo root.
 coding_environment_file = "coding-environment.toml"
 

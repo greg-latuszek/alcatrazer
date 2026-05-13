@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from alcatrazer import __version__, cli, identity, languages, selftest, start, state
+from alcatrazer import __version__, cli, identity, languages, schema, selftest, start, state
 from alcatrazer import status as status_mod
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
 from alcatrazer.daemon_lifecycle import ShutdownResult
@@ -80,6 +80,7 @@ class CmdStartRoutingTests(unittest.TestCase):
         # Phase 1.2.6: cmd_start now loads coding-environment.toml to
         # compute the recipe hash. Provide minimal valid contents.
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.project_dir / "coding-environment.toml").write_text(
@@ -1429,6 +1430,7 @@ class CodingEnvironmentSchemaVersionTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         self.coding_env_path = self.project_dir / "coding-environment.toml"
@@ -1542,6 +1544,7 @@ class CmdStartHandlesUnsupportedSchemaVersionTests(unittest.TestCase):
         self.alcatraz_dir.mkdir()
         (self.project_dir / ".git").mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
@@ -1607,6 +1610,7 @@ class CmdStartHandlesMalformedTomlTests(unittest.TestCase):
         self.alcatraz_dir.mkdir()
         (self.project_dir / ".git").mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
@@ -2213,6 +2217,7 @@ class SaveCodingEnvironmentSnapshotTests(unittest.TestCase):
 
     def _write_config(self, filename: str) -> None:
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
         )
 
@@ -2253,6 +2258,7 @@ class CodingEnvironmentChangedTests(unittest.TestCase):
 
     def _write_config(self, filename: str) -> None:
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
         )
 
@@ -2469,6 +2475,7 @@ class SubsequentRunTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
             '[promotion]\nname = "x"\nemail = "y"\n'
         )
@@ -2928,6 +2935,7 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
             '[promotion]\nname = "x"\nemail = "y"\n'
         )
@@ -3968,6 +3976,7 @@ class CmdStartPostSuccessMessageTests(unittest.TestCase):
 
         # Minimal configs cmd_start expects.
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.project_dir / "coding-environment.toml").write_text(

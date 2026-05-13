@@ -52,6 +52,17 @@ from alcatrazer.status import count_pending_commits
 
 CODING_ENV_SCHEMA_VERSION = schema.CODING_ENV.current_version
 
+# --- .alcatrazer/config.toml schema version (Phase 7 Step 7.5) ---------------
+#
+# v0.1.0's config.toml had no schema_version field at all; v0.1.1
+# introduces it AND removes [promotion-daemon].mode + .branches. Bumped
+# by appending a new entry to `alcatrazer_config.history` in
+# schemas.json; write_alcatrazer_config stamps this value into freshly
+# written files, and state.require_compatible_workspace refuses any
+# config.toml that doesn't match.
+
+ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version
+
 
 def _workspace_ready(project_dir: Path, workspace_name: str | None) -> bool:
     """Whether the inner workspace at `project_dir / workspace_name` is
@@ -915,7 +926,11 @@ def write_alcatrazer_config(
     template_path = Path(__file__).parent / "templates" / "alcatrazer-config.toml"
     out_lines: list[str] = []
     for line in template_path.read_text().splitlines():
-        if line.startswith("coding_environment_file = "):
+        if line.startswith("schema_version = "):
+            # Stamp the current version from schemas.json (single source
+            # of truth) rather than trusting the template literal.
+            out_lines.append(f"schema_version = {ALCATRAZER_CONFIG_SCHEMA_VERSION}")
+        elif line.startswith("coding_environment_file = "):
             out_lines.append(f"coding_environment_file = {_format_toml_string(coding_env_file)}")
         elif line.startswith("name = "):
             out_lines.append(f"name = {_format_toml_string(name)}")

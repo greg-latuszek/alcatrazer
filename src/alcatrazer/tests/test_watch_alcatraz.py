@@ -21,7 +21,7 @@ import time
 import unittest
 from pathlib import Path
 
-from alcatrazer import daemon, state
+from alcatrazer import daemon, schema, state
 from alcatrazer.promote import PromotionOutcome
 
 
@@ -78,9 +78,15 @@ class TestConfigLoading(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _write_config(self, content):
-        """Write the daemon config at the post-refactor location."""
+        """Write the daemon config at the post-refactor location.
+
+        Auto-stamps the current alcatrazer_config schema_version (from
+        schemas.json) so the post-Phase-7 gate accepts the fixture.
+        Callers can still include schema_version explicitly in `content`
+        if they're testing the gate itself."""
         toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         with open(toml_path, "w") as f:
+            f.write(f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n")
             f.write(content)
 
     def _log_path(self):
@@ -141,23 +147,6 @@ class TestConfigLoading(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
 
-    def test_reads_all_config_keys(self):
-        """Daemon should parse all [promotion-daemon] config keys without error."""
-        self._write_config(
-            "[promotion-daemon]\n"
-            "interval = 3\n"
-            'branches = "main"\n'
-            'mode = "mirror"\n'
-            'verbosity = "detailed"\n'
-            "max_log_size = 256\n"
-        )
-        proc = self._start_daemon()
-        try:
-            self.assertIsNone(proc.poll(), "Daemon should still be running")
-        finally:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=5)
-
     def test_handles_missing_config(self):
         """Daemon should use defaults when .alcatrazer/config.toml is missing."""
         # Don't write any config file
@@ -174,16 +163,6 @@ class TestConfigLoading(unittest.TestCase):
         proc = self._start_daemon()
         try:
             self.assertIsNone(proc.poll(), "Daemon should run with defaults")
-        finally:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=5)
-
-    def test_reads_branch_list_config(self):
-        """Daemon should handle branches as a TOML list."""
-        self._write_config('[promotion-daemon]\ninterval = 2\nbranches = ["main", "feature/*"]\n')
-        proc = self._start_daemon()
-        try:
-            self.assertIsNone(proc.poll(), "Daemon should handle branch list")
         finally:
             proc.send_signal(signal.SIGTERM)
             proc.wait(timeout=5)
@@ -258,8 +237,10 @@ class TestPidGuard(unittest.TestCase):
         # use a fixed one.
         Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
         os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
-        # Write minimal config at the post-refactor location.
+        # Write minimal config at the post-refactor location. The
+        # schema_version stamp keeps the post-Phase-7 gate happy.
         with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
+            f.write(f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n")
             f.write("[promotion-daemon]\ninterval = 1\n")
         self.pid_file = os.path.join(self.alcatraz_dir, "promotion-daemon.pid")
 
@@ -364,6 +345,7 @@ class TestSignalHandling(unittest.TestCase):
         Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
         os.makedirs(os.path.join(self.tmpdir, WORKSPACE_DIR_NAME, ".git"))
         with open(os.path.join(self.alcatraz_dir, "config.toml"), "w") as f:
+            f.write(f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n")
             f.write("[promotion-daemon]\ninterval = 1\n")
 
     def tearDown(self):
@@ -468,9 +450,11 @@ class TestDaemonPromotion(unittest.TestCase):
         # Seed the workspace with commits
         subprocess.run([SEED_SCRIPT, self.workspace], capture_output=True, check=True)
 
-        # Write .alcatrazer/config.toml with promotion identity and fast polling
+        # Write .alcatrazer/config.toml with promotion identity and fast polling.
+        # schema_version stamp keeps the post-Phase-7 gate happy.
         toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
@@ -651,6 +635,7 @@ class TestLogRotation(unittest.TestCase):
         # Set max_log_size to 1 KB so rotation triggers quickly
         toml_path = os.path.join(self.alcatraz_dir, "config.toml")
         Path(toml_path).write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f"[promotion]\n"
             f'name = "{PROMOTED_NAME}"\n'
             f'email = "{PROMOTED_EMAIL}"\n'
