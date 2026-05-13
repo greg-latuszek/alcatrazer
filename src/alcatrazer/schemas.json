@@ -3,7 +3,7 @@
   "schemas": {
     "state": {
       "file": ".alcatrazer/state.json",
-      "role": "dynamic — Alcatrazer's runtime state, written by daemon + CLI",
+      "role": "running state of Alcatrazer — written by daemon + CLI during the workspace's lifetime. Created by the snapshot step during the first `alcatrazer start` (which stamps inner_root + pinned_branch); does NOT exist after `alcatrazer init` alone. Absence is a valid state.",
       "history": [
         {
           "version": 1,

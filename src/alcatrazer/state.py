@@ -1,22 +1,33 @@
-"""Shared CLI ↔ daemon cooperation file backing `.alcatrazer/state.json`.
+"""`.alcatrazer/state.json` — the running state of Alcatrazer.
 
-Scope today — one flag (`daemon_shutdown`) used by `alcatrazer stop` /
-`clear` to tell the promotion daemon its shutdown was CLI-initiated.
-The daemon reads it once during shutdown to pick a log prefix; behavior
-doesn't branch on intent (final sync is always attempted, with eventual
-consistency restoring anything the unexpected-shutdown case might miss
-on next start). Only observability differs.
+Records the workspace's pin + replay + paused state across the daemon
+poll loop, the CLI commands, and shutdown. Fields the v0.1.1 schema
+declares:
 
-Scope tomorrow — this module is deliberately the seed of the future
-infocenter layer (see docs/features/refactor_for_infocenter.md). The
-file exists once initialized and persists across cycles; new fields
-merge in additively without touching file lifecycle logic. API surface
-is kept minimal (two functions) until real composite queries land and
-we've seen enough callers to design the proper abstraction.
+  - schema_version, daemon_shutdown      (carried over from v=1)
+  - inner_root, pinned_branch            (stamped at first snapshot)
+  - last_promoted, last_promotion_time   (advanced after each successful
+                                          format-patch/am cycle)
+  - paused                               (set on apply conflict; cleared
+                                          on next successful cycle)
 
-Atomicity: update_state writes to a `.tmp` sibling and `os.replace`s
-into the target name so concurrent readers (the daemon polling during
-a CLI write) never observe a half-written file.
+Lifecycle. The file is created by the snapshot step during the first
+`alcatrazer start` — not by `alcatrazer init` alone, which only writes
+`config.toml` + the workspace-dir pointer. Absence is a valid state:
+the schema-compatibility gate (`require_compatible_workspace`) treats a
+missing file as "fresh workspace, proceed". Once written, the file
+persists across daemon cycles and CLI commands for the workspace's
+lifetime; new fields merge in additively via `update_state`.
+
+This module is the read/write API plus the Phase 7 compatibility gate.
+It's deliberately the seed of the future infocenter layer (see
+docs/features/refactor_for_infocenter.md); API surface is kept narrow
+until enough composite-query callers exist to design the proper
+abstraction.
+
+Atomicity. `update_state` writes to a `.tmp` sibling and `os.replace`s
+into the target name so concurrent readers (the daemon polling during a
+CLI write) never observe a half-written file.
 """
 
 import json

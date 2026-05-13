@@ -323,8 +323,13 @@ move their `import sys` etc. to the file's import block.
 
 Alcatrazer declares three schemas:
 
-- **`.alcatrazer/state.json`** — dynamic. Alcatrazer's runtime state,
-  written by the daemon and the CLI. Lazily created.
+- **`.alcatrazer/state.json`** — **running state of Alcatrazer**. Records
+  pin + replay + paused status during the workspace's lifetime. Created
+  by the snapshot step during the first `alcatrazer start` (which stamps
+  `inner_root` + `pinned_branch`). Does not exist after `alcatrazer init`
+  alone — init only writes `config.toml` + `workspace-dir` pointer.
+  Absence is therefore a valid state, and the schema-compatibility gate
+  treats a missing file as "fresh workspace, proceed".
 - **`.alcatrazer/config.toml`** — static. Per-developer tool configuration
   (promotion identity, sync-daemon knobs). Not under user-repo version
   control (gitignored).
