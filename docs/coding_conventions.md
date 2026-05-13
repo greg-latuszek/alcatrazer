@@ -321,20 +321,25 @@ move their `import sys` etc. to the file's import block.
 
 ## Schema changes must land in `schemas.json` + CHANGELOG before release
 
-Alcatrazer declares two versioned schemas:
+Alcatrazer declares three schemas:
 
-- **`.alcatrazer/state.json`** — internal cooperation file, written by
-  the daemon and the CLI.
-- **`coding-environment.toml`** — user-facing build/runtime description,
-  written by the wizard or hand-edited.
+- **`.alcatrazer/state.json`** — dynamic. Alcatrazer's runtime state,
+  written by the daemon and the CLI. Lazily created.
+- **`.alcatrazer/config.toml`** — static. Per-developer tool configuration
+  (promotion identity, sync-daemon knobs). Not under user-repo version
+  control (gitignored).
+- **`coding-environment.toml`** — user-facing. Declares the OS packages,
+  language runtimes, and post-start commands the agent's workspace will
+  be built with. Lives in the user's repo, under version control.
 
-The history of both schemas lives at `src/alcatrazer/schemas.json` —
+The history of all three schemas lives at `src/alcatrazer/schemas.json` —
 the single source of truth, language-neutral, machine-diffable. Any
-code change that adds, removes, or renames a field in either schema
-must ship as **two coordinated edits in the same PR**:
+code change that adds, removes, or renames a field in any of these
+schemas must ship as **two coordinated edits in the same PR**:
 
-1. A new revision entry appended to the right array in
-   `src/alcatrazer/schemas.json` (`state_schema` or `coding_env_schema`),
+1. A new revision entry appended to the right schema's `history` array in
+   `src/alcatrazer/schemas.json` (under `schemas.state.history`,
+   `schemas.alcatrazer_config.history`, or `schemas.coding_env.history`),
    with `version`, `release`, `summary`, and the field-level
    `fields_added` / `fields_removed` / `fields_changed` lists.
 2. A `### Changed` / `### Added` / `### Removed` line in `CHANGELOG.md`
@@ -363,7 +368,7 @@ source.
 
 ### How to apply
 
-When a PR adds, removes, or renames fields in either schema:
+When a PR adds, removes, or renames fields in any of the three schemas:
 
 1. **Append an entry** to the appropriate array in
    `src/alcatrazer/schemas.json`:
@@ -380,11 +385,13 @@ When a PR adds, removes, or renames fields in either schema:
    Reference the schema name explicitly.
 
 A cross-check test in `src/alcatrazer/tests/test_schema.py` catches a
-forgotten `schemas.json` entry: `state.SCHEMA_VERSION` and
-`start.CODING_ENV_SCHEMA_VERSION` are derived from `schemas.json`, so
-any code that introduces a schema-version bump without a matching JSON
-entry fails to import. The CHANGELOG side is human-checked at PR
-review until automated CI enforcement ships.
+forgotten `schemas.json` entry: every version constant the code uses
+(today `state.SCHEMA_VERSION` and `start.CODING_ENV_SCHEMA_VERSION`,
+plus the `.alcatrazer/config.toml` constant once it lands in
+Phase 7.4) is derived from `schemas.json`, so any code that introduces
+a schema-version bump without a matching JSON entry fails to import.
+The CHANGELOG side is human-checked at PR review until automated CI
+enforcement ships.
 
 ### Pre-release checklist
 
@@ -400,8 +407,8 @@ affected schema under the upcoming release section.
 
 ### Scope
 
-Applies to the two declared schemas: `.alcatrazer/state.json` and
-`coding-environment.toml`. Other internal data structures (the
-daemon's PID file shape, marks files when they existed, log line
-formats) are not versioned in `schemas.json` and don't participate
-in this rule.
+Applies to the three declared schemas: `.alcatrazer/state.json`,
+`.alcatrazer/config.toml`, and `coding-environment.toml`. Other
+internal data structures (the daemon's PID file shape, marks files
+when they existed, log line formats) are not versioned in
+`schemas.json` and don't participate in this rule.
