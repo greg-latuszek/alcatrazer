@@ -3809,6 +3809,148 @@ class CliClearTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
 
 
+class CmdClearTerminalTeardownTests(unittest.TestCase):
+    """Phase 9 Step 9.2 — `alcatrazer clear` is terminal: drains pending
+    agent commits, then wipes the inner workspace + unpins so the next
+    `start` is a fresh first-run with a new pin to whichever branch the
+    user is currently on.
+
+    Concretely, after cmd_clear:
+
+      - the inner workspace's contents are gone (wiped via
+        `prison.wipe_workspace_contents`, which the Phase 9.4 GREEN
+        wires in between resume and the final stop)
+      - `.alcatrazer/state.json` is removed (the pin is gone)
+      - `.alcatrazer/config.toml` is preserved (your identity + daemon
+        settings carry over so you don't re-run `alcatrazer init`)
+      - the docker container is removed (existing behavior)
+      - the image is preserved (existing behavior)
+
+    Ordering, end-to-end:
+      stop → final-sync → resume → wipe → stop → remove → unlink(state.json)
+
+    `resume` is the new step: the daemon's final-sync runs after the
+    first stop, but the wipe needs `exec` access — so cmd_clear brings
+    the same container back up briefly (just `sleep infinity`, no
+    agents) for the wipe, then stops + removes it. See
+    docs/features/change_promotion_machinery.md Phase 9 for the
+    stop-first race-safety rationale that requires this dance."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        # Minimal config.toml so the schema gate is happy and the
+        # "config survives clear" assertion has something to check.
+        self.config_toml = self.alcatraz_dir / "config.toml"
+        self.config_toml.write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
+            '[promotion]\nname = "Alice"\nemail = "alice@example.com"\n'
+            "[promotion-daemon]\ninterval = 5\n"
+        )
+        # Pin to a branch so the pre-check doesn't block on missing state.
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root="deadbeef" * 5,
+            last_promoted="deadbeef" * 5,
+        )
+
+        # Patch daemon helpers — cmd_clear calls them unconditionally.
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+        # Also patch check_pin so it returns OK (we're "on" feat/X for
+        # this test's purposes — the pre-check shouldn't block).
+        pin_patcher = patch.object(start.promote, "check_pin")
+        self.mock_pin = pin_patcher.start()
+        self.mock_pin.return_value = start.promote.PinStatus.OK
+        self.addCleanup(pin_patcher.stop)
+
+        self.addCleanup(self.tmp.cleanup)
+
+    def _fresh_prison(self) -> Mock:
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+        return prison
+
+    def _run(self, prison: Mock) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_calls_wipe_workspace_contents(self):
+        """The new step the whole phase exists for: cmd_clear must
+        ask the prison to wipe the inner workspace."""
+        prison = self._fresh_prison()
+        self._run(prison)
+        prison.wipe_workspace_contents.assert_called_once()
+
+    def test_wipe_runs_between_resume_and_final_stop(self):
+        """Ordering: agents frozen (stop) → final sync drains pending →
+        resume container so we have somewhere to exec the wipe → wipe →
+        stop again → remove. `resume` is the new step; without it the
+        wipe would have no running container to exec into. Verified via
+        a Mock parent that records call order across mocked methods."""
+        prison = self._fresh_prison()
+        parent = Mock()
+        parent.attach_mock(prison.stop, "stop")
+        parent.attach_mock(self.mock_shutdown, "shutdown")
+        parent.attach_mock(prison.resume, "resume")
+        parent.attach_mock(prison.wipe_workspace_contents, "wipe")
+        parent.attach_mock(prison.remove, "remove")
+
+        self._run(prison)
+
+        order = [call[0] for call in parent.mock_calls]
+        # First stop (agents frozen) precedes daemon final-sync.
+        self.assertLess(order.index("stop"), order.index("shutdown"))
+        # Final-sync precedes the resume that brings the container back
+        # up for the wipe — otherwise we'd race agents committing.
+        self.assertLess(order.index("shutdown"), order.index("resume"))
+        # Resume precedes wipe (the wipe needs a running container).
+        self.assertLess(order.index("resume"), order.index("wipe"))
+        # Wipe precedes remove — once wiped, we can rip down the container.
+        self.assertLess(order.index("wipe"), order.index("remove"))
+
+    def test_removes_state_json(self):
+        """The pin must go, so the next `start` snapshots fresh from
+        whichever branch the user is currently on."""
+        prison = self._fresh_prison()
+        self.assertTrue((self.alcatraz_dir / "state.json").exists())
+        self._run(prison)
+        self.assertFalse((self.alcatraz_dir / "state.json").exists())
+
+    def test_preserves_alcatrazer_config_toml(self):
+        """User's identity + daemon settings carry over so they don't
+        re-run `alcatrazer init` between `clear` and `start`."""
+        prison = self._fresh_prison()
+        before = self.config_toml.read_text()
+        self._run(prison)
+        self.assertTrue(self.config_toml.exists())
+        self.assertEqual(self.config_toml.read_text(), before)
+
+    def test_no_longer_promises_workspace_preserved_in_output(self):
+        """Phase 9 changes clear's semantics: the inner workspace is
+        wiped, not preserved. The user-facing message must no longer
+        claim 'workspace preserved on the host' or readers will be
+        misled. Wording can evolve in GREEN; this test just locks in
+        that the old claim is gone."""
+        prison = self._fresh_prison()
+        _, out, _ = self._run(prison)
+        self.assertNotIn("workspace preserved", out.lower())
+
+
 class CliInitTests(unittest.TestCase):
     """`alcatrazer init` subcommand — dispatches to `start.cmd_init`."""
 
