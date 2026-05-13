@@ -1148,36 +1148,49 @@ Both paths already wait for the daemon to drain pending commits before
 the daemon exits, so the commits are durably in outer before Phase 9
 removes the inner workspace.
 
-#### Removal mechanism: one-shot side container
+#### Removal mechanism: two one-shot side containers
 
-Three candidate approaches considered for removing agent-UID-owned
-files from the workspace bind-mount:
+Three candidate approaches considered for clearing the agent-UID-
+owned workspace bind-mount:
 
-- **chown-back** — original container chowns `/workspace` back to
-  host's UID/GID before stop; host's plain `rm -rf` then works.
-  Rejected: the agent observes its workspace ownership shift to a
-  foreign UID before the chown completes — a fingerprint of the
-  user the host runs as. Violates Principle 2.
+- **chown-back from the original container** — original container
+  chowns `/workspace` back to host's UID/GID before stop; host's
+  plain `rm -rf` then works. Rejected: the agent observes its
+  workspace ownership shift to a foreign UID before the chown
+  completes — a fingerprint of the user the host runs as. Violates
+  Principle 2.
 - **`docker exec` on the original container** — would need
   `prison.resume()` first because `docker exec` requires a running
   container, and `cmd_clear` has already stopped it for daemon
-  final-sync race-safety. Resume is safe per se (the container's
-  CMD is `sleep infinity` and `run_startup_commands` is only called
-  by `cmd_start`, not by `cmd_clear`), but it adds two extra state
-  transitions on the agent's own container and invites the
-  "does resume re-launch agents" question every reader will ask.
-- **one-shot side container** (chosen) — fresh `docker run --rm`
-  against this Alcatraz's own image, with `--entrypoint find` (skip
-  the chown-and-drop entrypoint), `-u agent` (match the file
-  ownership), bind-mounting the host workspace at `/workspace`, with
-  args `/workspace -mindepth 1 -delete`. The original container
-  stays stopped. No agent process is involved anywhere; Principle 2
-  trivially holds.
+  final-sync race-safety. Resume is safe per se (CMD is `sleep
+  infinity`; startup commands are launched separately by
+  `cmd_start`), but adds two extra state transitions on the
+  agent's own container and invites the "does resume re-launch
+  agents" question every reader will ask.
+- **two one-shot side containers** (chosen):
+  1. **wipe contents as agent** — `docker run --rm -u agent
+     --entrypoint find -v <workspace>:/workspace <image>
+     /workspace -mindepth 1 -delete`. Deletes everything inside the
+     mount-point dir as the UID that owns the files.
+  2. **chown the empty mount-point to host UID:GID as root** —
+     `docker run --rm -u 0:0 --entrypoint chown -v
+     <workspace>:/workspace <image> <host_uid>:<host_gid>
+     /workspace`. Retags the dir so the next `alcatrazer start`'s
+     host-side `git init` can write into it. Without this, the dir
+     stays phantom-owned and blocks the next first-run with a
+     permission error.
+
+Why chown is safe in step 2 even though it was rejected as "chown-
+back" earlier: Principle 2 gates ownership shifts an active agent
+can observe. A one-shot side container has no agent process — the
+chown is invisible to anything that could fingerprint the host
+user. See memory entry "stealth-scope-is-observed-processes" for
+the general rule.
 
 Why our image rather than alpine (the pattern test_smoke uses for
 phantom-UID cleanup): no extra image pull, and the `agent` user is
-already defined in `/etc/passwd` of our image so `-u agent` resolves
-consistently against the file ownership.
+already defined in `/etc/passwd` of our image so `-u agent`
+resolves consistently against the file ownership in step 1.
 
 #### Ordering — keep "stop-first" race safety
 
@@ -1191,15 +1204,19 @@ so no resume step is required.
 1. (pre-checks: pin status + pending count — unchanged)
 2. prison.stop()                      # agents frozen
 3. shutdown_sync_daemon()             # final sync drains pending
-4. prison.wipe_workspace_contents()   # NEW — one-shot side container,
-                                      # runs `find /workspace
-                                      # -mindepth 1 -delete` as agent
+4. prison.wipe_workspace_contents()   # NEW — two one-shot side
+                                      # containers in sequence:
+                                      #   (a) find -mindepth 1
+                                      #       -delete (as agent)
+                                      #   (b) chown to host UID:GID
+                                      #       (as root)
 5. prison.remove()                    # original container gone
 6. (alcatraz_dir / "state.json").unlink(missing_ok=True)  # unpin
 ```
 
 The workspace directory itself stays (empty, same name) as the bind-
-mount target for the next `start`. `.alcatrazer/config.toml` is
+mount target for the next `start`, and after step 4(b) it's owned by
+the host user so `git init` succeeds. `.alcatrazer/config.toml` is
 preserved so identity + daemon settings carry over —
 `alcatrazer init` is not required between `clear` and `start`.
 
@@ -1220,37 +1237,51 @@ def wipe_workspace_contents(self) -> None:
     """
 ```
 
-`DockerPrison.wipe_workspace_contents` implements via a one-shot
-side container:
+`DockerPrison.wipe_workspace_contents` implements via two one-shot
+side containers, in sequence:
 
 ```
+# Step 1: wipe contents as agent.
 docker run --rm -u agent --entrypoint find \
     -v <host_workspace>:/workspace <image_tag> \
     /workspace -mindepth 1 -delete
+
+# Step 2: chown the now-empty mount-point to host UID:GID as root.
+docker run --rm -u 0:0 --entrypoint chown \
+    -v <host_workspace>:/workspace <image_tag> \
+    <host_uid>:<host_gid> /workspace
 ```
 
-`--entrypoint find` bypasses the chown-and-drop entrypoint script.
-`-u agent` ensures `find` runs under the same UID the files are
-owned by (the original container chowned `/workspace` to agent at
-startup; those host-side files belong to that UID even after the
-original container is stopped). `-mindepth 1` preserves the mount-
-point dir itself; only its contents are removed.
+Step 1 bypasses the chown-and-drop entrypoint (`--entrypoint find`)
+and runs as the same UID the files are owned by (`-u agent`).
+`-mindepth 1` preserves the mount-point dir itself; only its
+contents are removed.
+
+Step 2 retags the empty mount-point dir from the phantom UID back to
+the host user's UID:GID so the next `alcatrazer start`'s host-side
+`git init` can write into it. Runs as root (`-u 0:0`) so chown has
+the necessary permission. Safe to perform here even though chown-
+back is forbidden in the original container — the side container
+has no agent process, so Principle 2 doesn't apply.
 
 #### Detailed Implementation Plan
 
 **Step 9.1** `[RED]` — Unit tests for the port-method contract:
 - `Alcatraz.__abstractmethods__` declares `wipe_workspace_contents`.
-- `DockerPrison.wipe_workspace_contents` invokes a one-shot side
-  container — `docker run --rm -u agent --entrypoint find -v
-  <workspace>:/workspace <image> /workspace -mindepth 1 -delete`
-  (verified via mocked `docker_prison.subprocess.run`; the exact
-  argv shape is locked so future backends inherit a clear spec).
+- `DockerPrison.wipe_workspace_contents` invokes two side containers
+  in sequence: first `docker run --rm -u agent --entrypoint find ...
+  -mindepth 1 -delete` (wipe), then `docker run --rm -u 0:0
+  --entrypoint chown ... <host_uid>:<host_gid> /workspace` (retag).
+  Verified via mocked `docker_prison.subprocess.run` — the exact argv
+  shape of both calls is locked so future backends inherit a clear
+  spec.
 - Returns `None` on success (state-mutating contract, matches
   `start`/`stop`/`remove`).
-- Raises `PrisonError` when the side-container run returns non-zero,
-  and also when `.alcatrazer/workspace-dir` is missing (no host path
-  to mount), so cmd_clear can abort its teardown rather than continue
-  with stale files on disk.
+- Raises `PrisonError` when either side container returns non-zero
+  (separate tests for the find-failed and chown-failed cases — both
+  cause cmd_clear to abort cleanly rather than leave the workspace
+  half-cleaned or wrong-owned), and also when
+  `.alcatrazer/workspace-dir` is missing (no host path to mount).
 
 **Step 9.2** `[RED]` — End-to-end integration test of the switch-
 branch flow. Lives in `src/alcatrazer/integration_tests/` next to

@@ -1458,30 +1458,52 @@ class DockerPrisonWipeWorkspaceContentsTests(unittest.TestCase):
     def _ok(self) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-    def test_invokes_docker_run_side_container_with_find_mindepth_one_delete(self):
-        """Lock the exact docker invocation. The contract is: side
-        container, our image, no entrypoint chown, runs as agent UID,
-        bind-mounts host workspace at /workspace, runs ``find
-        /workspace -mindepth 1 -delete``."""
+    def test_invokes_two_side_containers_find_then_chown(self):
+        """Lock the two-step sequence: (1) wipe contents as agent via
+        `find /workspace -mindepth 1 -delete`, then (2) chown the
+        now-empty dir to host UID:GID as root so the next `alcatrazer
+        start` can `git init` into it. Both steps live inside
+        wipe_workspace_contents so the caller (cmd_clear) sees a
+        single port-method call."""
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             prison = DockerPrison(self.project_dir)
             prison.wipe_workspace_contents()
-        cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[:4], ["docker", "run", "--rm", "-u"])
-        self.assertEqual(cmd[4], "agent")
-        self.assertIn("--entrypoint", cmd)
-        ep_idx = cmd.index("--entrypoint")
-        self.assertEqual(cmd[ep_idx + 1], "find")
-        # Bind-mounts the host workspace path at /workspace.
-        self.assertIn("-v", cmd)
-        v_idx = cmd.index("-v")
-        expected_mount = f"{self.project_dir / '.devspace-test'}:/workspace"
-        self.assertEqual(cmd[v_idx + 1], expected_mount)
-        # Image, then find arguments.
         self.assertEqual(
-            cmd[-5:],
+            mock_run.call_count,
+            2,
+            "wipe_workspace_contents must invoke exactly two side containers: "
+            "find (as agent) then chown (as root)",
+        )
+
+        expected_mount = f"{self.project_dir / '.devspace-test'}:/workspace"
+
+        # Step 1: find as agent.
+        find_cmd = mock_run.call_args_list[0].args[0]
+        self.assertEqual(find_cmd[:4], ["docker", "run", "--rm", "-u"])
+        self.assertEqual(find_cmd[4], "agent")
+        ep_idx = find_cmd.index("--entrypoint")
+        self.assertEqual(find_cmd[ep_idx + 1], "find")
+        v_idx = find_cmd.index("-v")
+        self.assertEqual(find_cmd[v_idx + 1], expected_mount)
+        self.assertEqual(
+            find_cmd[-5:],
             [prison.image_tag, "/workspace", "-mindepth", "1", "-delete"],
         )
+
+        # Step 2: chown as root (-u 0:0), retags /workspace to host
+        # UID:GID. Side container has no agent process, so Principle
+        # 2 still holds (no host-fingerprint exposure to an agent).
+        chown_cmd = mock_run.call_args_list[1].args[0]
+        self.assertEqual(chown_cmd[:4], ["docker", "run", "--rm", "-u"])
+        self.assertEqual(chown_cmd[4], "0:0")
+        ep_idx = chown_cmd.index("--entrypoint")
+        self.assertEqual(chown_cmd[ep_idx + 1], "chown")
+        v_idx = chown_cmd.index("-v")
+        self.assertEqual(chown_cmd[v_idx + 1], expected_mount)
+        # Last two args: <host_uid>:<host_gid> /workspace
+        self.assertEqual(chown_cmd[-2], f"{os.getuid()}:{os.getgid()}")
+        self.assertEqual(chown_cmd[-1], "/workspace")
+        self.assertIn(prison.image_tag, chown_cmd)
 
     def test_returns_none_on_success(self):
         """Matches the contract on ``start()`` / ``stop()`` /
@@ -1491,18 +1513,43 @@ class DockerPrisonWipeWorkspaceContentsTests(unittest.TestCase):
             result = DockerPrison(self.project_dir).wipe_workspace_contents()
         self.assertIsNone(result)
 
-    def test_raises_prison_error_when_docker_run_returns_non_zero(self):
-        """If the side-container wipe fails (image missing, bind-mount
-        unmountable, find errored), raise so cmd_clear's teardown
-        surfaces the error rather than silently proceeding to
-        ``docker rm`` a container whose bind-mount still has stale
-        files on disk."""
+    def test_raises_prison_error_when_find_step_returns_non_zero(self):
+        """If Step 1 fails (image missing, bind-mount unmountable,
+        find errored), raise so cmd_clear's teardown surfaces the
+        error rather than silently proceeding to `docker rm` a
+        container whose bind-mount still has stale files on disk.
+        The chown step is skipped — no point in chowning a not-yet-
+        wiped dir."""
         fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="find: error\n")
         with (
-            patch.object(docker_prison.subprocess, "run", return_value=fail),
+            patch.object(docker_prison.subprocess, "run", return_value=fail) as mock_run,
             self.assertRaises(PrisonError),
         ):
             DockerPrison(self.project_dir).wipe_workspace_contents()
+        # find failed → chown never runs.
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_raises_prison_error_when_chown_step_returns_non_zero(self):
+        """If Step 2 (chown) fails after Step 1 (find) succeeded,
+        raise — the dir is empty but still phantom-owned, which would
+        block the next `git init`. Don't pretend the wipe succeeded."""
+        calls: list[int] = []
+
+        def _run(*args, **kwargs):
+            calls.append(0)
+            if len(calls) == 1:
+                return self._ok()
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="chown: error\n"
+            )
+
+        with (
+            patch.object(docker_prison.subprocess, "run", side_effect=_run),
+            self.assertRaises(PrisonError) as cm,
+        ):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
+        self.assertIn("chown", str(cm.exception))
+        self.assertEqual(len(calls), 2)
 
     def test_raises_prison_error_when_workspace_pointer_missing(self):
         """Pre-init / corrupt state: no .alcatrazer/workspace-dir

@@ -596,45 +596,56 @@ class DockerPrison(Alcatraz):
         )
 
     def wipe_workspace_contents(self) -> None:
-        """Remove every file inside the workspace bind-mount using a
-        one-shot side container based on this Alcatraz's own image.
+        """Wipe the workspace bind-mount and hand its ownership back
+        to the host user via two one-shot side containers based on
+        this Alcatraz's own image.
 
-        Implementation: ``docker run --rm`` with
-        ``--entrypoint find`` to bypass the chown-and-drop entrypoint,
-        ``-u agent`` so the wipe runs under the same UID the files are
-        owned by (the original container chowned ``/workspace`` to
-        agent at startup, so those host-side files belong to that UID
-        even after the original container is stopped). The side
-        container bind-mounts the host workspace path at
-        ``/workspace`` and runs
-        ``find /workspace -mindepth 1 -delete``.
+        Two steps inside this method:
 
-        Why a side container, not ``self.exec`` on the original
-        container: ``cmd_clear`` has just stopped the original
-        container as part of the daemon final-sync race-safety dance.
-        ``docker exec`` requires a running container, so we'd have to
-        ``resume`` purely for the wipe — two extra state transitions
-        on the agent's own container, plus the mental overhead of
-        "does resume re-run startup commands" (it doesn't; the
-        original container's CMD is ``sleep infinity`` and startup
-        commands are launched separately by ``cmd_start`` — but the
-        question doesn't even come up with a side container).
+          1. **Wipe contents as agent.** ``docker run --rm -u agent
+             --entrypoint find`` deletes every entry under
+             ``/workspace`` (``-mindepth 1 -delete`` preserves the
+             mount-point dir itself). Runs as agent because the files
+             were chowned to agent by the original container's
+             startup, and deleting them as their owner is the cleanest
+             path.
+          2. **Chown the empty dir to host UID:GID as root.**
+             ``docker run --rm -u 0:0 --entrypoint chown`` retags the
+             empty mount-point dir to ``os.getuid():os.getgid()`` so
+             the next ``alcatrazer start``'s ``git init`` (run by the
+             host user from the host shell) can write into it. Without
+             this, the dir would stay phantom-UID-owned and block
+             ``git init`` with a permission error.
 
-        Why our image, not alpine: avoids the extra image pull, and
-        the ``agent`` user is already defined in ``/etc/passwd`` of
-        our image, so ``-u agent`` resolves consistently.
+        Why a side container instead of ``self.exec`` on the
+        original: ``cmd_clear`` has stopped the original container
+        for race-safety against the daemon final-sync. ``docker
+        exec`` requires a running container, so an exec-based wipe
+        would have to resume the original purely to wipe — extra
+        state transitions on the agent's own container, plus the
+        "does resume re-launch agents" question every reader has to
+        dismiss. A fresh side container is conceptually one-shot
+        disposal.
 
         ``-mindepth 1`` keeps the bind-mount target dir itself in place
         on the host — only its contents are removed — so the next
         ``alcatrazer start`` can re-snapshot into the same directory.
 
-        Stealth: no agent process is involved in this flow (original
-        container is stopped, side container has no entrypoint or CMD
-        beyond ``find``). Principle 2 trivially holds.
+        Why chown-back is safe here (it isn't in the original
+        container): the side container has NO agent process running
+        inside it. Principle 2 gates ownership shifts that an active
+        agent could observe — running chown in a disposable context
+        where no agent exists doesn't expose the host UID to anything
+        that could fingerprint the host user.
 
-        Raises ``PrisonError`` on non-zero exit so ``cmd_clear`` can
-        abort cleanly rather than ``docker rm`` a container whose
-        bind-mount still has stale files on disk.
+        Why our image, not alpine: no extra image pull, and the
+        ``agent`` user is already defined in our image's
+        ``/etc/passwd`` so ``-u agent`` resolves consistently.
+
+        Raises ``PrisonError`` on non-zero exit from either step so
+        ``cmd_clear`` can abort cleanly rather than ``docker rm`` a
+        container whose bind-mount still has stale files on disk or
+        a wrong-owned dir that would block the next start.
         """
         workspace_name = identity.load_workspace_dir(str(self.project_dir / ".alcatrazer"))
         if workspace_name is None:
@@ -643,6 +654,8 @@ class DockerPrison(Alcatraz):
                 "nothing to wipe (workspace never created).",
             )
         workspace_path = self.project_dir / workspace_name
+
+        # Step 1 — wipe contents as agent UID.
         result = subprocess.run(
             [
                 "docker",
@@ -665,7 +678,40 @@ class DockerPrison(Alcatraz):
         )
         if result.returncode != 0:
             raise PrisonError(
-                f"wipe_workspace_contents: docker run exited {result.returncode}",
+                f"wipe_workspace_contents (find): docker run exited {result.returncode}",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+
+        # Step 2 — chown the empty dir to host UID:GID as root, so
+        # the next `alcatrazer start`'s host-side `git init` can
+        # write into it. Safe here even though we explicitly rejected
+        # chown-back in the original container: no agent process
+        # exists inside this side container, so Principle 2 doesn't
+        # apply (no one to observe the host fingerprint).
+        host_uid = os.getuid()
+        host_gid = os.getgid()
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-u",
+                "0:0",  # root inside the disposable side container
+                "--entrypoint",
+                "chown",
+                "-v",
+                f"{workspace_path}:/workspace",
+                self.image_tag,
+                f"{host_uid}:{host_gid}",
+                "/workspace",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise PrisonError(
+                f"wipe_workspace_contents (chown): docker run exited {result.returncode}",
                 stdout=result.stdout,
                 stderr=result.stderr,
             )
