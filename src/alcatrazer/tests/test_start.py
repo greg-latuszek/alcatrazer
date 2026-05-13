@@ -3721,9 +3721,12 @@ class CmdClearTests(unittest.TestCase):
         rc, out, _ = self._run(prison=prison)
         self.assertEqual(rc, 0)
         prison.stop.assert_called_once()
+        prison.wipe_workspace_contents.assert_called_once()
         prison.remove.assert_called_once()
         self.assertIn("cleared", out.lower())
-        self.assertIn("workspace preserved", out.lower())
+        # Phase 9: workspace is no longer preserved — the old promise
+        # contradicted the new terminal-teardown semantics.
+        self.assertNotIn("workspace preserved", out.lower())
         # Abstract-layer naming rule (feedback_alcatraz_naming.md):
         # CLI-visible output must not leak Docker-specific vocabulary.
         self.assertNotIn("container", out.lower())

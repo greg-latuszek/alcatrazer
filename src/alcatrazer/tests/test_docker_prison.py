@@ -1423,56 +1423,94 @@ class DockerPrisonImageMatchesTests(unittest.TestCase):
 
 class DockerPrisonWipeWorkspaceContentsTests(unittest.TestCase):
     """Phase 9 Step 9.1 — DockerPrison.wipe_workspace_contents removes
-    every file inside /workspace from inside the running container, as
-    the agent UID. Implementation delegates to `self.exec(...)` with
-    `find -mindepth 1 -delete`:
+    every file inside the workspace bind-mount using a one-shot side
+    container built from this Alcatraz's own image, with
+    ``--entrypoint find`` bypassing the chown-and-drop entrypoint and
+    ``-u agent`` matching the file ownership.
 
-    - `find` (vs `rm -rf /workspace/*`) handles dotfiles + dir-recursion
-      uniformly without a shell glob.
-    - `-mindepth 1` keeps the mount point /workspace itself in place so
-      the next `start` can re-snapshot into the same bind-mount dir.
-    - `-delete` is portable across the find variants the dev-base image
-      ships (GNU findutils in Ubuntu 24.04).
+    Why a side container (not ``self.exec`` on the original
+    container): ``cmd_clear`` stops the original container before the
+    wipe — ``docker exec`` requires a running container, so an exec-
+    based wipe would have to resume the original purely to wipe. A
+    fresh side container is conceptually one-shot disposal and avoids
+    the "does resume re-run startup commands" mental tax.
 
-    Stealth: removal runs as the agent UID against agent-owned files
-    (the container chowned /workspace at startup). No chown back to
-    host, no host UID exposed to the agent. See
-    docs/features/change_promotion_machinery.md Phase 9
-    "wipe-from-inside vs chown-back" for the rationale."""
+    Why our image (not alpine): no extra image pull, and the ``agent``
+    user is already defined in /etc/passwd of our image so ``-u agent``
+    resolves consistently.
+
+    Stealth: no agent process is involved (original container stopped,
+    side container has no entrypoint/agentic CMD). Principle 2
+    trivially holds.
+
+    See docs/features/change_promotion_machinery.md Phase 9 for the
+    full design rationale."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self.tmp.name)
+        # workspace-dir pointer — the implementation reads it to know
+        # which host path to bind-mount into the side container.
+        (self.project_dir / ".alcatrazer").mkdir()
+        (self.project_dir / ".alcatrazer" / "workspace-dir").write_text(".devspace-test\n")
         self.addCleanup(self.tmp.cleanup)
 
-    def test_delegates_to_exec_with_find_mindepth_one_delete(self):
-        """Verify the exact command. Locking the argv keeps future
-        backends (Podman, Sysbox, VM) from drifting away from the
-        contract — every Alcatraz wipe is `find /workspace -mindepth 1
-        -delete` in spirit, even if the backend wraps it differently."""
-        with patch.object(DockerPrison, "exec", return_value=0) as mock_exec:
-            DockerPrison(self.project_dir).wipe_workspace_contents()
-        mock_exec.assert_called_once_with(["find", "/workspace", "-mindepth", "1", "-delete"])
+    def _ok(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def test_invokes_docker_run_side_container_with_find_mindepth_one_delete(self):
+        """Lock the exact docker invocation. The contract is: side
+        container, our image, no entrypoint chown, runs as agent UID,
+        bind-mounts host workspace at /workspace, runs ``find
+        /workspace -mindepth 1 -delete``."""
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            prison = DockerPrison(self.project_dir)
+            prison.wipe_workspace_contents()
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[:4], ["docker", "run", "--rm", "-u"])
+        self.assertEqual(cmd[4], "agent")
+        self.assertIn("--entrypoint", cmd)
+        ep_idx = cmd.index("--entrypoint")
+        self.assertEqual(cmd[ep_idx + 1], "find")
+        # Bind-mounts the host workspace path at /workspace.
+        self.assertIn("-v", cmd)
+        v_idx = cmd.index("-v")
+        expected_mount = f"{self.project_dir / '.devspace-test'}:/workspace"
+        self.assertEqual(cmd[v_idx + 1], expected_mount)
+        # Image, then find arguments.
+        self.assertEqual(
+            cmd[-5:],
+            [prison.image_tag, "/workspace", "-mindepth", "1", "-delete"],
+        )
 
     def test_returns_none_on_success(self):
-        """Matches the contract on `start()` / `stop()` / `remove()` —
-        state-mutating ops return None and raise on failure (instead of
-        returning an exit code like `exec` does). Caller doesn't have to
-        branch on a return value."""
-        with patch.object(DockerPrison, "exec", return_value=0):
+        """Matches the contract on ``start()`` / ``stop()`` /
+        ``remove()`` — state-mutating ops return None and raise on
+        failure. Caller doesn't have to branch on a return value."""
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()):
             result = DockerPrison(self.project_dir).wipe_workspace_contents()
         self.assertIsNone(result)
 
-    def test_raises_prison_error_when_exec_returns_non_zero(self):
-        """If the wipe fails (container died mid-call, /workspace
-        permissions inverted somehow, find missing from the image),
-        raise so cmd_clear's teardown surfaces the error rather than
-        silently proceeding to remove the container with stale files
-        still on disk."""
+    def test_raises_prison_error_when_docker_run_returns_non_zero(self):
+        """If the side-container wipe fails (image missing, bind-mount
+        unmountable, find errored), raise so cmd_clear's teardown
+        surfaces the error rather than silently proceeding to
+        ``docker rm`` a container whose bind-mount still has stale
+        files on disk."""
+        fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="find: error\n")
         with (
-            patch.object(DockerPrison, "exec", return_value=1),
+            patch.object(docker_prison.subprocess, "run", return_value=fail),
             self.assertRaises(PrisonError),
         ):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
+
+    def test_raises_prison_error_when_workspace_pointer_missing(self):
+        """Pre-init / corrupt state: no .alcatrazer/workspace-dir
+        pointer to identify which host path to mount. Raise rather
+        than guess — calling wipe on something that doesn't exist
+        is a bug in the caller (cmd_clear gates on prison.exists())."""
+        (self.project_dir / ".alcatrazer" / "workspace-dir").unlink()
+        with self.assertRaises(PrisonError):
             DockerPrison(self.project_dir).wipe_workspace_contents()
 
 

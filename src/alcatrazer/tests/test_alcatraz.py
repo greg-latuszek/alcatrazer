@@ -38,6 +38,13 @@ ALCATRAZ_OPERATIONS = frozenset(
         # image built from THIS recipe?" check.
         "recipe_hash",
         "image_matches",
+        # Phase 9: wipe the workspace bind-mount's contents during
+        # `alcatrazer clear` so the next `start` is a fresh first-run
+        # on the user's current branch. Backend-agnostic — DockerPrison
+        # implements via a one-shot side container with --entrypoint
+        # find + -u agent; future backends do whatever their
+        # disposable-context-with-bind-mount equivalent is.
+        "wipe_workspace_contents",
     }
 )
 

@@ -1446,12 +1446,30 @@ def cmd_clear(
     result = shutdown_sync_daemon(project_dir)
     print_shutdown_result(result)
 
-    # Step 3 — discard the container.
+    # Step 3 — Phase 9: wipe the inner workspace via a one-shot side
+    # container (built from this Alcatraz's own image, runs as
+    # `agent`, bind-mounts the host workspace at /workspace, runs
+    # `find /workspace -mindepth 1 -delete`). The original container
+    # is stopped at this point and stays stopped — the side container
+    # is a separate disposable process. See
+    # docs/features/change_promotion_machinery.md Phase 9
+    # "wipe-from-inside vs side container" for the rationale.
     if prison.exists():
+        prison.wipe_workspace_contents()
         prison.remove()
-        print("Alcatraz cleared — Alcatraz workspace preserved on the host.")
+        print("Alcatraz cleared.")
     else:
         print("Nothing to clear — Alcatraz not present.")
+
+    # Step 4 — Phase 9: drop the pin. Without this, the next
+    # `alcatrazer start` would route to subsequent-run, reusing the
+    # old pinned_branch even though the inner workspace is gone.
+    # Unlinking state.json makes the next start a fresh first-run on
+    # whichever branch the user is currently on. `.alcatrazer/
+    # config.toml` is deliberately preserved so identity + daemon
+    # settings carry over — no `alcatrazer init` needed between clear
+    # and start.
+    (alcatraz_dir / "state.json").unlink(missing_ok=True)
 
     if result.outcome in ("conflict", "failed", "timeout"):
         return 1

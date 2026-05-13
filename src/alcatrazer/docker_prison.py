@@ -22,7 +22,7 @@ import subprocess
 from pathlib import Path
 
 from alcatrazer import identity
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonError, PrisonStartError
 from alcatrazer.languages import AQUA_ATTESTATION_MISALIGNED, SUPPORTED_LANGUAGES
 
 # --- Per-repo identity (Phase 1.2.5) -----------------------------------------
@@ -594,6 +594,81 @@ class DockerPrison(Alcatraz):
             capture_output=True,
             check=True,
         )
+
+    def wipe_workspace_contents(self) -> None:
+        """Remove every file inside the workspace bind-mount using a
+        one-shot side container based on this Alcatraz's own image.
+
+        Implementation: ``docker run --rm`` with
+        ``--entrypoint find`` to bypass the chown-and-drop entrypoint,
+        ``-u agent`` so the wipe runs under the same UID the files are
+        owned by (the original container chowned ``/workspace`` to
+        agent at startup, so those host-side files belong to that UID
+        even after the original container is stopped). The side
+        container bind-mounts the host workspace path at
+        ``/workspace`` and runs
+        ``find /workspace -mindepth 1 -delete``.
+
+        Why a side container, not ``self.exec`` on the original
+        container: ``cmd_clear`` has just stopped the original
+        container as part of the daemon final-sync race-safety dance.
+        ``docker exec`` requires a running container, so we'd have to
+        ``resume`` purely for the wipe — two extra state transitions
+        on the agent's own container, plus the mental overhead of
+        "does resume re-run startup commands" (it doesn't; the
+        original container's CMD is ``sleep infinity`` and startup
+        commands are launched separately by ``cmd_start`` — but the
+        question doesn't even come up with a side container).
+
+        Why our image, not alpine: avoids the extra image pull, and
+        the ``agent`` user is already defined in ``/etc/passwd`` of
+        our image, so ``-u agent`` resolves consistently.
+
+        ``-mindepth 1`` keeps the bind-mount target dir itself in place
+        on the host — only its contents are removed — so the next
+        ``alcatrazer start`` can re-snapshot into the same directory.
+
+        Stealth: no agent process is involved in this flow (original
+        container is stopped, side container has no entrypoint or CMD
+        beyond ``find``). Principle 2 trivially holds.
+
+        Raises ``PrisonError`` on non-zero exit so ``cmd_clear`` can
+        abort cleanly rather than ``docker rm`` a container whose
+        bind-mount still has stale files on disk.
+        """
+        workspace_name = identity.load_workspace_dir(str(self.project_dir / ".alcatrazer"))
+        if workspace_name is None:
+            raise PrisonError(
+                "wipe_workspace_contents: no .alcatrazer/workspace-dir pointer; "
+                "nothing to wipe (workspace never created).",
+            )
+        workspace_path = self.project_dir / workspace_name
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-u",
+                "agent",
+                "--entrypoint",
+                "find",
+                "-v",
+                f"{workspace_path}:/workspace",
+                self.image_tag,
+                "/workspace",
+                "-mindepth",
+                "1",
+                "-delete",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise PrisonError(
+                f"wipe_workspace_contents: docker run exited {result.returncode}",
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
 
     def shell(self) -> None:
         """Open an interactive bash as agent inside the running container.

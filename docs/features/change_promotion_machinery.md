@@ -1139,41 +1139,54 @@ Both paths already wait for the daemon to drain pending commits before
 the daemon exits, so the commits are durably in outer before Phase 9
 removes the inner workspace.
 
-#### Wipe-from-inside vs. chown-back (stealth)
+#### Removal mechanism: one-shot side container
 
-Two ways the host could remove agent-UID-owned files in the workspace
-bind-mount. Wipe-from-inside is strictly better:
+Three candidate approaches considered for removing agent-UID-owned
+files from the workspace bind-mount:
 
-- **chown-back** — container chowns `/workspace` back to host's
-  UID/GID before stop; host's plain `rm -rf` then works. Cost: agent
-  observes its workspace ownership shift to a foreign UID — a
-  fingerprint of the user the host runs as. Violates Principle 2
-  (the agent must not be able to tell it's inside Alcatraz, much
-  less learn anything about the host user).
-- **wipe-from-inside** (chosen) — container removes its own files as
-  agent UID via the Alcatraz port. Agent only ever sees its own
-  files being removed, which it could already do at will. No host
-  identity leakage; no chown.
+- **chown-back** — original container chowns `/workspace` back to
+  host's UID/GID before stop; host's plain `rm -rf` then works.
+  Rejected: the agent observes its workspace ownership shift to a
+  foreign UID before the chown completes — a fingerprint of the
+  user the host runs as. Violates Principle 2.
+- **`docker exec` on the original container** — would need
+  `prison.resume()` first because `docker exec` requires a running
+  container, and `cmd_clear` has already stopped it for daemon
+  final-sync race-safety. Resume is safe per se (the container's
+  CMD is `sleep infinity` and `run_startup_commands` is only called
+  by `cmd_start`, not by `cmd_clear`), but it adds two extra state
+  transitions on the agent's own container and invites the
+  "does resume re-launch agents" question every reader will ask.
+- **one-shot side container** (chosen) — fresh `docker run --rm`
+  against this Alcatraz's own image, with `--entrypoint find` (skip
+  the chown-and-drop entrypoint), `-u agent` (match the file
+  ownership), bind-mounting the host workspace at `/workspace`, with
+  args `/workspace -mindepth 1 -delete`. The original container
+  stays stopped. No agent process is involved anywhere; Principle 2
+  trivially holds.
+
+Why our image rather than alpine (the pattern test_smoke uses for
+phantom-UID cleanup): no extra image pull, and the `agent` user is
+already defined in `/etc/passwd` of our image so `-u agent` resolves
+consistently against the file ownership.
 
 #### Ordering — keep "stop-first" race safety
 
 The current `cmd_clear` order — stop → daemon-final-sync → remove —
 guards against an agent committing AFTER the final sync but BEFORE
-removal. The wipe needs `exec` access, which requires a running
-container. Solution: resume the same stopped container briefly for
-the wipe step. Resume runs only `sleep infinity` (the container's
-CMD); no claude-code, no `[startup]` re-execution, no agents active.
+removal. The side container is a separate process that bind-mounts
+the host path; it doesn't need the original container to be running,
+so no resume step is required.
 
 ```
 1. (pre-checks: pin status + pending count — unchanged)
 2. prison.stop()                      # agents frozen
 3. shutdown_sync_daemon()             # final sync drains pending
-4. prison.resume()                    # container back up, no agents
-5. prison.wipe_workspace_contents()   # NEW — port method, runs as
-                                      # agent UID inside container
-6. prison.stop()
-7. prison.remove()
-8. (alcatraz_dir / "state.json").unlink(missing_ok=True)  # unpin
+4. prison.wipe_workspace_contents()   # NEW — one-shot side container,
+                                      # runs `find /workspace
+                                      # -mindepth 1 -delete` as agent
+5. prison.remove()                    # original container gone
+6. (alcatraz_dir / "state.json").unlink(missing_ok=True)  # unpin
 ```
 
 The workspace directory itself stays (empty, same name) as the bind-
@@ -1188,35 +1201,47 @@ New abstract method on `Alcatraz` (`src/alcatrazer/alcatraz.py`):
 ```python
 @abstractmethod
 def wipe_workspace_contents(self) -> None:
-    """Remove every file inside the workspace bind-mount, from inside
-    the container.
+    """Remove every file inside the workspace bind-mount, leaving
+    the mount-point directory itself in place.
 
-    Required state: container is running (resume first if it was
-    stopped). Stealth-preserving: removal runs as the agent UID
-    against agent-owned files; the host UID is never exposed inside
-    the container (no chown).
+    Caller contract: the original container is stopped when this is
+    called. Backend chooses the removal mechanism (one-shot side
+    container, etc.) so long as no agent process observes foreign
+    UIDs or signals that betray the Alcatrazer machinery.
     """
 ```
 
-`DockerPrison.wipe_workspace_contents` implements via
-`self.exec(["find", "/workspace", "-mindepth", "1", "-delete"])`.
-The `-mindepth 1` keeps the mount-point `/workspace` itself in place
-— only its contents are removed. The agent UID owns those contents
-(the container chowns `/workspace` at startup), so `find -delete`
-succeeds without elevation.
+`DockerPrison.wipe_workspace_contents` implements via a one-shot
+side container:
+
+```
+docker run --rm -u agent --entrypoint find \
+    -v <host_workspace>:/workspace <image_tag> \
+    /workspace -mindepth 1 -delete
+```
+
+`--entrypoint find` bypasses the chown-and-drop entrypoint script.
+`-u agent` ensures `find` runs under the same UID the files are
+owned by (the original container chowned `/workspace` to agent at
+startup; those host-side files belong to that UID even after the
+original container is stopped). `-mindepth 1` preserves the mount-
+point dir itself; only its contents are removed.
 
 #### Detailed Implementation Plan
 
 **Step 9.1** `[RED]` — Unit tests for the port-method contract:
 - `Alcatraz.__abstractmethods__` declares `wipe_workspace_contents`.
-- `DockerPrison.wipe_workspace_contents` delegates to
-  `self.exec(["find", "/workspace", "-mindepth", "1", "-delete"])`
-  (verified via mocked `subprocess.run`).
+- `DockerPrison.wipe_workspace_contents` invokes a one-shot side
+  container — `docker run --rm -u agent --entrypoint find -v
+  <workspace>:/workspace <image> /workspace -mindepth 1 -delete`
+  (verified via mocked `docker_prison.subprocess.run`; the exact
+  argv shape is locked so future backends inherit a clear spec).
 - Returns `None` on success (state-mutating contract, matches
   `start`/`stop`/`remove`).
-- Raises `PrisonError` when the exec returns non-zero so cmd_clear
-  can abort its teardown rather than continue with stale files on
-  disk.
+- Raises `PrisonError` when the side-container run returns non-zero,
+  and also when `.alcatrazer/workspace-dir` is missing (no host path
+  to mount), so cmd_clear can abort its teardown rather than continue
+  with stale files on disk.
 
 **Step 9.2** `[RED]` — End-to-end integration test of the switch-
 branch flow. Lives in `src/alcatrazer/integration_tests/` next to
@@ -1251,10 +1276,12 @@ test is the source of truth here; duplicating with mocks adds
 maintenance burden with no incremental verification.
 
 **Step 9.3** `[GREEN]` — Add `wipe_workspace_contents` to the
-`Alcatraz` ABC, implement on `DockerPrison`. Extend `cmd_clear` with
-the resume → wipe → stop → remove → unlink sequence. Update
-`cmd_clear`'s post-success message to reflect the new teardown
-(drop the "workspace preserved on the host" line).
+`Alcatraz` ABC, implement on `DockerPrison` via the one-shot side
+container. Extend `cmd_clear` with the wipe → remove → unlink
+sequence (slotting the wipe in between `shutdown_sync_daemon` and
+`prison.remove`). Update `cmd_clear`'s post-success message to
+reflect the new teardown (drop the "workspace preserved on the host"
+line).
 
 **Step 9.4** `[BLUE]` — Update the upgrade-refusal message in
 `state._upgrade_message`: now that v0.1.1's `clear` handles teardown,
@@ -1312,5 +1339,6 @@ Phase 9 fixes this by extending `cmd_clear` to wipe the inner
 workspace contents via a new Alcatraz port method
 (`wipe_workspace_contents`) and unlink `state.json`, keeping
 `.alcatrazer/config.toml` so identity + daemon settings carry over.
-The wipe runs from inside the container as agent UID to preserve
-Principle 2 (no host UID exposure via chown-back).
+The wipe runs in a one-shot side container (built from this
+Alcatraz's own image, `--entrypoint find`, `-u agent`) — no agent
+process is involved anywhere, so Principle 2 trivially holds.
