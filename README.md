@@ -101,16 +101,14 @@ your_repo/                              <-- outer repo (your identity, has GitHu
 ├── README.md
 ├── .alcatrazer/                        <-- gitignored via .git/info/exclude; tool state + installed source
 │   ├── src/alcatrazer/                 <-- extracted package source (readable install, bundled tests)
+│   ├── schemas.json                    <-- schema history for state.json + config.toml + coding-environment.toml
 │   ├── python -> /usr/bin/python3      <-- symlink to the Python that was used to install
-│   ├── config.toml                     <-- per-developer config (identity, daemon settings)
+│   ├── config.toml                     <-- per-developer config (schema_version, identity, daemon settings)
 │   ├── uid                             <-- phantom UID
 │   ├── agent-identity                  <-- random agent name + email
 │   ├── workspace-dir                   <-- pointer to the workspace directory name
-│   ├── state.json                      <-- daemon-shutdown intent and similar runtime state
-│   ├── promote-export-marks            <-- incremental fast-export/import state
-│   ├── promote-import-marks
-│   ├── promoted-tips.json              <-- branch tips after last promotion (conflict detection)
-│   ├── paused-branches.json            <-- branches paused due to conflicts
+│   ├── state.json                      <-- running state of Alcatrazer (pin + replay + paused);
+│   │                                       created during first `alcatrazer start`, gone after `clear`
 │   ├── promotion-daemon.pid            <-- daemon PID (single-instance guard)
 │   └── promotion-daemon.log            <-- daemon activity log
 └── .<workspace>-<random>/              <-- gitignored, randomly named (e.g., .devspace-7f3a/)
@@ -123,19 +121,20 @@ The package itself (inside the wheel, and extracted into
 
 ```
 alcatrazer/
-├── cli.py                              <-- entry point: init / start / stop / clear / test
-├── start.py                            <-- cmd_init / cmd_start / cmd_stop / cmd_clear / cmd_selftest
+├── cli.py                              <-- entry point: init / start / visit / stop / clear / status / test
+├── start.py                            <-- cmd_init / cmd_start / cmd_visit / cmd_stop / cmd_clear / cmd_selftest
 ├── alcatraz.py                         <-- Alcatraz port (backend-agnostic interface)
 ├── docker_prison.py                    <-- Docker adapter of the Alcatraz port
 ├── snapshot.py                         <-- flat snapshot from outer repo into the workspace
-├── promote.py                          <-- fast-export / fast-import promotion (bytes-safe)
-├── daemon.py                           <-- auto-promotion daemon (polls from the host side)
+├── promote.py                          <-- replay agent commits onto your branch via git format-patch | git am
+├── daemon.py                           <-- sync daemon (polls from the host side)
 ├── daemon_lifecycle.py                 <-- launch / shutdown wiring for start / stop / clear
 ├── identity.py                         <-- random agent identity + workspace dir generation
 ├── languages.py                        <-- declared runtimes → Dockerfile fragments
 ├── selftest.py                         <-- bundled security self-tests (phantom UID, etc.)
-├── state.py                            <-- tiny JSON state store under .alcatrazer/
-├── inspect.py                          <-- live log viewer for the daemon
+├── state.py                            <-- .alcatrazer/state.json reader + schema-compatibility gate
+├── schema.py                           <-- loader for schemas.json (schema history, version constants)
+├── status.py                           <-- cmd_status implementation + live log viewer
 ├── container/entrypoint.sh             <-- container entrypoint (chown, drop via gosu)
 ├── scripts/                            <-- bash bootstrap (runs before Python exists)
 ├── templates/                          <-- coding-environment.toml + .env.example templates
@@ -194,62 +193,82 @@ Agents **are expected** to talk to LLM APIs — that's their job. Claude OAuth c
 
 ## Branch handling
 
-Alcatrazer **always reads from and writes to the default branch** of
-your outer repository — `main`, or `master` if that's your convention.
-It never follows the branch you happen to have checked out at the
-moment `alcatrazer init` / `alcatrazer start` runs.
+Alcatrazer slots into the normal feature-branch workflow with no new
+ceremony:
 
-Concretely, when the outer repo is on a feature branch `abc`:
+1. `git checkout -b feat/X` — branch off `main` as you normally would.
+2. `alcatrazer start` — Alcatrazer remembers the branch you started
+   on and uses its tree as the agent's starting point.
+3. Agents work inside the workspace and commit. Each agent commit
+   replays onto outer `feat/X` as your own — the working tree and
+   branch ref update together, in the same instant the file appears
+   on disk.
+4. `git push origin feat/X` and open a PR like any other.
 
 ```
-outer  abc   (checked out, ignored)
-outer  main  (detected) ──── snapshot ────▶  workspace  main  ("Initial commit")
-                                                           │
-                                                           │  agents code, commit,
-                                                           │  branch, merge
-                                                           ▼
-                                             workspace  main + new commits
-                                                           │
-                                                           │  daemon promotes
-                                                           ▼
-                                             outer  main  (new commits appended
-                                                           under your identity)
+outer  feat/X  (checked out) ──── snapshot ────▶  workspace  main  ("Initial commit")
+                                                       │
+                                                       │  agents code, commit,
+                                                       │  branch, merge
+                                                       ▼
+                                          workspace  main + new commits
+                                                       │
+                                                       │  Alcatrazer replays each
+                                                       │  commit onto outer feat/X
+                                                       ▼
+outer  feat/X  + new commits (appended under your identity, working tree in sync)
 ```
 
-So `outer/abc` is **neither read nor modified**:
+Alcatrazer is bound to the branch you started on. That binding is
+fixed for the workspace's lifetime:
 
-- The snapshot source is the default branch — your `abc` work never
-  enters the workspace, and agents start from `main`'s tree.
-- The promotion target is the same branch name the agent committed
-  on inside the workspace. Agents start on `main` (the workspace's
-  default branch), so their commits land on outer `main`. The daemon
-  never fast-forwards, rebases, or merges across branches — it only
-  updates each ref to the imported commits.
+- **You stay on `feat/X`** → agent commits appear there as you work
+  alongside, working tree stays clean and current.
+- **You switch to a different branch** (e.g. `git checkout main` to
+  check something) → Alcatrazer **holds**: agents keep committing
+  inside the workspace, but nothing replays to outer until you return
+  to `feat/X`. On your next `git checkout feat/X` Alcatrazer replays
+  everything that piled up, in order.
+- **You delete `feat/X`** → Alcatrazer holds with a message explaining
+  how to recreate the branch (or how to discard pending agent work via
+  `alcatrazer clear --discard-pending`).
 
-If you run `alcatrazer start` while checked out on a non-default
-branch, you'll see a note like:
+Run `alcatrazer status` to see which state you're in, how many agent
+commits are pending, and when the last replay happened.
 
-> Note: you are currently on branch 'abc' in this repository.
->       Alcatrazer always snapshots from the default branch ('main')
->       and promotes agent commits back to 'main', regardless of
->       what you have checked out. Your 'abc' branch will be neither
->       read nor modified.
+### When outer already has a conflicting file
 
-This is intentional — see [`docs/design_principles.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/design_principles.md) § "Main Branch
-Only". The rule keeps the mental model simple: *agents always start
-from main, and their output always lands on main.* No accidental
-cross-branch contamination, no loop between your feature branch and
-the agent's. If you want agents to iterate on a feature, cut the
-branch **inside the workspace** (during the agent session) and the
-daemon will promote it out under the same name.
+Outer's working tree gets the same atomic update as `feat/X`'s ref —
+there's no window where the branch says "this file exists" and the
+file isn't on disk yet (or vice versa). The one situation that pauses
+the replay is **file-presence collision**: outer already has a file at
+the same path the agent's commit adds. Two sub-cases, each with its
+own resolution:
 
-### What if the user wants to work on `abc`?
+- **Outer's file is local-only** (untracked, or modified-but-not-yet-
+  committed) — `git rm` the path, or copy it aside under another name
+  first if you want to keep your version. For a modified-but-tracked
+  file you can `git stash` instead.
+- **Outer's file is already committed** — `git rm <path> && git commit
+  -m "make way for agent work"`. If you want your outer-side version
+  preserved, copy the file to a non-conflicting name before the `rm`.
 
-Merge `abc` into `main` (or rebase it onto `main` and fast-forward)
-before running `alcatrazer start`, so the snapshot picks up your work.
-Then let the agents branch off `main` inside the workspace and merge
-back there — those merges promote out unchanged, and you can fold
-them into whatever branch you like on the outer side afterwards.
+Either way, `alcatrazer status` shows a paused message naming the
+branch and the next step. Once the collision is gone, the next replay
+cycle picks up where it left off — no daemon restart needed.
+
+### Two ways to pause
+
+| Need | Command pair | Effect on the pin |
+|---|---|---|
+| Pause and pick this workspace back up later | `alcatrazer stop` → `alcatrazer start` | Same workspace, same pin. Freeze-restart. |
+| Done with this branch's agent work; want to start fresh on a different branch | `alcatrazer clear` → `git checkout <new>` → `alcatrazer start` | Terminal teardown + fresh first-run. New pin. |
+
+Both `stop` and `clear` wait for the daemon to drain pending agent
+commits to outer before exiting, so no work is lost. `clear` also
+removes the inner workspace and the pin so the next `start` snapshots
+from your currently-checked-out branch (your identity and daemon
+settings carry over — no `alcatrazer init` needed in between).
 
 ## Getting Started
 
@@ -367,16 +386,23 @@ gosu.
 In a separate terminal:
 
 ```bash
-tail -f .alcatrazer/promotion-daemon.log
-# or the bundled live viewer:
-.alcatrazer/python -m alcatrazer.inspect
+alcatrazer status                          # one-line summary
+tail -f .alcatrazer/promotion-daemon.log   # full event stream
 ```
 
 ### Stop and clear
 
 ```bash
-alcatrazer stop     # stop container + daemon; writable layer + workspace preserved
-alcatrazer clear    # throw away the container + daemon; image kept; next `start` rebuilds fresh
+alcatrazer stop     # freeze: stop container + daemon; workspace, pin,
+                    # and writable image layer preserved. Next `start`
+                    # picks up where this one left off, same branch.
+
+alcatrazer clear    # terminal: stop container + daemon (after draining
+                    # pending commits), wipe inner workspace, and drop
+                    # the pin. Image is preserved (skip rebuild) and so
+                    # is `.alcatrazer/config.toml` (your identity carries
+                    # over). Next `start` snapshots fresh from whichever
+                    # branch you're currently on.
 ```
 
 Both are idempotent and both do a final-sync of any pending commits
@@ -466,6 +492,7 @@ Alcatrazer-specific, invisible to agents. Contains the promotion identity
 and daemon settings:
 
 ```toml
+schema_version = 2
 coding_environment_file = "coding-environment.toml"
 
 [promotion]
@@ -474,8 +501,6 @@ email = "your@email.com"
 
 [promotion-daemon]
 interval     = 5                # polling interval (seconds)
-branches     = "all"            # or "main" or ["main", "feature/*"]
-mode         = "mirror"         # or "alcatraz-tree"
 verbosity    = "normal"         # or "detailed"
 max_log_size = 512              # log rotation threshold (KB)
 ```
@@ -491,78 +516,44 @@ the full rationale.
 
 ## Promoting Agent Work
 
-Promotion uses `git fast-export` and `git fast-import` to transfer
-commits from the inner (workspace) repo to the outer repo. The
-pipeline is byte-safe — binary blobs in history (images, archives,
-compiled artifacts) round-trip unchanged. It:
+Each new agent commit inside the workspace replays onto your working
+branch in the outer repo as a fast-forward — the working tree and the
+branch ref update together, atomically. Properties:
 
-- Preserves full branch and merge topology (branches, merge commits,
-  parent chains)
-- Rewrites author/committer from the agent's random identity to the
-  host user's identity
-- Is incremental — only new commits since the last promotion are
-  transferred
-- Is unidirectional: inner repo to outer repo only
+- **Working tree always in sync with HEAD.** Files appear under your
+  cursor the same instant the commit lands on the branch. No window
+  where `git status` shows phantom deletions.
+- **Identity is rewritten to yours.** Both author and committer on
+  the outer-side commit are the name + email from
+  `.alcatrazer/config.toml`'s `[promotion]` section. The agent's
+  random throwaway identity stays inside the workspace.
+- **Byte-safe.** Binary diffs (images, archives, compiled artifacts)
+  round-trip through the patch stream unchanged.
+- **Incremental.** Only commits past the last successful replay get
+  applied; nothing is reprocessed.
+- **Unidirectional.** Inner → outer only. Your own commits to outer
+  never flow into the workspace; if you want agents to see new
+  outer work, `clear` and `start` a fresh workspace
+  (see [Branch handling](#branch-handling)).
+- **Abortable.** On apply failure (see
+  [When outer already has a conflicting file](#when-outer-already-has-a-conflicting-file)),
+  the replay rolls back cleanly via `git am --abort` — your outer's
+  HEAD and working tree are byte-identical to their pre-attempt
+  state.
 
-The **promotion daemon** is launched automatically by `alcatrazer
-start` and stopped automatically by `alcatrazer stop` / `alcatrazer
-clear`. Both shutdowns run a final-sync before tearing the daemon
-down, so no commit is lost in a graceful teardown.
+The **sync daemon** runs on the host outside the workspace
+container — it polls the inner repo's `.git/` and never writes
+into the workspace itself. It's launched automatically by
+`alcatrazer start` and torn down automatically by
+`alcatrazer stop` / `alcatrazer clear`. Both teardown paths wait for
+the daemon to apply any pending agent commits before exiting, so no
+commit is lost in a graceful shutdown.
 
-### Manual promotion (optional)
-
-For a one-shot push or debugging you can run the promoter directly
-against the installed layout:
-
-```bash
-# <workspace> is the workspace directory name (see .alcatrazer/workspace-dir)
-.alcatrazer/python -m alcatrazer.promote --source <workspace> --target .
-
-# Preview what would be promoted:
-.alcatrazer/python -m alcatrazer.promote --source <workspace> --target . --dry-run
-```
-
-### Promotion Modes
-
-The daemon supports two modes, configured via `mode` in
-`.alcatrazer/config.toml` under `[promotion-daemon]`:
-
-**`mirror` (default)** — Agent branches promote to the same branch names in the outer repo (`main` → `main`). Seamless sync for projects where agents do most of the coding. If the human also commits to the outer repo on a promoted branch, the daemon detects the divergence and creates a conflict branch (see below).
-
-**`alcatraz-tree`** — Agent branches promote into an `alcatraz/*` namespace (`main` → `alcatraz/main`, `feature/auth` → `alcatraz/feature/auth`). The human's branches are never touched. Use this when both human and agents commit frequently to the same branches — the separate namespace means zero conflicts. The human merges from `alcatraz/*` when ready.
-
-### Conflict Resolution (mirror mode)
-
-If you commit directly to the outer repo on a branch that the daemon is also promoting, the daemon detects the divergence and pauses promotion on that branch. It:
-
-1. Creates a `conflict/resolve-<branch>-<timestamp>` branch containing the agent's version of the work
-2. Logs a warning to `.alcatrazer/promotion-daemon.log`
-3. Continues promoting other branches normally
-
-**To resolve:**
-
-```bash
-# Option A: Merge the agent's work into your branch
-git merge conflict/resolve-main-20260406-120000
-# Resolve any merge conflicts, then:
-git branch -d conflict/resolve-main-20260406-120000
-
-# Option B: Discard the agent's work on this branch
-git branch -D conflict/resolve-main-20260406-120000
-```
-
-Once the `conflict/resolve-*` branch is deleted (merged or discarded), the daemon automatically resumes promotion on that branch. No daemon restart needed.
-
-### Branch Filtering
-
-Control which branches cross the water:
-
-```toml
-[promotion-daemon]
-branches = "all"                    # every branch (default)
-branches = "main"                   # a single branch (use your branch name: "main", "master", etc.)
-branches = ["main", "feature/*"]    # branch names and glob patterns
-```
+Run `alcatrazer status` for a one-line summary of which branch the
+workspace is bound to, how many commits are pending, and when the
+last successful replay was. Tail `.alcatrazer/promotion-daemon.log`
+for the daemon's transition events (held / resumed / paused /
+applied).
 
 ## Container Details
 
@@ -664,19 +655,22 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
 ## Workflow
 
 1. `alcatrazer init` — one-time interactive setup (per repo).
-2. `alcatrazer start` — build the image if needed, snapshot your main
-   branch into the workspace, start the container, run `[startup]`
-   commands, and launch the promotion daemon.
-3. `alcatrazer visit` — step inside as the agent user.
-4. Agents inside the container write code, run tests, commit
+2. `git checkout -b feat/X` — start a feature branch as you would
+   for any normal git work.
+3. `alcatrazer start` — build the image if needed, snapshot
+   your currently-checked-out branch into the workspace, start the
+   container, run `[startup]` commands, and launch the sync daemon.
+   Alcatrazer remembers which branch you started on; agent commits
+   replay back to that same branch.
+4. `alcatrazer visit` — step inside as the agent user.
+5. Agents inside the container write code, run tests, commit
    incrementally. They may use branches, delegate to sub-agents, and
    merge.
-5. The daemon automatically promotes agent commits out to the outer
-   repo under your identity. Watch activity with
-   `tail -f .alcatrazer/promotion-daemon.log` or
-   `.alcatrazer/python -m alcatrazer.inspect`.
-6. You review the promoted work in the outer repo:
-   `git log --graph --oneline --all`.
+6. Each agent commit replays onto outer `feat/X` under your identity
+   automatically, working tree and ref updating together. Watch
+   activity with `alcatrazer status` (single-line summary) or
+   `tail -f .alcatrazer/promotion-daemon.log` for the full event log.
+7. `git push origin feat/X` and open a PR like any other.
 7. You push the promoted commits to GitHub from the outer repo.
 8. `alcatrazer stop` when done for the day — or `alcatrazer clear` to
    throw away the container entirely (your workspace directory survives).
