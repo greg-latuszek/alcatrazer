@@ -23,7 +23,13 @@ import json
 import os
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+from alcatrazer import schema
+
+# Derived from schemas.json (single source of truth — see
+# docs/coding_conventions.md "Schema changes must land in
+# schemas.json + CHANGELOG before release"). Adding a new entry to
+# `state.history` in schemas.json IS the version bump; no drift.
+SCHEMA_VERSION = schema.STATE.current_version
 
 _STATE_FILE = "state.json"
 _TMP_SUFFIX = ".tmp"

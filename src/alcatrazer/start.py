@@ -29,7 +29,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from alcatrazer import identity, promote, selftest, snapshot, state
+from alcatrazer import identity, promote, schema, selftest, snapshot, state
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import (
     launch_daemon_and_print,
@@ -42,13 +42,15 @@ from alcatrazer.status import count_pending_commits
 
 # --- Coding-environment schema version --------------------------------------
 #
-# Bumped when the structure of `coding-environment.toml` changes in an
-# incompatible way. Files written before this field existed are treated as
-# version 1 (backwards compat). An older alcatrazer encountering a newer
-# schema raises UnsupportedSchemaVersionError rather than silently
-# misreading.
+# Derived from schemas.json (single source of truth — see
+# docs/coding_conventions.md "Schema changes must land in
+# schemas.json + CHANGELOG before release"). Bumped by appending a new
+# entry to `coding_env.history` in schemas.json; files written before
+# this field existed are treated as version 1 (backwards compat); an
+# older alcatrazer encountering a newer schema raises
+# UnsupportedSchemaVersionError rather than silently misreading.
 
-CODING_ENV_SCHEMA_VERSION = 1
+CODING_ENV_SCHEMA_VERSION = schema.CODING_ENV.current_version
 
 
 def _workspace_ready(project_dir: Path, workspace_name: str | None) -> bool:
