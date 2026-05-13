@@ -228,5 +228,147 @@ class ValidateSchemaVersionTests(unittest.TestCase):
         self.assertIn("CHANGELOG", self._msg_for({"schema_version": 1}))
 
 
+class RequireCompatibleWorkspaceTests(unittest.TestCase):
+    """Phase 7 Step 7.2 — workspace-level refusal gate
+    (change_promotion_machinery.md "Breaking-change posture").
+
+    `state.validate_schema_version` (the dict-level validator) only
+    catches v0.1.0 workspaces whose state.json was actually written.
+    But v0.1.0 wrote state.json lazily — only on first
+    `alcatrazer stop`/`clear`. A user who only ran `init` + `start` in
+    v0.1.0 has NO state.json, so a schema-version check alone passes
+    them through, and they hit a runtime AttributeError later when
+    promote_once expects `inner_root` / `pinned_branch`.
+
+    `require_compatible_workspace(alcatraz_dir)` is the workspace-level
+    gate that composes all available signals:
+
+      - state.json schema_version < SCHEMA_VERSION
+      - presence of v0.1.0 side files: promoted-tips.json,
+        paused-branches.json
+      - presence of v0.1.0 marks files: promote-export-marks,
+        promote-import-marks
+
+    Each refusal caller (daemon._run_cycle_mirror, cmd_start,
+    cmd_status, cmd_clear) invokes this once at entry. Silent on a
+    truly fresh workspace (so `alcatrazer init` on a brand-new repo
+    isn't blocked).
+
+    setUp deliberately does NOT create alcatraz_dir — each test
+    constructs the exact filesystem state its docstring describes so
+    the precondition is visible at the call site, not hidden in
+    setUp."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        # The path we'll pass to require_compatible_workspace. Not
+        # created here — tests decide whether it should exist.
+        self.alcatraz_dir = Path(self.tmp.name) / ".alcatrazer"
+        self.addCleanup(self.tmp.cleanup)
+
+    # --- silent (compatible / fresh) cases ---
+
+    def test_silent_when_alcatraz_dir_does_not_exist(self):
+        """Pre-init state: the `.alcatrazer/` directory has not been
+        created yet. Refusing here would block every brand-new project."""
+        self.assertFalse(self.alcatraz_dir.exists())
+        state.require_compatible_workspace(self.alcatraz_dir)
+
+    def test_silent_when_alcatraz_dir_is_empty(self):
+        """Mid-init state: directory exists, no state files written yet."""
+        self.alcatraz_dir.mkdir()
+        state.require_compatible_workspace(self.alcatraz_dir)
+
+    def test_silent_when_state_json_has_current_schema_version(self):
+        """A workspace this alcatrazer just wrote. update_state stamps
+        the current SCHEMA_VERSION, so the gate must accept it."""
+        self.alcatraz_dir.mkdir()
+        state.update_state(self.alcatraz_dir, pinned_branch="feat/X")
+        state.require_compatible_workspace(self.alcatraz_dir)
+
+    # --- state.json schema-version signal ---
+
+    def test_raises_when_state_json_schema_version_is_old(self):
+        """state.json from a v0.1.0 workspace where `alcatrazer stop`
+        or `clear` ran at least once — the file exists with v=1."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "state.json").write_text(
+            json.dumps({"schema_version": 1, "daemon_shutdown": "requested"})
+        )
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.require_compatible_workspace(self.alcatraz_dir)
+
+    # --- legacy side-file signals (one test per artifact) ---
+
+    def test_raises_when_promoted_tips_json_present(self):
+        """v0.1.0 wrote promoted-tips.json as a side file tracking the
+        last-promoted commit per branch. v0.1.1 folds this into
+        state.json as `last_promoted`."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "promoted-tips.json").write_text("{}")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("promoted-tips.json", str(cm.exception))
+
+    def test_raises_when_paused_branches_json_present(self):
+        """v0.1.0 wrote paused-branches.json as a side file. v0.1.1
+        folds this into state.json as `paused`."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "paused-branches.json").write_text("{}")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("paused-branches.json", str(cm.exception))
+
+    def test_raises_when_promote_export_marks_present(self):
+        """v0.1.0's promote.py wrote git-fast-export marks files for
+        incremental export. v0.1.1 uses format-patch/am instead, with
+        no marks. THIS is the signal that catches workspaces v0.1.0
+        ran but never stopped — marks were written every daemon cycle,
+        independent of state.json."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "promote-export-marks").write_text("")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("promote-export-marks", str(cm.exception))
+
+    def test_raises_when_promote_import_marks_present(self):
+        """Paired with promote-export-marks. Either one alone is enough
+        to identify a v0.1.0 workspace."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "promote-import-marks").write_text("")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        self.assertIn("promote-import-marks", str(cm.exception))
+
+    # --- the design-intent test: legacy artifact WITHOUT state.json ---
+
+    def test_raises_on_legacy_marks_even_when_state_json_absent(self):
+        """The scenario the multi-signal gate exists for: v0.1.0 user
+        ran init + start but never stop/clear, so state.json was never
+        created. A schema-version-only gate would let this through; the
+        marks-file signal catches it."""
+        self.alcatraz_dir.mkdir()
+        self.assertFalse((self.alcatraz_dir / "state.json").exists())
+        (self.alcatraz_dir / "promote-export-marks").write_text("")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.require_compatible_workspace(self.alcatraz_dir)
+
+    # --- upgrade message reaches the user in artifact-based refusals too ---
+
+    def test_legacy_artifact_message_includes_upgrade_steps(self):
+        """Whichever signal trips the gate, the user gets the same
+        upgrade procedure. Otherwise an artifact-based refusal would
+        leave the user stranded without recovery instructions."""
+        self.alcatraz_dir.mkdir()
+        (self.alcatraz_dir / "paused-branches.json").write_text("{}")
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.require_compatible_workspace(self.alcatraz_dir)
+        msg = str(cm.exception)
+        self.assertIn("alcatrazer stop", msg)
+        self.assertIn("alcatrazer init", msg)
+        self.assertIn("alcatrazer start", msg)
+        self.assertIn("CHANGELOG", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
