@@ -4138,6 +4138,17 @@ class _CmdStatusTestBase(unittest.TestCase):
         liveness check passes."""
         Path(self.alcatraz_dir, "promotion-daemon.pid").write_text(f"{os.getpid()}\n")
 
+    def _assert_no_jargon(self, out: str) -> None:
+        """Per docs/coding_conventions.md "User-facing strings speak the
+        user's language" — forbidden tool-internal vocabulary must not
+        appear in cmd_status output. The literal log-file path
+        (`.alcatrazer/promotion-daemon.log`) is the one exception: it's a
+        path reference, not jargon, and the user needs the exact filename
+        to actually run `tail -f`. Filter that line before checking."""
+        filtered = "\n".join(line for line in out.splitlines() if "tail -f" not in line).lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, filtered)
+
     def _run_status(self) -> tuple[int, str, str]:
         """Run cmd_status and return (rc, stdout, stderr)."""
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -4191,10 +4202,10 @@ class CmdStatusPausedStateTests(_CmdStatusTestBase):
         self.assertRegex(out, r"Pending commits:\s*1\b")
         # Last sync: never (last_promotion_time absent).
         self.assertIn("never", out.lower())
-        # User-language: forbidden jargon absent.
-        lower = out.lower()
-        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
-            self.assertNotIn(jargon, lower)
+        # User-language: forbidden jargon absent (helper filters the
+        # tail-hint line whose literal `promotion-daemon.log` path is
+        # not jargon).
+        self._assert_no_jargon(out)
 
 
 class CmdStatusHeldStateTests(_CmdStatusTestBase):
@@ -4252,10 +4263,10 @@ class CmdStatusHeldStateTests(_CmdStatusTestBase):
         # normalize whitespace before searching for the command.
         normalized = " ".join(out.split())
         self.assertIn("git checkout feat/X", normalized)
-        # User-language: forbidden jargon absent.
-        lower = out.lower()
-        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
-            self.assertNotIn(jargon, lower)
+        # User-language: forbidden jargon absent (helper filters the
+        # tail-hint line whose literal `promotion-daemon.log` path is
+        # not jargon).
+        self._assert_no_jargon(out)
 
 
 class CmdStatusActiveStateTests(_CmdStatusTestBase):
@@ -4301,9 +4312,9 @@ class CmdStatusActiveStateTests(_CmdStatusTestBase):
         self.assertIn("Last sync", out)
         self.assertRegex(out, r"\d+\s*minute")
         # User-language: forbidden jargon does not appear (case-insensitive).
-        lower = out.lower()
-        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
-            self.assertNotIn(jargon, lower)
+        # Helper filters the tail-hint line whose literal
+        # `promotion-daemon.log` path is not jargon.
+        self._assert_no_jargon(out)
 
 
 class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):

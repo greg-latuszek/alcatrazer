@@ -134,7 +134,7 @@ alcatrazer/
 ├── selftest.py                         <-- bundled security self-tests (phantom UID, etc.)
 ├── state.py                            <-- .alcatrazer/state.json reader + schema-compatibility gate
 ├── schema.py                           <-- loader for schemas.json (schema history, version constants)
-├── status.py                           <-- cmd_status implementation + live log viewer
+├── status.py                           <-- cmd_status implementation
 ├── container/entrypoint.sh             <-- container entrypoint (chown, drop via gosu)
 ├── scripts/                            <-- bash bootstrap (runs before Python exists)
 ├── templates/                          <-- coding-environment.toml + .env.example templates

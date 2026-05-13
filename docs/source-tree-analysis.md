@@ -103,14 +103,10 @@ src/alcatrazer/
 │                                # (atomic write via tmp + os.replace).
 │                                # Currently 1 flag (daemon_shutdown).
 │                                # Seed of future "infocenter" layer.
-├── status.py             (74L)  # Standalone log viewer for the daemon
-│                                # log (tail -f). Renamed from inspect.py
-│                                # in Phase 3 (the old name shadowed
-│                                # stdlib `inspect`, breaking @dataclass
-│                                # any time alcatrazer code ran as a
-│                                # script). Will grow into the `alcatrazer
-│                                # status` command in Phase 5. Run via
-│                                # `python -m alcatrazer.status`.
+├── status.py             (74L)  # Backs the `alcatrazer status` command
+│                                # points users at 
+│                                # `tail -f .alcatrazer/promotion-daemon.log`
+│                                #  for live logs.
 ├── container/
 │   └── entrypoint.sh            # Fixed shell script: root → chown
 │                                # /workspace to phantom UID → exec gosu

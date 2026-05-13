@@ -434,7 +434,7 @@ All Alcatrazer state lives under `<project>/.alcatrazer/` (gitignored). The
 | `agent-identity` | written once, reused | `identity.ensure_identity` | workspace git config, selftest |
 | `uid` | persisted phantom UID | `identity.ensure_phantom_uid` | `DockerPrison.build` |
 | `promotion-daemon.pid` | daemon process lifetime | daemon at startup, removed at shutdown | `daemon_lifecycle._existing_daemon_pid` |
-| `promotion-daemon.log` | persistent, rotated | daemon (`RotatingFileHandler`, 512 KB × 1 backup) | `shutdown_sync_daemon._parse_shutdown_log`, `inspect.tail_follow` |
+| `promotion-daemon.log` | persistent, rotated | daemon (`RotatingFileHandler`, 512 KB × 1 backup) | `shutdown_sync_daemon._parse_shutdown_log`; users via `tail -f` (hint surfaced by `alcatrazer status`) |
 | `paused-branches.json` | conflict state | `promote.save_paused_branches` | daemon polling loop |
 | `promoted-tips.json` | divergence detection | `promote.save_promoted_tips` | `detect_diverged_branches` |
 | `promote-export-marks` | git mark file | `git fast-export --export-marks` | next `fast-export --import-marks` |

@@ -131,8 +131,7 @@ def _run_cycle_mirror(
     Log messages use git's vocabulary and the actual branch names —
     see docs/coding_conventions.md "User-facing strings speak the
     user's language". Sample lines as the user sees them in
-    `.alcatrazer/promotion-daemon.log` (and via
-    `python -m alcatrazer.status`):
+    `.alcatrazer/promotion-daemon.log`:
 
       - PROMOTED with N > 0 and no transition:
             "Applied 3 agent commit(s) to branch 'feat/X'."
