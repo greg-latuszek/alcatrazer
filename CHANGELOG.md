@@ -8,6 +8,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] — 2026-05-13
+
+> ## ⚠️ BREAKING CHANGE
+>
+> **0.1.1 reworks the promotion machinery and is not backwards compatible.** Workspaces created by 0.0.x or 0.1.0 are refused at first contact with a transparent upgrade message; the data layout under `.alcatrazer/` and the `.alcatrazer/config.toml` schema have both shifted (see [Migration](#migration-from-0-0-x--0-1-0) below). The git history and the user-facing `coding-environment.toml` are untouched — you only re-init Alcatrazer's own state.
+
+This is **the release that fixes the promotion-machinery bug from 0.0.4 and 0.1.0.** The default sync path no longer rewrites your outer branch's history; the working tree never drifts out of sync with `HEAD`; conflicts have a legible abort path; agent commits land on the branch you started Alcatrazer from, under your identity, with the file appearing under your cursor at the exact moment the commit lands on the branch.
+
+The rewrite is structural — `git fast-export | git fast-import` (whose semantics never quite fit) is replaced with `git format-patch | git am`, which is the canonical pair for replaying commits between repos. Pair this with a "pin-at-start" rule (the workspace remembers which branch you started on, and replays only to that branch) and the new model is exactly the developer workflow a feature branch already implies: branch off, work, push, open PR. The design rationale and the alternatives considered are written up in [`docs/features/change_promotion_machinery.md`](docs/features/change_promotion_machinery.md).
+
+### Fixed
+
+- **Outer history is no longer rewritten on every promotion cycle.** The format-patch/am path appends commits to your branch as fast-forwards — your pre-Alcatrazer commits remain ancestors of HEAD, by construction. The fast-export/fast-import code path that mis-aligned histories has been removed.
+- **Working tree stays in sync with `HEAD`.** `git am` writes patch hunks, updates the index, and creates the commit as a single atomic step — there's no window where the branch ref says "this file exists" and the file isn't on disk yet (the phantom-deletion bug from 0.0.4).
+- **Apply conflicts no longer corrupt outer.** A failing `git am` triggers `git am --abort`, which restores outer's HEAD and working tree byte-for-byte to their pre-attempt state. The daemon then pauses and surfaces the conflict via `alcatrazer status` until you resolve it.
+- **The agent's identity no longer leaks into outer.** Both author and committer on every promoted commit are the name + email from `.alcatrazer/config.toml`'s `[promotion]` section. The agent's randomly generated throwaway identity stays inside the workspace.
+
+### Added
+
+- **`alcatrazer status` command.** New CLI subcommand reading `.alcatrazer/state.json`: prints a single block showing the started-from branch, the active / on hold / paused state, the pending commit count, and the time of the last successful replay, plus a one-line hint to live-tail the daemon log via `tail -f .alcatrazer/promotion-daemon.log`.
+- **Pin-at-start binding.** Alcatrazer remembers the branch you started it on (`pinned_branch` field in `state.json`). Agent commits replay to that branch only; switching branches in the outer repo puts the daemon on hold until you return.
+- **`alcatrazer clear` is now terminal.** Drains pending agent commits via a final sync, then wipes the inner workspace (from inside the container, as the agent UID — no `sudo` required, no host UID exposed to the agent) and removes the pin. The next `alcatrazer start` snapshots fresh from whichever branch you're currently on. Identity + daemon settings in `.alcatrazer/config.toml` carry over so you don't re-run `alcatrazer init`.
+- **`alcatrazer clear --discard-pending`** opts in to abandoning unsynced agent commits when you're off the start branch. Default behaviour blocks (with a one-line recovery hint) when commits would otherwise be lost.
+- **Schema-history registry at `src/alcatrazer/schemas.json`.** Single source of truth for the three declared schemas (`state.json`, `.alcatrazer/config.toml`, `coding-environment.toml`); each entry records the release that shipped it plus the fields added / removed / changed. Read at runtime by `state.py` for the upgrade-refusal message; the rule "schema changes must land in `schemas.json` + CHANGELOG before release" is codified in [`docs/coding_conventions.md`](docs/coding_conventions.md).
+- **Schema-compatibility gate** at every CLI entry point (`start`, `status`, `clear`, daemon startup): refuses workspaces written by an older Alcatrazer with a five-step upgrade procedure. Fires on any of (a) `state.json` `schema_version < 2`, (b) `.alcatrazer/config.toml` missing `schema_version` or carrying obsolete `[promotion-daemon].mode` / `.branches` keys, or (c) presence of 0.0.x side files (`paused-branches.json`, `promoted-tips.json`, `promote-export-marks`, `promote-import-marks`).
+- **Five new fields in `state.json`** (`schema_version` bumped 1 → 2): `inner_root` (workspace's initial-commit SHA, format-patch range boundary), `pinned_branch` (the branch the workspace is bound to), `last_promoted` (SHA of the last successfully applied commit), `last_promotion_time` (ISO 8601 UTC; backs the "Last sync" line in `status`), `paused` (apply-conflict marker; cleared automatically on the next successful cycle).
+- **`schema_version` field in `.alcatrazer/config.toml`** (bumped to 2). 0.0.x had no version field at all; 0.1.1 introduces it alongside the removals listed below.
+
+### Changed
+
+- **Promotion replay engine: `git fast-export | git fast-import` → `git format-patch | git am`.** Working-tree atomicity, abort-on-conflict, and history-append-only semantics now come from the engine itself rather than being papered over by application logic. Identity rewrite happens by substituting the `From:` line in the mbox stream in-flight before `am` reads it (one regex, two parameters, no marks files).
+- **Snapshot source: hardcoded default branch → outer's currently-checked-out branch.** Agents start their inner repo from the tree of the branch you ran `alcatrazer start` on. The old "always `main`" rule was rooted in the now-retired mirror-mode promotion path; pin-at-start makes per-branch snapshots the natural model.
+- **Daemon log vocabulary speaks git, not project jargon.** Log lines name the actual branch ("Held: your repository is on branch 'main' but Alcatrazer was started on 'feat/X'..."), drop internal terms like *pinned* / *promoted* / *outer* / *inner* / *mirror mode*. Codified in [`docs/coding_conventions.md`](docs/coding_conventions.md) "User-facing strings speak the user's language".
+- **Daemon transitions logged once per state change, not once per poll.** The daemon tracks `last_logged_status` so quiet steady-state ticks no longer flood the log.
+- **`.alcatrazer/state.json` is no longer lazily created on first shutdown.** It's stamped during the first `alcatrazer start` snapshot (the snapshot writes `inner_root` + `pinned_branch`). The 0.0.x lazy-on-stop model meant a user who only ran `init` + `start` had no `state.json` at all; refusal-on-incompat had no version field to key on. The new model creates the file at workspace creation time and refuses any pre-2 version it finds afterwards.
+
+### Removed
+
+- **`mirror` / `alcatraz-tree` modes.** The new pin-at-start model subsumes both: every commit lands on the branch you started from, under your identity, no namespace gymnastics. `[promotion-daemon].mode` is removed from `.alcatrazer/config.toml`.
+- **`[promotion-daemon].branches` config.** Single source ref (inner `main`) → single target branch (your starting branch). No filter list to maintain.
+- **Side files retired** (their fields fold into `state.json`): `promoted-tips.json` → `last_promoted`, `paused-branches.json` → `paused`. The `promote-export-marks` / `promote-import-marks` files are gone with the export/import engine itself.
+- **`conflict/resolve-<branch>-<timestamp>` synthetic branches.** The mirror-mode workaround for outer-side commits diverging from agent work is no longer needed under the format-patch/am model — `am --abort` keeps outer's state pristine, and the daemon resumes as soon as the conflict source (a local outer file at the same path the agent's commit adds) is resolved.
+
+### Migration from 0.0.x / 0.1.0
+
+Workspaces created by Alcatrazer 0.0.x or 0.1.0 will be refused at first contact with a verbatim upgrade message. The five-step procedure:
+
+```
+1. If a daemon is running: alcatrazer stop      (using your previous version)
+2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
+3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
+4. alcatrazer init                              (using v0.1.1)
+5. alcatrazer start
+```
+
+Step 2 needs `sudo` because the inner workspace's files are owned by the container's agent UID, which won't match your host user UID. From 0.1.1 onwards, `alcatrazer clear` does this teardown itself (no `sudo` needed) — the manual `sudo rm` is a one-time procedure for users coming from a pre-0.1.1 install.
+
+Your `coding-environment.toml` is preserved untouched — `alcatrazer init` will detect it and offer to reuse it as-is. Your git history is untouched. Only Alcatrazer's own state under `.alcatrazer/` and the inner workspace directory get rebuilt.
+
+---
+
 ## [0.1.0] — 2026-05-09
 
 > ## ⚠️ DO NOT USE THIS RELEASE FOR REAL WORK
