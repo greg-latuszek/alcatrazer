@@ -142,19 +142,19 @@ class SchemaVersionTests(unittest.TestCase):
 
 
 class ValidateSchemaVersionTests(unittest.TestCase):
-    """Phase 7 schema gate (change_promotion_machinery.md L996-1014,
-    "Breaking-change posture" L451-484): state.json from a pre-v0.1.1
-    workspace must be refused with a transparent four-step upgrade
-    message rather than silently mis-read — the v0.1.0 layout had
-    scattered files (promoted-tips.json, paused-branches.json), no
-    `pinned_branch` / `inner_root` / `last_promoted` / `paused` in
-    state.json, and a different daemon contract.
+    """Phase 7 schema gate (change_promotion_machinery.md
+    "Breaking-change posture"): state.json from a pre-v0.1.1 workspace
+    must be refused with a transparent upgrade message rather than
+    silently mis-read — the v0.1.0 layout had scattered files
+    (promoted-tips.json, paused-branches.json), no `pinned_branch` /
+    `inner_root` / `last_promoted` / `paused` in state.json, and a
+    different daemon contract.
 
     `load_state` stays best-effort (returns {} on missing/corrupt so
     fresh workspaces still bootstrap cleanly). The version check is a
     separate, mandatory step the refusal callers each invoke; the
     shutdown-intent reader stays best-effort because it's
-    failure-tolerant by design (daemon.py:357)."""
+    failure-tolerant by design."""
 
     def _msg_for(self, data: dict) -> str:
         with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
@@ -196,7 +196,7 @@ class ValidateSchemaVersionTests(unittest.TestCase):
         with self.assertRaises(state.UnsupportedStateSchemaVersionError):
             state.validate_schema_version({"daemon_shutdown": "requested"})
 
-    # --- message content (per change_promotion_machinery.md L466-478) ---
+    # --- message content (per change_promotion_machinery.md "Breaking-change posture") ---
 
     def test_message_names_the_offending_schema_version(self):
         """User needs to know which version produced this layout so the
@@ -208,13 +208,15 @@ class ValidateSchemaVersionTests(unittest.TestCase):
         is wipe-and-reinit, not migrate-in-place."""
         self.assertIn("not backwards compatible", self._msg_for({"schema_version": 1}).lower())
 
-    def test_message_includes_four_upgrade_steps(self):
-        """Per the spec block: stop daemon, rm -rf, init, start. All
-        four cited explicitly so the user can copy-paste without
-        re-reading the design doc."""
+    def test_message_includes_five_upgrade_steps(self):
+        """Per the spec block: stop daemon, sudo-remove the inner
+        workspace (root-owned container output requires sudo),
+        rm -rf .alcatrazer/, init, start. All five cited explicitly so
+        the user can copy-paste without re-reading the design doc."""
         msg = self._msg_for({"schema_version": 1})
         self.assertIn("alcatrazer stop", msg)
-        self.assertIn("rm -rf", msg)
+        self.assertIn("sudo rm -rf", msg)
+        self.assertIn("workspace-dir", msg)
         self.assertIn(".alcatrazer", msg)
         self.assertIn("coding-environment.toml", msg)
         self.assertIn("alcatrazer init", msg)
