@@ -316,3 +316,92 @@ which exception applies:
 
 `if __name__ == "__main__":` blocks are NOT an exception —
 move their `import sys` etc. to the file's import block.
+
+---
+
+## Schema changes must land in `schemas.json` + CHANGELOG before release
+
+Alcatrazer declares two versioned schemas:
+
+- **`.alcatrazer/state.json`** — internal cooperation file, written by
+  the daemon and the CLI.
+- **`coding-environment.toml`** — user-facing build/runtime description,
+  written by the wizard or hand-edited.
+
+The history of both schemas lives at `src/alcatrazer/schemas.json` —
+the single source of truth, language-neutral, machine-diffable. Any
+code change that adds, removes, or renames a field in either schema
+must ship as **two coordinated edits in the same PR**:
+
+1. A new revision entry appended to the right array in
+   `src/alcatrazer/schemas.json` (`state_schema` or `coding_env_schema`),
+   with `version`, `release`, `summary`, and the field-level
+   `fields_added` / `fields_removed` / `fields_changed` lists.
+2. A `### Changed` / `### Added` / `### Removed` line in `CHANGELOG.md`
+   under the upcoming release, naming the bumped schema explicitly so a
+   reader searching CHANGELOG for "schema" finds it.
+
+### Why
+
+The two artifacts serve different audiences but must stay in lockstep:
+
+- `schemas.json` is the **runtime** source. The upgrade-refusal helper
+  (`state.validate_schema_version`) reads it to render the message a
+  user sees when their `.alcatrazer/` was written by an older version
+  — release name and summary both come from `schemas.json`.
+- `CHANGELOG.md` is the **release-notes** source — what a user reads
+  before upgrading. A schema bump without a CHANGELOG mention surfaces
+  to the user as a refusal-at-first-run with no preparation.
+
+JSON over Python for the source-of-truth: schema history is data, not
+code, and is consumed by tools that should not parse Python AST —
+pre-release CI checks that diff `schemas.json` between the previous
+tag and `HEAD`, future non-Python clients (a rewrite to another
+language, an Alcatrazer HTTP/MCP API). The Python loader at
+`src/alcatrazer/schema.py` is one such consumer; it is *not* the
+source.
+
+### How to apply
+
+When a PR adds, removes, or renames fields in either schema:
+
+1. **Append an entry** to the appropriate array in
+   `src/alcatrazer/schemas.json`:
+   - `version` — previous entry's version + 1.
+   - `release` — the upcoming release tag (e.g. `"v0.1.2"`); if the
+     release number isn't decided yet, use the working name and adjust
+     at release time.
+   - `summary` — one sentence in prose, suitable for the upgrade-refusal
+     message (the user reads this verbatim).
+   - `fields_added` / `fields_removed` / `fields_changed` — exact field
+     names. TOML keys use dotted form, e.g.
+     `"[promotion-daemon].mode"`.
+2. **Add a CHANGELOG entry** under the matching release section.
+   Reference the schema name explicitly.
+
+A cross-check test in `src/alcatrazer/tests/test_schema.py` catches a
+forgotten `schemas.json` entry: `state.SCHEMA_VERSION` and
+`start.CODING_ENV_SCHEMA_VERSION` are derived from `schemas.json`, so
+any code that introduces a schema-version bump without a matching JSON
+entry fails to import. The CHANGELOG side is human-checked at PR
+review until automated CI enforcement ships.
+
+### Pre-release checklist
+
+Before tagging a release, run:
+
+```bash
+git diff <previous-tag> HEAD -- src/alcatrazer/schemas.json
+```
+
+If the diff is non-empty, confirm `CHANGELOG.md` carries a
+matching `### Changed` / `### Added` / `### Removed` entry for each
+affected schema under the upcoming release section.
+
+### Scope
+
+Applies to the two declared schemas: `.alcatrazer/state.json` and
+`coding-environment.toml`. Other internal data structures (the
+daemon's PID file shape, marks files when they existed, log line
+formats) are not versioned in `schemas.json` and don't participate
+in this rule.
