@@ -1,6 +1,6 @@
 # Re-implementing promotion: replay agent commits onto your working branch
 
-## Status: Design — not implemented yet. Surfaced from manual testing of Phase 1 (more_languages_support) before merging the branch.
+## Status: Complete — shipped in v0.1.1 (2026-05-14). All nine phases landed. Implementation Notes at the bottom record the in-flight discoveries that diverged from the original design (Phase 7 retarget, Phase 9 chown-back-via-side-container).
 
 ## Origin
 
@@ -1382,3 +1382,43 @@ workspace contents via a new Alcatraz port method
 The wipe runs in a one-shot side container (built from this
 Alcatraz's own image, `--entrypoint find`, `-u agent`) — no agent
 process is involved anywhere, so Principle 2 trivially holds.
+
+**Phase 9 chown-back: required, and safe in a side container.**
+Right after Step 9.3 GREEN shipped, a fresh-install manual test
+showed the next `alcatrazer start` failing on `git init` after a
+`clear` cycle:
+
+```
+subprocess.CalledProcessError: Command '['git', 'init', '/tmp/
+.../.codelab-d13c']' returned non-zero exit status 1
+```
+
+Root cause: the side-container wipe (`find /workspace -mindepth 1
+-delete`) emptied the bind-mount's contents but left the mount-
+point dir itself owned by the phantom UID — the original
+container's entrypoint had chowned `/workspace` to agent on first
+start, and Step 9.3 deliberately did not chown back (per
+Principle 2). `git init` on the next first-run runs from the host
+shell as the host user, who cannot create `.git/` inside a
+foreign-UID-owned dir.
+
+The fix introduced a second one-shot side container right after
+the wipe: `docker run --rm -u 0:0 --entrypoint chown
+<host_uid>:<host_gid> /workspace`. This retags the empty mount-
+point dir back to host ownership so the next `git init` works.
+
+The chown-back was originally rejected during Phase 9 design as
+violating Principle 2, but that rejection was specifically about
+chowning inside the ORIGINAL running container where an active
+agent could observe the ownership shift. A one-shot side container
+has no agent process inside — Principle 2 gates ownership shifts
+the agent can observe, not ownership shifts performed in
+disposable contexts with no agent. The distinction is recorded as
+a memory entry (`feedback_stealth_scope_is_observed_processes`)
+so the rule doesn't have to be re-derived next time someone
+proposes a chown.
+
+The two-step side-container approach also pairs cleanly with the
+"side container vs exec-after-resume" choice already made: the
+chown is just a second `docker run --rm` with different flags, no
+new infrastructure.
