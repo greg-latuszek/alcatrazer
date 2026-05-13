@@ -449,20 +449,46 @@ Fields added:
 
 ## Breaking-change posture
 
-v0.1.1 changes both the `coding-environment.toml` schema (removes
-`[promotion-daemon].mode` and `[promotion-daemon].branches`) and the
-`.alcatrazer/state.json` layout. A clean automatic migration would
-require: detecting old layouts, asking permission, possibly draining
-an old daemon — too much code for a feature that has zero external
-users today (pre-1.0.0).
+v0.1.1 changes the layouts of two of Alcatrazer's three declared
+schemas (single source of truth: `src/alcatrazer/schemas.json`,
+governed by `docs/coding_conventions.md` "Schema changes must land in
+schemas.json + CHANGELOG before release"):
+
+- **`.alcatrazer/state.json`** — adds `inner_root`, `pinned_branch`,
+  `last_promoted`, `last_promotion_time`, `paused` fields (folding in
+  what v0.1.0 split across the side files `promoted-tips.json` and
+  `paused-branches.json`). Bumps `schema_version: 1 → 2`.
+- **`.alcatrazer/config.toml`** — removes `[promotion-daemon].mode` and
+  `[promotion-daemon].branches`; adds a `schema_version` field (v0.1.0
+  didn't have one). The unversioned v0.1.0 shape is recorded as v=1;
+  v0.1.1 stamps `schema_version = 2`.
+- **`coding-environment.toml`** — unchanged. Existing files keep
+  `schema_version = 1` and are accepted by v0.1.1 verbatim.
+
+A clean automatic migration would require: detecting old layouts,
+asking permission, possibly draining an old daemon — too much code
+for a feature that has zero external users today (pre-1.0.0).
 
 Decision: **no automatic migration.** Instead:
 
-- Bump `coding-environment.toml`'s `schema_version` field to `2`.
-- Bump `state.SCHEMA_VERSION` to `2`.
-- `alcatrazer init` / `start` / `status` detect a `schema_version`
-  mismatch (or absent field, or legacy `[promotion-daemon].mode`
-  key) and refuse with a transparent message:
+- Append v=2 revision entries to `state` and `alcatrazer_config` in
+  `schemas.json` (this is the bump — `state.SCHEMA_VERSION` and the
+  new `start.ALCATRAZER_CONFIG_SCHEMA_VERSION` derive from these).
+- `alcatrazer init` / `start` / `status` / `clear` invoke a single
+  `state.require_compatible_workspace(alcatraz_dir)` gate that refuses
+  on **any** of these signals (multi-signal because v0.1.0's
+  `state.json` was lazily created — `init`+`start` alone never wrote
+  it, so the schema-version check alone misses those workspaces):
+
+  - `state.json` exists with `schema_version < 2`.
+  - `.alcatrazer/config.toml` exists but lacks `schema_version`, OR
+    has it `< 2`, OR still contains `[promotion-daemon].mode` /
+    `[promotion-daemon].branches`.
+  - Any legacy artifact present: `paused-branches.json`,
+    `promoted-tips.json`, `promote-export-marks`,
+    `promote-import-marks`.
+
+  Refusal renders this transparent message:
 
   ```
   alcatrazer: this directory was set up by an older version (schema 1).
@@ -470,15 +496,17 @@ Decision: **no automatic migration.** Instead:
 
   To upgrade:
     1. If a daemon is running: alcatrazer stop      (using your previous version)
-    2. rm -rf .alcatrazer/ coding-environment.toml
-    3. alcatrazer init                              (using v0.1.1)
-    4. alcatrazer start
+    2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
+    3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
+    4. alcatrazer init                              (using v0.1.1)
+    5. alcatrazer start
 
   See CHANGELOG for what changed and why.
   ```
 
 - CHANGELOG entry calls out the breaking change explicitly and
-  re-states the four steps.
+  re-states the upgrade steps (root-owned inner workspace files
+  require `sudo` to remove — that's why step 2 is separate).
 
 Pre-1.0.0, this is the right tradeoff: explicit user action over
 silent migration code that nobody benefits from.
@@ -592,22 +620,39 @@ silent migration code that nobody benefits from.
   - `cmd_clear`: implements the four-case logic above, including
     `--discard-pending` flag.
 
-- `src/alcatrazer/config.py` (or wherever the schema lives)
-  - Removes `[promotion-daemon].mode` and `[promotion-daemon].branches`
-    from the schema definition.
-  - Bumps `coding-environment.toml`'s `schema_version` to `2`.
-  - `init` / `start` / `status` refuse on `schema_version < 2` (or
-    absent, or with legacy keys present) with the upgrade message
-    described in "Breaking-change posture".
+- `src/alcatrazer/templates/alcatrazer-config.toml` +
+  `src/alcatrazer/start.py` (config writer + reader)
+  - Adds a `schema_version = 2` top-level line to the template.
+    v0.1.0's `.alcatrazer/config.toml` had no `schema_version` field;
+    v0.1.1 introduces it alongside the removals.
+  - Defines `start.ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version`
+    (derived from `schemas.json` per the source-of-truth convention).
+  - `init` / `start` / `status` / `clear` refuse on legacy config
+    signals (no `schema_version`, OR `< 2`, OR legacy
+    `[promotion-daemon].mode` / `.branches` keys still present) with
+    the upgrade message described in "Breaking-change posture".
+
+- `src/alcatrazer/schemas.json`
+  - Appends v=2 entries to `state` and `alcatrazer_config` histories.
+    No edits to `coding_env` (no field changes in v0.1.1).
 
 - `src/alcatrazer/state.py`
-  - Bumps `SCHEMA_VERSION` to `2`.
-  - No API changes. The new fields (`inner_root`, `pinned_branch`,
-    `last_promoted`, `paused`) merge in via the existing
-    `update_state()` semantics.
+  - `SCHEMA_VERSION` is already derived from
+    `schema.STATE.current_version`; appending the v=2 entry to
+    `schemas.json` is the bump.
+  - No `update_state()` API changes. The new fields (`inner_root`,
+    `pinned_branch`, `last_promoted`, `last_promotion_time`, `paused`)
+    merge in via the existing semantics.
+  - Adds `validate_schema_version(data: dict) -> None` (pure
+    schema-version validator on a state.json dict) and
+    `require_compatible_workspace(alcatraz_dir: Path) -> None`
+    (workspace-level gate composing the validator, the config-schema
+    check, and the legacy-artifact check). Both raise typed
+    `UnsupportedStateSchemaVersionError` with the upgrade message
+    sourced from `schemas.json` (release + summary fields).
   - `load_state()` callers (in `start.py`, `daemon.py`,
-    `cmd_status`, `cmd_clear`) refuse on `schema_version < 2` the
-    same way `coding-environment.toml` does.
+    `cmd_status`, `cmd_clear`) call `require_compatible_workspace`
+    once at entry before reading state.
 
 - Tests
   - `tests/test_promote.py`
@@ -995,22 +1040,57 @@ branches. Verify the full test suite still green.
 
 ### Phase 7: Schema bump and refusal
 
-**Step 7.1** `[RED]` — Test `state.load_state()` callers refuse when
-`schema_version < 2` is detected (or absent). Expected: clear error
-message naming the four cleanup steps.
+Phase 7 refuses v0.1.0 workspaces via a single
+`state.require_compatible_workspace(alcatraz_dir)` gate that fires on
+any of three signal classes (`state.json` schema, `.alcatrazer/config.toml`
+schema or legacy keys, legacy artifact files). The multi-signal approach
+catches workspaces that v0.1.0 never wrote `state.json` for. Each refusal
+caller (`daemon._run_cycle_mirror`, `cmd_start`, `cmd_status`, `cmd_clear`)
+invokes the gate once before reading state.
 
-**Step 7.2** `[GREEN]` — Bump `state.SCHEMA_VERSION` to `2`. Add
-helper that checks loaded state's version and raises with the
-upgrade message. Wire into `daemon.py`, `cmd_start`, `cmd_status`,
-`cmd_clear` startup paths.
+The phase also lands the infrastructure that makes future schema bumps
+trivial — `src/alcatrazer/schemas.json` (single source of truth),
+`src/alcatrazer/schema.py` (loader), and the
+`docs/coding_conventions.md` rule that ties schema edits to CHANGELOG
+mentions. That infrastructure is landed in pre-7.1 commits
+(`c0acf58`, `3c2ce09`, `8985dfa`).
 
-**Step 7.3** `[RED]` — Test `coding-environment.toml`
-`schema_version = 2` detection: parser refuses on `< 2` (or absent)
-with the full upgrade message.
+**Step 7.1** `[RED]` (committed as `f5c8001`) — Unit tests for
+`state.validate_schema_version(data: dict)`, the pure schema-version
+validator: silent on empty / current; raises
+`UnsupportedStateSchemaVersionError` on old / future / stamp-absent
+with the four-step upgrade message.
 
-**Step 7.4** `[GREEN]` — Bump config `schema_version` to `2`. Add
-refusal at `init` / `start` / `status` entry points reading the
-config.
+**Step 7.2** `[RED]` — Tests for
+`state.require_compatible_workspace(alcatraz_dir)`, the workspace-level
+gate. One test per signal so failure attribution stays clean:
+- `state.json` with `schema_version < 2` → raise.
+- `state.json` missing → silent (fresh workspace).
+- legacy artifact present (`paused-branches.json`,
+  `promoted-tips.json`, `promote-export-marks`,
+  `promote-import-marks`) → raise, message names which artifact tripped.
+
+**Step 7.3** `[GREEN]` — Implement `UnsupportedStateSchemaVersionError`
++ `validate_schema_version` + `require_compatible_workspace`. Append v=2
+entry to `state` history in `schemas.json` (the bump —
+`state.SCHEMA_VERSION` follows via derivation). Wire
+`require_compatible_workspace` into `daemon._run_cycle_mirror`,
+`cmd_start`, `cmd_status`, `cmd_clear`.
+
+**Step 7.4** `[RED]` — Tests for `.alcatrazer/config.toml` legacy
+refusal as a new signal in `require_compatible_workspace`:
+- Config file lacks `schema_version` → raise (any v0.1.0 config trips this).
+- `schema_version < 2` → raise.
+- `[promotion-daemon].mode` or `[promotion-daemon].branches` key still
+  present → raise (defence-in-depth: catches a hand-edited config that
+  was bumped to v=2 but kept the obsolete keys).
+
+**Step 7.5** `[GREEN]` — Add `schema_version = 2` line to
+`templates/alcatrazer-config.toml`. Append v=2 entry to
+`alcatrazer_config` history in `schemas.json`. Define
+`start.ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version`
+(derived). Extend `require_compatible_workspace` with the config-side
+checks.
 
 ### Phase 8: Documentation
 
@@ -1031,5 +1111,34 @@ resolved during implementation (mirroring the
 
 ### Implementation Notes
 
-*(To be filled in during implementation — decisions made on the fly,
-surprises encountered, deviations from this plan.)*
+**Phase 7 retarget (v0.1.1 implementation).** While preparing
+Step 7.1's RED tests, two facts surfaced that the original Phase 7
+prose got wrong:
+
+- The doc attributed the `[promotion-daemon].mode` /
+  `[promotion-daemon].branches` removal to `coding-environment.toml`,
+  but those keys actually live in `.alcatrazer/config.toml` (verified
+  against the installed v0.1.0 source). `coding-environment.toml` has
+  no field changes between v0.1.0 and v0.1.1.
+- `.alcatrazer/config.toml` had no `schema_version` field in v0.1.0,
+  so a schema-version gate against it can't refuse legacy configs
+  directly — v0.1.1 introduces the field alongside the removal.
+- `.alcatrazer/state.json` was lazily created in v0.1.0 (only on the
+  first `alcatrazer stop` / `clear`). A user who only ran `init` +
+  `start` has no `state.json`, so a `state.json`-version gate alone
+  misses those workspaces.
+
+The revised plan keeps Step 7.1 unchanged (the pure schema-version
+validator), adds a workspace-level `require_compatible_workspace`
+gate that fires on multiple signals (state.json schema, config.toml
+schema or legacy keys, presence of v0.1.0 side files), and retargets
+the second half of the phase to `.alcatrazer/config.toml` instead of
+`coding-environment.toml`. The `coding_env` schema gets no v=2 entry
+in `schemas.json` for this release.
+
+The new infrastructure landed before Step 7.1 RED: schema-history
+JSON (`src/alcatrazer/schemas.json`), Python loader
+(`src/alcatrazer/schema.py`), the
+`docs/coding_conventions.md` rule "Schema changes must land in
+schemas.json + CHANGELOG before release", and a cross-check test
+suite that holds version constants and JSON entries in lockstep.
