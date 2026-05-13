@@ -260,6 +260,14 @@ def main():
     toml_file = alcatraz_dir / "config.toml"
 
     # --- Startup checks ---
+    # Refuse pre-v0.1.1 workspaces before allocating any further state.
+    # See docs/features/change_promotion_machinery.md "Breaking-change
+    # posture". Failure message is the user-actionable upgrade procedure.
+    try:
+        state.require_compatible_workspace(alcatraz_dir)
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     workspace_path = resolve_workspace(project_dir, alcatraz_dir)
     check_pid(pid_file)
     write_pid(pid_file)

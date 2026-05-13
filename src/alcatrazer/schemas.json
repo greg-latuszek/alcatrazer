@@ -15,6 +15,20 @@
           ],
           "fields_removed": [],
           "fields_changed": []
+        },
+        {
+          "version": 2,
+          "release": "v0.1.1",
+          "summary": "Promotion rework: unified pin + replay + paused fields directly in state.json, retiring the side files promoted-tips.json and paused-branches.json.",
+          "fields_added": [
+            "inner_root",
+            "pinned_branch",
+            "last_promoted",
+            "last_promotion_time",
+            "paused"
+          ],
+          "fields_removed": [],
+          "fields_changed": []
         }
       ]
     },

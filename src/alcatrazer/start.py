@@ -193,6 +193,18 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         )
         return 1
 
+    # Phase 7 (change_promotion_machinery.md, Step 7.3): refuse
+    # pre-v0.1.1 workspaces with the upgrade message before any state
+    # read happens. The gate fires on state.json schema_version<2 OR
+    # presence of legacy v0.1.0 side files (paused-branches.json,
+    # promoted-tips.json, marks files) — multi-signal because v0.1.0's
+    # state.json was lazily created and may not exist at all.
+    try:
+        state.require_compatible_workspace(project_dir / ".alcatrazer")
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     # Phase 1 (change_promotion_machinery.md, Step 1.8): promotion is
     # bound to a starting branch (pinned_branch in state.json). Reject
     # upfront when the outer repo is on detached HEAD — snapshot would
@@ -1346,6 +1358,15 @@ def cmd_clear(
             "No alcatrazer setup in this repository — run `alcatrazer init` first.",
             file=sys.stderr,
         )
+        return 1
+
+    # Phase 7 (change_promotion_machinery.md, Step 7.3): refuse
+    # pre-v0.1.1 workspaces before touching docker or daemon. The user
+    # needs the upgrade message, not a half-completed teardown.
+    try:
+        state.require_compatible_workspace(alcatraz_dir)
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
     if prison is None:

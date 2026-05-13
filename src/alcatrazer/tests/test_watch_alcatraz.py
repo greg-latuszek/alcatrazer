@@ -547,7 +547,7 @@ class TestDaemonPromotion(unittest.TestCase):
         the happy path: CLI stopped docker first, final sync is safe by
         the ordering contract."""
         Path(self.alcatraz_dir, "state.json").write_text(
-            '{"schema_version": 1, "daemon_shutdown": "requested"}\n'
+            f'{{"schema_version": {state.SCHEMA_VERSION}, "daemon_shutdown": "requested"}}\n'
         )
         proc = self._start_daemon()
         try:
@@ -579,7 +579,7 @@ class TestDaemonPromotion(unittest.TestCase):
         the daemon is killed without a new CLI-initiated shutdown cycle
         — still counts as unexpected."""
         Path(self.alcatraz_dir, "state.json").write_text(
-            '{"schema_version": 1, "daemon_shutdown": "done"}\n'
+            f'{{"schema_version": {state.SCHEMA_VERSION}, "daemon_shutdown": "done"}}\n'
         )
         proc = self._start_daemon()
         try:

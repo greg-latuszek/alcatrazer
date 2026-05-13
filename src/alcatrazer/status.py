@@ -159,6 +159,16 @@ def cmd_status(project_dir: Path) -> int:
     alcatraz_dir = project_dir / ".alcatrazer"
     pid_file = alcatraz_dir / "promotion-daemon.pid"
 
+    # Phase 7 (change_promotion_machinery.md, Step 7.3): refuse
+    # pre-v0.1.1 workspaces before reading state. Surfaces the upgrade
+    # message and returns 1 so a script invoking `alcatrazer status`
+    # can detect the incompat via exit code.
+    try:
+        state.require_compatible_workspace(alcatraz_dir)
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     # 1. Daemon alive?
     pid = _read_daemon_pid(pid_file)
     if pid is None:
