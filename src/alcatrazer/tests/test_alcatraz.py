@@ -70,5 +70,27 @@ class DockerPrisonSkeletonTests(unittest.TestCase):
         self.assertEqual(self.prison.project_dir, Path("/tmp"))
 
 
+class WipeWorkspaceContentsAbcTests(unittest.TestCase):
+    """Phase 9 Step 9.1 — `Alcatraz.wipe_workspace_contents` is a backend-
+    neutral port method that removes everything inside the workspace bind-
+    mount from inside the container (as the agent UID, no chown, no
+    sudo). cmd_clear calls it to make `clear` terminal: drop the inner
+    repo + working files so the next `start` is a fresh first-run with
+    a new pin.
+
+    Backend-neutrality matters: the call site (cmd_clear) doesn't know
+    whether the backend is Docker, Podman, a future Sysbox, or a VM-
+    based prison. The port declares the operation; each backend
+    implements it however its container model allows.
+
+    See docs/features/change_promotion_machinery.md Phase 9 for the
+    rationale (wipe-from-inside vs chown-back: stealth) and the
+    ordering rules (resume → wipe → stop → remove) cmd_clear uses
+    around it."""
+
+    def test_alcatraz_declares_wipe_workspace_contents_as_abstract(self):
+        self.assertIn("wipe_workspace_contents", Alcatraz.__abstractmethods__)
+
+
 if __name__ == "__main__":
     unittest.main()

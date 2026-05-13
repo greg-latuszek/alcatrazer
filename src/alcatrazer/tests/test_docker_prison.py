@@ -25,7 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from alcatrazer import docker_prison
-from alcatrazer.alcatraz import PrisonBuildError, PrisonStartError
+from alcatrazer.alcatraz import PrisonBuildError, PrisonError, PrisonStartError
 from alcatrazer.docker_prison import DockerPrison
 
 
@@ -1419,6 +1419,61 @@ class DockerPrisonImageMatchesTests(unittest.TestCase):
         self.assertIn("--format", cmd)
         format_idx = cmd.index("--format")
         self.assertIn("alcatrazer.config_hash", cmd[format_idx + 1])
+
+
+class DockerPrisonWipeWorkspaceContentsTests(unittest.TestCase):
+    """Phase 9 Step 9.1 — DockerPrison.wipe_workspace_contents removes
+    every file inside /workspace from inside the running container, as
+    the agent UID. Implementation delegates to `self.exec(...)` with
+    `find -mindepth 1 -delete`:
+
+    - `find` (vs `rm -rf /workspace/*`) handles dotfiles + dir-recursion
+      uniformly without a shell glob.
+    - `-mindepth 1` keeps the mount point /workspace itself in place so
+      the next `start` can re-snapshot into the same bind-mount dir.
+    - `-delete` is portable across the find variants the dev-base image
+      ships (GNU findutils in Ubuntu 24.04).
+
+    Stealth: removal runs as the agent UID against agent-owned files
+    (the container chowned /workspace at startup). No chown back to
+    host, no host UID exposed to the agent. See
+    docs/features/change_promotion_machinery.md Phase 9
+    "wipe-from-inside vs chown-back" for the rationale."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_delegates_to_exec_with_find_mindepth_one_delete(self):
+        """Verify the exact command. Locking the argv keeps future
+        backends (Podman, Sysbox, VM) from drifting away from the
+        contract — every Alcatraz wipe is `find /workspace -mindepth 1
+        -delete` in spirit, even if the backend wraps it differently."""
+        with patch.object(DockerPrison, "exec", return_value=0) as mock_exec:
+            DockerPrison(self.project_dir).wipe_workspace_contents()
+        mock_exec.assert_called_once_with(["find", "/workspace", "-mindepth", "1", "-delete"])
+
+    def test_returns_none_on_success(self):
+        """Matches the contract on `start()` / `stop()` / `remove()` —
+        state-mutating ops return None and raise on failure (instead of
+        returning an exit code like `exec` does). Caller doesn't have to
+        branch on a return value."""
+        with patch.object(DockerPrison, "exec", return_value=0):
+            result = DockerPrison(self.project_dir).wipe_workspace_contents()
+        self.assertIsNone(result)
+
+    def test_raises_prison_error_when_exec_returns_non_zero(self):
+        """If the wipe fails (container died mid-call, /workspace
+        permissions inverted somehow, find missing from the image),
+        raise so cmd_clear's teardown surfaces the error rather than
+        silently proceeding to remove the container with stale files
+        still on disk."""
+        with (
+            patch.object(DockerPrison, "exec", return_value=1),
+            self.assertRaises(PrisonError),
+        ):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
 
 
 if __name__ == "__main__":
