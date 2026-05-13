@@ -129,11 +129,101 @@ class UpdateStateTests(unittest.TestCase):
 
 
 class SchemaVersionTests(unittest.TestCase):
-    """Schema version is stamped by every write — readers can migrate
-    forward when the schema changes (post-v1, not today)."""
+    """Schema version is stamped by every write — readers refuse files
+    written by older alcatrazers rather than silently mis-reading them
+    (see change_promotion_machinery.md "Breaking-change posture")."""
 
-    def test_schema_version_is_one_for_this_release(self):
-        self.assertEqual(state.SCHEMA_VERSION, 1)
+    def test_schema_version_is_two_for_this_release(self):
+        """v0.1.1 reworked promotion (mirror via format-patch/am,
+        unified state fields replacing promoted-tips/paused-branches
+        side files). Old state.json layouts are not auto-migrated;
+        the bump is what the gate keys off."""
+        self.assertEqual(state.SCHEMA_VERSION, 2)
+
+
+class ValidateSchemaVersionTests(unittest.TestCase):
+    """Phase 7 schema gate (change_promotion_machinery.md L996-1014,
+    "Breaking-change posture" L451-484): state.json from a pre-v0.1.1
+    workspace must be refused with a transparent four-step upgrade
+    message rather than silently mis-read — the v0.1.0 layout had
+    scattered files (promoted-tips.json, paused-branches.json), no
+    `pinned_branch` / `inner_root` / `last_promoted` / `paused` in
+    state.json, and a different daemon contract.
+
+    `load_state` stays best-effort (returns {} on missing/corrupt so
+    fresh workspaces still bootstrap cleanly). The version check is a
+    separate, mandatory step the refusal callers each invoke; the
+    shutdown-intent reader stays best-effort because it's
+    failure-tolerant by design (daemon.py:357)."""
+
+    def _msg_for(self, data: dict) -> str:
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError) as cm:
+            state.validate_schema_version(data)
+        return str(cm.exception)
+
+    def test_silent_when_data_empty(self):
+        """Empty dict = state.json missing (fresh workspace) OR
+        unreadable. Either way: nothing incompatible to flag — refusing
+        here would block `alcatrazer init` on every brand-new project."""
+        state.validate_schema_version({})  # must not raise
+
+    def test_silent_when_schema_version_matches_current(self):
+        """A state.json stamped by this same alcatrazer passes through.
+        Reads schema_version from the constant so the test remains valid
+        if SCHEMA_VERSION bumps again later."""
+        state.validate_schema_version(
+            {"schema_version": state.SCHEMA_VERSION, "pinned_branch": "feat/X"}
+        )  # must not raise
+
+    def test_raises_when_schema_version_is_pre_v0_1_1(self):
+        """v0.1.0 wrote schema_version=1. Whole layout has shifted —
+        reading the old file would leave pinned_branch / inner_root /
+        last_promoted unset and silently degrade promotion."""
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.validate_schema_version({"schema_version": 1, "daemon_shutdown": "requested"})
+
+    def test_raises_when_schema_version_is_future(self):
+        """Forward-incompat: a future alcatrazer's state.json shouldn't
+        be silently mis-read by this version either."""
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.validate_schema_version({"schema_version": state.SCHEMA_VERSION + 1})
+
+    def test_raises_when_schema_version_field_absent_but_data_non_empty(self):
+        """Every legitimate writer stamps schema_version (update_state
+        does it unconditionally). A populated dict missing the field is
+        hand-crafted or from an unreleased intermediate — refuse rather
+        than guess."""
+        with self.assertRaises(state.UnsupportedStateSchemaVersionError):
+            state.validate_schema_version({"daemon_shutdown": "requested"})
+
+    # --- message content (per change_promotion_machinery.md L466-478) ---
+
+    def test_message_names_the_offending_schema_version(self):
+        """User needs to know which version produced this layout so the
+        match between 'schema 1' here and CHANGELOG entries is obvious."""
+        self.assertIn("schema 1", self._msg_for({"schema_version": 1}))
+
+    def test_message_announces_breaking_change(self):
+        """Tell the user this isn't a recoverable bug — the upgrade path
+        is wipe-and-reinit, not migrate-in-place."""
+        self.assertIn("not backwards compatible", self._msg_for({"schema_version": 1}).lower())
+
+    def test_message_includes_four_upgrade_steps(self):
+        """Per the spec block: stop daemon, rm -rf, init, start. All
+        four cited explicitly so the user can copy-paste without
+        re-reading the design doc."""
+        msg = self._msg_for({"schema_version": 1})
+        self.assertIn("alcatrazer stop", msg)
+        self.assertIn("rm -rf", msg)
+        self.assertIn(".alcatrazer", msg)
+        self.assertIn("coding-environment.toml", msg)
+        self.assertIn("alcatrazer init", msg)
+        self.assertIn("alcatrazer start", msg)
+
+    def test_message_points_to_changelog(self):
+        """CHANGELOG carries the 'what changed and why' that motivates
+        the upgrade — the message must direct the user there."""
+        self.assertIn("CHANGELOG", self._msg_for({"schema_version": 1}))
 
 
 if __name__ == "__main__":
