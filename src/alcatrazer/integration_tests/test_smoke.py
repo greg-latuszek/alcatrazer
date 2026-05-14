@@ -367,8 +367,7 @@ class TestAlcatrazSmokeLifecycle(unittest.TestCase):
       4. `cmd_start` (resume) — container resumed, daemon relaunched
          (daemon process doesn't survive stop; writable layer does).
       5. `cmd_clear` — daemon finalizes, docker rm'd, Alcatraz
-         workspace STILL present on host (the design guarantee from
-         install_method.md "Sync daemon — background promotion").
+         workspace STILL present on host but fully WIPED OUT.
     """
 
     @classmethod
@@ -540,7 +539,9 @@ class TestAlcatrazSmokeLifecycle(unittest.TestCase):
         self.assertTrue(self._daemon_alive(), "Sync daemon should be running again after resume")
 
         # Phase 5 — clear. Daemon finalizes, container is removed
-        # entirely, Alcatraz workspace STILL present on host.
+        # entirely, Alcatraz workspace present on host but WIPED
+        # (workspace no more needed since all commits promoted into outer repo)
+        # (workspace wiped and chowned to host UID:GID to allow for fresh workspace snapshot).
         rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
         self.assertEqual(rc, 0, "cmd_clear should succeed")
         self.assertTrue(
@@ -549,15 +550,19 @@ class TestAlcatrazSmokeLifecycle(unittest.TestCase):
         )
         self.assertFalse(self.prison.exists(), "Alcatraz should be gone after clear")
         # THE design guarantee: clear throws the runtime away, keeps
-        # the work. See install_method.md "Sync daemon — background
-        # promotion".
+        # the work (but only inside outer repo new commits). Inner repo is gone.
         self.assertTrue(
             self.workspace.is_dir(),
-            "Alcatraz workspace MUST survive clear (host-side preservation invariant)",
+            "Alcatraz workspace MUST survive clear",
         )
-        self.assertTrue(
+        self.assertFalse(
             (self.workspace / ".git").is_dir(),
-            "Inner git repo MUST survive clear",
+            "Inner git repo MUST BE GONE after clear",
+        )
+        self.assertEqual(
+            list(self.workspace.iterdir()),
+            [],
+            "after clear, inner workspace contents must be wiped",
         )
 
 
