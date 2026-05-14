@@ -53,6 +53,14 @@ dev = [
 
 # --- Tool configuration ---
 
+[tool.uv]
+required-version = ">=0.11.5"
+# "exclude-newer" sets a dependency cooldown for packages to mitigate potential supply-chain attacks. #
+# The setting can be overridden for a package on a one-off basis by running the following command:    #
+#   uv lock --upgrade-package $PACKAGE --exclude-newer-package $PACKAGE="0 days"                      #
+# see: https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns
+exclude-newer = "7 days"
+
 [tool.ruff]
 line-length = 100
 
