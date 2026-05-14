@@ -1326,7 +1326,7 @@ def cmd_clear(
     prison: Alcatraz | None = None,
     discard_pending: bool = False,
 ) -> int:
-    """`alcatrazer clear` — throw away the Alcatraz runtime, preserve
+    """`alcatrazer clear` — throw away the Alcatraz runtime, wipe
     the workspace.
 
     Removes the container so its writable overlay layer and any caches
@@ -1334,38 +1334,42 @@ def cmd_clear(
     - the image (so `alcatrazer start` doesn't need to rebuild),
     - `.alcatrazer/` config,
     - the Alcatraz workspace (`project_dir/<workspace-name>/`) on the
-      host filesystem — this is where agent work lives, and it's safe
-      to keep because commits that synced already live in your
-      repository too, and any unsynced commits are preserved here for
-      next-start recovery,
+      host filesystem — but only mounting point. Content is wiped out.
+      It's safe because commits are synced already into your
+      repository, or "clear" will wait till unsynced commits land there,
     - user repo-root files (`coding-environment.toml`, `.env`,
       `.env.example`).
 
-    Four-case pre-check (Phase 5 Step 5.10, spec L315-343):
+    Four-case pre-check decision table:
 
-    | Outer state | Pending | Behavior                                |
-    | ----------- | ------- | --------------------------------------- |
-    | on pin      |  0      | proceed silently                        |
-    | on pin      |  >0     | acknowledge → drain via final sync      |
-    | off pin     |  0      | proceed silently                        |
-    | off pin     |  >0     | BLOCK unless --discard-pending          |
+    | Pending | Outer state | Paused | Behavior                                |
+    | ------- | ----------- | ------ | --------------------------------------- |
+    |  0      |             |        | proceed silently                        |
+    |  >0     | on pin      |  no    | acknowledge → drain via final sync      |
+    |  >0     | on pin      |  yes   | BLOCK unless --discard-pending          |
+    |  >0     | off pin     |        | BLOCK unless --discard-pending          |
 
     Default-deny on the last row prevents `git checkout main → clear`
     muscle-memory from silently dropping N hours of agent work. The
     --discard-pending flag is the explicit opt-in (e.g. abandoning a
     failed experiment).
+    Same for pre-last row: still at correct branch but we have files conflict
+    that blocks commits syncing.
 
     Tear-down ordering when proceeding (same as cmd_stop — race-free):
     1. `docker stop` — agents frozen.
     2. `shutdown_sync_daemon` — daemon runs final sync against the
-       frozen inner repo, exits. Any commits it can't sync stay in
-       the workspace via the paused-branches machinery.
+       frozen inner repo, exits.
     3. `docker rm` — container gone.
+    4. wipe workspace and chown it to outer UID:GID.
+    5. rm state.json (daemon work state) - drops the pin,
+       so next `alcatrazer start` is ready for a fresh snapshot
 
     Idempotent: missing Alcatraz is reported as "nothing to clear" and
-    returns 0. Final sync conflict / failure / timeout still proceeds
-    with docker rm (unsynced commits live in the preserved workspace)
-    but returns non-zero so the user is aware.
+    returns 0. Final sync conflict / failure / timeout breaks "clear"
+    and returns non-zero so the user is informed instead of silently
+    losing pending commits.
+    User can resolve problem or resign via --discard-pending.
     """
     alcatraz_dir = project_dir / ".alcatrazer"
     if not alcatraz_dir.exists():
