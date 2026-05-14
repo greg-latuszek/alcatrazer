@@ -142,6 +142,41 @@ class TestSwitchBranchFlow(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0, f"Inner commit failed: {r.stderr}")
 
+    def _commit_in_project_repo(self, msg: str, filename: str) -> None:
+        r = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"cd {self.project_dir} && echo {msg!r} > {filename} && "
+                f"git add {filename} && git commit -qm {msg!r}",
+            ]
+        )
+        self.assertEqual(r.returncode, 0, f"Outer commit failed: {r.stderr}")
+
+    def _cmd_in_workspace(self, cmd: str) -> str:
+        r = self.prison.query(
+            [
+                "bash",
+                "-c",
+                cmd,
+            ]
+        )
+        self.assertEqual(r.returncode, 0, f"Inner command failed: {r.stderr}")
+        return r.stdout
+
+    def _cmd_in_project_repo(self, cmd: str) -> str:
+        r = subprocess.run(
+            [
+                "bash",
+                "-c",
+                cmd,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, f"Outer command failed: {r.stderr}")
+        return str(r.stdout)
+
     def _wait_for_outer_subject(self, msg: str, timeout: float = 15.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -156,6 +191,8 @@ class TestSwitchBranchFlow(unittest.TestCase):
     def test_clear_then_start_repins_to_current_branch(self):
         # Phase 1 — branch off main, then start. Workspace pins to feat/X.
         self._git("checkout", "-b", "feat/X")
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.project_dir}")
+        print(f"Project has following content before first snapshot: {cmd_output}")
         rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
         self.assertEqual(rc, 0, "first cmd_start should succeed")
         self.assertEqual(
@@ -164,6 +201,12 @@ class TestSwitchBranchFlow(unittest.TestCase):
             "after first start, state.json.pinned_branch should match outer's checked-out branch",
         )
         self.assertTrue((self.workspace / ".git").is_dir())
+        self.assertFalse(
+            (self.project_dir / "agent.txt").exists(),
+            "outer working tree should not have file planned for agent creation",
+        )
+        cmd_output = self._cmd_in_workspace("ls -la /workspace")
+        print(f"Alcatraz has following content after first start: {cmd_output}")
 
         # Phase 2 — agent makes a commit; daemon syncs it back to feat/X.
         # Realistic: clear's job is to drain pending commits before teardown,
@@ -173,14 +216,34 @@ class TestSwitchBranchFlow(unittest.TestCase):
             self._wait_for_outer_subject("switch-flow: agent commit on feat/X"),
             "daemon must promote the agent commit to outer feat/X before clear",
         )
+        self.assertTrue(
+            (self.workspace / "agent.txt").exists(),
+            "inner working tree should have agent created file",
+        )
+        self.assertTrue(
+            (self.project_dir / "agent.txt").exists(),
+            "outer working tree should have agent created file",
+        )
+        cmd_output = self._cmd_in_workspace("ls -la /workspace")
+        print(f"Alcatraz has following content after first agent creation: {cmd_output}")
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.project_dir}")
+        print(f"Project has following content after first sync: {cmd_output}")
 
         # Phase 3 — clear. The terminal teardown: drain (already drained,
         # but cmd_clear still runs final-sync), wipe inner workspace, unpin.
         rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
-        self.assertEqual(rc, 0, "cmd_clear should succeed (Phase 9 contract)")
+        self.assertEqual(rc, 0, "cmd_clear should succeed")
         self.assertFalse(
             (self.alcatraz_dir / "state.json").exists(),
             "after clear, state.json must be gone so the next start gets a fresh pin",
+        )
+        self.assertFalse(
+            (self.workspace / "agent.txt").exists(),
+            "inner working tree should be gone after clear",
+        )
+        self.assertTrue(
+            (self.project_dir / "agent.txt").exists(),
+            "outer working tree should STILL have agent created file",
         )
         # Workspace dir survives (bind-mount target) but is empty — the
         # wipe ran from inside the container, agent UID, no chown to host.
@@ -190,27 +253,54 @@ class TestSwitchBranchFlow(unittest.TestCase):
             [],
             "after clear, inner workspace contents must be wiped (incl. .git)",
         )
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.workspace}")
+        print(f"Alcatraz has following content after close: {cmd_output}")
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.project_dir}")
+        print(f"Project has following content after close: {cmd_output}")
 
         # Phase 4 — switch to a different branch and start again. The
         # snapshot should re-pin to other-branch, NOT inherit feat/X.
+        self._git("checkout", "main")
+        self.assertFalse(
+            (self.project_dir / "agent.txt").exists(),
+            "outer working tree should have no agent created file (we are back on main/)",
+        )
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.project_dir}")
+        print(f"Project has following content at main branch: {cmd_output}")
         self._git("checkout", "-b", "other-branch")
-        rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
+        self._commit_in_project_repo("switch-flow: user commit on other-branch", "user.txt")
+        self.assertTrue(
+            (self.project_dir / "user.txt").exists(),
+            "outer working tree should have user created file",
+        )
+        cmd_output = self._cmd_in_project_repo(f"ls -la {self.project_dir}")
+        print(f"Project has following content before second start: {cmd_output}")
+        rc = start_mod.cmd_start(self.project_dir, prison=self.prison)  # snapshot time
         self.assertEqual(rc, 0, "second cmd_start should succeed")
         self.assertEqual(
             self._pinned_branch(),
             "other-branch",
             "after clear + checkout + start, state.json.pinned_branch must "
-            "track the NEW current branch — the whole point of Phase 9. "
+            "track the NEW current branch - "
             f"Got: {self._pinned_branch()!r}",
         )
 
-        # The new workspace's inner git is fresh — its Initial commit's
-        # SHA is the inner_root in state.json (Phase 1 contract), and
-        # the agent.txt from the previous workspace is gone.
+        # The new workspace's inner git is fresh snapshot — no git history, just initial commit,
+        # but it should have all the files from the project repo when snapshot was done.
+        # user.txt created post-branch-switch & pre-snapshot should be there.
+        self.assertTrue(
+            (self.workspace / "user.txt").exists(),
+            "pre-snapshot created project files "
+            "must go into the fresh post-clear workspace",
+        )
+        # the agent.txt from the previous workspace is gone due to switching branch.
         self.assertFalse(
             (self.workspace / "agent.txt").exists(),
-            "previous workspace's agent files must not survive into the fresh post-clear workspace",
+            "previous workspace's agent files must not survive "
+            "into the fresh post-clear workspace",
         )
+        cmd_output = self._cmd_in_workspace("ls -la /workspace")
+        print(f"Alcatraz has following content after second start: {cmd_output}")
 
 
 if __name__ == "__main__":
