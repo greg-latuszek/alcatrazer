@@ -151,8 +151,8 @@ def _run_cycle_mirror(
             to resume."
       - entering PAUSED:
             "Paused: your working tree on branch 'feat/X' overlaps
-            with an agent commit. Commit or stash your changes and
-            Alcatrazer will resume."
+            with an agent commit. Find conflicting file, remove it or rename
+            and Alcatrazer will resume."
       - HELD -> HELD / PAUSED -> PAUSED / steady-state PROMOTED with
         N == 0: silent (transition-only).
 
@@ -210,10 +210,9 @@ def _run_cycle_mirror(
                 )
     elif outcome is PO.PAUSED and last_logged_status is not PO.PAUSED:
         log.warning(
-            "Paused: your working tree on branch %r overlaps with an "
-            "agent commit. Commit or stash your changes and Alcatrazer "
-            "will resume.",
-            pinned_branch,
+            f"Paused: your working tree on branch '{pinned_branch}' overlaps with an "
+            "agent commit. Find conflicting file, remove it or rename "
+            "and Alcatrazer will resume."
         )
 
     return outcome

@@ -166,9 +166,9 @@ def cmd_status(project_dir: Path) -> int:
     if paused:
         marker = "⚠ paused"
         explanation = (
-            f"Your working tree on '{pinned_branch}' overlaps with an "
-            f"agent commit. Commit or stash your changes and Alcatrazer "
-            f"will resume."
+            f"Your working tree on branch '{pinned_branch}' overlaps with an "
+            "agent commit. Find conflicting file, remove it or rename "
+            "and Alcatrazer will resume."
         )
     else:
         pin = promote.check_pin(project_dir, pinned_branch)
