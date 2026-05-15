@@ -1372,15 +1372,15 @@ def cmd_clear(
     User can resolve problem or resign via --discard-pending.
     """
     alcatraz_dir = project_dir / ".alcatrazer"
-    if not alcatraz_dir.exists():
+    workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+    if (not alcatraz_dir.exists()) or (not workspace_name):
         print(
             "No alcatrazer setup in this repository — run `alcatrazer init` first.",
             file=sys.stderr,
         )
         return 1
 
-    # Phase 7 (change_promotion_machinery.md, Step 7.3): refuse
-    # pre-v0.1.1 workspaces before touching docker or daemon. The user
+    # refuse pre-v0.1.1 workspaces before touching docker or daemon. The user
     # needs the upgrade message, not a half-completed teardown.
     try:
         state.require_compatible_workspace(alcatraz_dir)
@@ -1394,48 +1394,31 @@ def cmd_clear(
     # Pre-check: read state, classify pin status, count pending. This
     # decides whether we block or proceed BEFORE touching docker.
     state_data = state.load_state(alcatraz_dir)
+    pending = count_pending_commits(project_dir / workspace_name, state_data)
+    anything_to_promote = pending > 0
+
     pinned_branch = state_data.get("pinned_branch")
-    last_promoted = state_data.get("last_promoted")
+    is_paused = state_data.get("paused")
+    is_at_pin_branch = is_outer_at_pinned_branch(project_dir, state_data)
+    promotion_blocked = is_paused or (not is_at_pin_branch)
 
-    pending = 0
-    if pinned_branch and last_promoted:
-        pending = count_pending_commits(project_dir / workspace_name, state_data)
-        pin = promote.check_pin(project_dir, pinned_branch)
-
-        # Off-pin + pending + no override → block.
-        if pin is not promote.PinStatus.OK and pending > 0 and not discard_pending:
-            current = snapshot.current_branch(str(project_dir)) or "<unknown>"
-            plural = "" if pending == 1 else "s"
-            print(
-                f"alcatrazer: cannot clear — {pending} agent commit{plural} "
-                f"haven't been synced to branch '{pinned_branch}' yet, "
-                f"but your repository is on '{current}'.",
-                file=sys.stderr,
-            )
-            print(file=sys.stderr)
-            print(
-                f"Alcatrazer was started on branch '{pinned_branch}' and "
-                f"can only sync commits back to that branch.",
-                file=sys.stderr,
-            )
-            print(file=sys.stderr)
-            print(
-                f"  To keep the agent work:    git checkout {pinned_branch} && alcatrazer clear",
-                file=sys.stderr,
-            )
-            print(
-                "  To discard pending work:   alcatrazer clear --discard-pending",
-                file=sys.stderr,
-            )
-            return 1
-
+    # Off-pin/paused + pending + no override → block.
+    if anything_to_promote and (not discard_pending) and promotion_blocked:
+        explain_action_abandon(
+            action_name="clear",
+            project_dir=project_dir,
+            promotion_state=state_data,
+            pending=pending,
+            is_at_pin_branch=is_at_pin_branch
+        )
+        return 1
+    elif anything_to_promote and (not discard_pending) and (not promotion_blocked):
         # On-pin + pending → acknowledge so the user sees the drain.
-        if pin is promote.PinStatus.OK and pending > 0:
-            plural = "" if pending == 1 else "s"
-            print(
-                f"Syncing {pending} pending agent commit{plural} to "
-                f"branch '{pinned_branch}' before clearing…"
-            )
+        plural = "" if pending == 1 else "s"
+        print(
+            f"Syncing {pending} pending agent commit{plural} to "
+            f"branch '{pinned_branch}' before clearing…"
+        )
 
     # Step 1 — docker down first.
     if prison.is_running():
@@ -1477,6 +1460,69 @@ def cmd_clear(
         return 1
     return 0
 
+
+def is_outer_at_pinned_branch(
+    project_dir: Path,
+    promotion_state: dict,
+) -> bool:
+    pinned_branch = promotion_state.get("pinned_branch")
+    if not pinned_branch:  # TODO: shouldn't it be set after alcatrazer start?
+        return False
+    pin_status = promote.check_pin(project_dir, pinned_branch)
+    is_at_pin_branch = pin_status is promote.PinStatus.OK
+    return is_at_pin_branch
+
+
+def explain_action_abandon(
+    action_name: str,
+    project_dir: Path,
+    promotion_state: dict,
+    pending: int,
+    is_at_pin_branch: bool,
+) -> None:
+    is_paused = promotion_state.get("paused")
+    current = snapshot.current_branch(str(project_dir)) or "<unknown>"
+    pinned_branch = promotion_state.get("pinned_branch")
+    plural = "" if pending == 1 else "s"
+    if is_paused:
+        print (
+            f"alcatrazer: cannot {action_name} — your working tree on branch '{pinned_branch}' "
+            f"overlaps with an agent commit{plural}. Find conflicting file, remove it or rename "
+            "and Alcatrazer will resume syncing commits back to that branch.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            "  To keep the agent work:   resolve files conflict && alcatrazer clear",
+            file=sys.stderr,
+        )
+    elif not is_at_pin_branch:
+        print(
+            f"alcatrazer: cannot {action_name} — {pending} agent commit{plural} "
+            f"haven't been synced to branch '{pinned_branch}' yet, "
+            f"but your repository is on '{current}'.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            f"Alcatrazer was started on branch '{pinned_branch}' and "
+            f"can only sync commits back to that branch.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            f"  To keep the agent work:   git checkout {pinned_branch} && alcatrazer clear",
+            file=sys.stderr,
+        )
+    if is_paused or (not is_at_pin_branch):
+        print(
+            "  To discard pending work:   alcatrazer clear --discard-pending",
+            file=sys.stderr,
+        )
+        print(
+            "  To check pending work:     alcatrazer status",
+            file=sys.stderr,
+        )
 
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer stop` — freeze the Alcatraz + shut down the sync daemon.
