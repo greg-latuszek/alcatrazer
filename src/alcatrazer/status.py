@@ -47,24 +47,22 @@ def _read_daemon_pid(pid_file: Path) -> int | None:
         return pid
 
 
-def count_pending_commits(workspace: Path, last_promoted: str | None) -> int:
-    """Count commits in workspace's main branch that are NOT yet
-    reachable from `last_promoted`. Used by `alcatrazer status` to
-    render the "Pending commits: N" line, and by `cmd_clear` to
-    decide whether the four-case block applies.
+def count_pending_commits(workspace: Path, promotion_state: dict | None) -> int:
+    """Count commits in workspace's main branch that are NOT yet promoted.
+    Used by `alcatrazer status` to render the "Pending commits: N" line,
+    and by `cmd_clear` to decide whether there are remaining commits.
 
     Falls back to 0 when:
       - the workspace doesn't exist or isn't a git repo
-      - last_promoted is None (nothing to compare against — caller
-        should pass inner_root if they have nothing better)
       - git rev-list errors for any reason
     """
-    if last_promoted is None:
-        return 0
     if not (workspace / ".git").exists():
         return 0
+    inner_root = promotion_state.get("inner_root")
+    last_promoted = promotion_state.get("last_promoted")
+    count_start_commit = last_promoted or inner_root
     result = subprocess.run(
-        ["git", "-C", str(workspace), "rev-list", "--count", f"{last_promoted}..HEAD"],
+        ["git", "-C", str(workspace), "rev-list", "--count", f"{count_start_commit}..HEAD"],
         capture_output=True,
         text=True,
     )
@@ -201,7 +199,7 @@ def cmd_status(project_dir: Path) -> int:
     workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
     pending = 0
     if workspace_name:
-        pending = count_pending_commits(project_dir / workspace_name, last_promoted)
+        pending = count_pending_commits(project_dir / workspace_name, state_data)
 
     # 5. Last sync as relative time.
     last_sync = _format_relative_time(last_promotion_time)

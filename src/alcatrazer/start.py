@@ -1399,9 +1399,7 @@ def cmd_clear(
 
     pending = 0
     if pinned_branch and last_promoted:
-        workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
-        if workspace_name:
-            pending = count_pending_commits(project_dir / workspace_name, last_promoted)
+        pending = count_pending_commits(project_dir / workspace_name, state_data)
         pin = promote.check_pin(project_dir, pinned_branch)
 
         # Off-pin + pending + no override → block.
