@@ -20,7 +20,6 @@ import contextlib
 import os
 import re
 import signal
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -112,11 +111,19 @@ def launch_sync_daemon(
             was_already_running=True,
         )
 
-    # Spawn detached — the daemon outlives the CLI process.
-    # start_new_session=True puts the daemon in its own process group so
-    # terminal signals to the CLI (e.g. Ctrl+C while `alcatrazer start`
-    # is still printing) don't propagate to the daemon.
-    subprocess.Popen(
+    # Spawn detached — the daemon outlives the CLI process. We use
+    # os.posix_spawn (not subprocess.Popen) deliberately: Popen leaves a
+    # child-tracking object behind, and because the daemon is long-lived
+    # we never reap it, so its __del__ emits a spurious "subprocess is
+    # still running" ResourceWarning when the GC collects it. posix_spawn
+    # returns a bare pid with no such object. The real pid we report comes
+    # from the daemon's own PID file (read below), so we discard this one.
+    # setpgroup=0 puts the daemon in its own process group so terminal
+    # signals to the CLI (e.g. Ctrl+C while `alcatrazer start` is still
+    # printing) don't propagate to the daemon. file_actions points its
+    # stdio at /dev/null inside the child (no parent fds leak).
+    os.posix_spawn(
+        sys.executable,
         [
             sys.executable,
             "-m",
@@ -124,10 +131,13 @@ def launch_sync_daemon(
             "--project-dir",
             str(project_dir),
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
+        os.environ,
+        file_actions=[
+            (os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0),
+            (os.POSIX_SPAWN_OPEN, 1, os.devnull, os.O_WRONLY, 0),
+            (os.POSIX_SPAWN_OPEN, 2, os.devnull, os.O_WRONLY, 0),
+        ],
+        setpgroup=0,
     )
 
     # Wait for the daemon to signal readiness by writing its PID file.
