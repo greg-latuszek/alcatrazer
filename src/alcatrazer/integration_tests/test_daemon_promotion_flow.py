@@ -26,6 +26,31 @@ import unittest
 from alcatrazer.integration_tests.test_smoke import _docker_available
 
 
+# ── Baseline: a quiet outer repo ───────────────────────────────────────
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestBaselinePromotion(unittest.TestCase):
+    """The simplest happy path — outer left untouched, an agent commit lands
+    on the pinned branch. The control the held / paused / collaboration cases
+    below are contrasted against."""
+
+    def test_the_daemon_lands_an_agent_commit_when_user_makes_no_commit_in_outer_repo(self):
+        """Given outer on `feat/X`, alcatrazer start (pins feat/X), and the
+        outer repo left untouched (the user makes no commit and no edit); When
+        an agent commits a new file inside the workspace; Then the daemon
+        promotes it onto feat/X as a fast-forward — the file appears in outer's
+        working tree, feat/X advances by exactly one commit authored as the
+        user, and `git status` is clean. Nothing in outer competes with the
+        patch.
+
+        Baseline (not strictly a gap): test_smoke.py's full_lifecycle already
+        covers this end-to-end; kept here as the control case for this file's
+        scenario matrix, so the held / paused / collaboration variants read as
+        deviations from a named baseline."""
+        self.fail("not yet implemented — see docstring")
+
+
 # ── Held state and auto-resume (off-pin / deleted / detached) ──────────
 
 
