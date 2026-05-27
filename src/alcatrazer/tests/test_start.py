@@ -4431,6 +4431,93 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
             self.assertNotIn(jargon, lower)
 
 
+class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
+    """`alcatrazer clear` MUST also block on a working-tree conflict
+    (state.paused set) — even when the outer repo is ON the pinned
+    branch. The original clear-abandon logic only blocked off-pin; the
+    refactor added the paused check, and this test pins that down.
+
+    Discriminating from CmdClearBlocksOffPinPendingTests: here outer is
+    on `feat/X` (== pinned), so check_pin is OK. The ONLY reason to
+    block is the unresolved conflict. Without the `is_paused` branch in
+    cmd_clear this proceeds to teardown and silently drops the conflict.
+
+    Required behavior:
+      - rc != 0
+      - prison.stop / prison.remove NOT called (no docker damage)
+      - shutdown_sync_daemon NOT called (no daemon reap)
+      - message explains the conflict in git-rm/rename terms (the
+        resolution is removing/renaming the conflicting file, not
+        stashing — see project_promotion_conflict_semantics) and offers
+        the `--discard-pending` override
+      - user-language vocabulary only.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    def _run_clear(self, prison):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_blocks_when_paused_with_pending_commits(self):
+        # Outer ON the pinned branch — check_pin is OK, so off-pin is
+        # NOT the reason. The conflict is at the apply layer (paused).
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(2)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+            paused={"reason": "git am failed (exit 128): patch does not apply"},
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        rc, out, err = self._run_clear(prison=prison)
+
+        # Non-zero exit; no destructive action taken.
+        self.assertNotEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        self.mock_shutdown.assert_not_called()
+
+        # Accept either stream so we don't bind to a specific one.
+        message = out + err
+        # Conflict explanation in git-rm/rename terms (not "stash").
+        self.assertIn("working tree", message.lower())
+        self.assertRegex(message, r"remove it or rename")
+        # Names the branch the work belongs to.
+        self.assertIn("'feat/X'", message)
+        # The discard override is offered.
+        self.assertIn("--discard-pending", message)
+        # Paused takes precedence over the off-pin advice — since outer
+        # is on the pin, the "git checkout <branch>" recovery line for
+        # the off-pin case must NOT appear.
+        self.assertNotIn("git checkout feat/X", " ".join(message.split()))
+        # User-language: forbidden jargon absent.
+        lower = message.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
 class CmdClearDiscardPendingTests(_CmdStatusTestBase):
     """Phase 5 Step 5.8 (change_promotion_machinery.md L960-961):
     `alcatrazer clear --discard-pending` is the explicit override
