@@ -1409,7 +1409,7 @@ def cmd_clear(
             project_dir=project_dir,
             promotion_state=state_data,
             pending=pending,
-            is_at_pin_branch=is_at_pin_branch
+            is_at_pin_branch=is_at_pin_branch,
         )
         return 1
     elif anything_to_promote and (not discard_pending) and (not promotion_blocked):
@@ -1485,7 +1485,7 @@ def explain_action_abandon(
     pinned_branch = promotion_state.get("pinned_branch")
     plural = "" if pending == 1 else "s"
     if is_paused:
-        print (
+        print(
             f"alcatrazer: cannot {action_name} — your working tree on branch '{pinned_branch}' "
             f"overlaps with an agent commit{plural}. Find conflicting file, remove it or rename "
             "and Alcatrazer will resume syncing commits back to that branch.",
@@ -1523,6 +1523,7 @@ def explain_action_abandon(
             "  To check pending work:     alcatrazer status",
             file=sys.stderr,
         )
+
 
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
     """`alcatrazer stop` — freeze the Alcatraz + shut down the sync daemon.

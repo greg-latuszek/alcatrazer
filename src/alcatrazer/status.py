@@ -155,7 +155,6 @@ def cmd_status(project_dir: Path) -> int:
     # 2. Read state (single load) — Phase 5 spec, no new state files.
     state_data = state.load_state(alcatraz_dir)
     pinned_branch = state_data.get("pinned_branch", "<unknown>")
-    last_promoted = state_data.get("last_promoted")
     last_promotion_time = state_data.get("last_promotion_time")
     paused = state_data.get("paused")
 

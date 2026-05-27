@@ -290,14 +290,12 @@ class TestSwitchBranchFlow(unittest.TestCase):
         # user.txt created post-branch-switch & pre-snapshot should be there.
         self.assertTrue(
             (self.workspace / "user.txt").exists(),
-            "pre-snapshot created project files "
-            "must go into the fresh post-clear workspace",
+            "pre-snapshot created project files must go into the fresh post-clear workspace",
         )
         # the agent.txt from the previous workspace is gone due to switching branch.
         self.assertFalse(
             (self.workspace / "agent.txt").exists(),
-            "previous workspace's agent files must not survive "
-            "into the fresh post-clear workspace",
+            "previous workspace's agent files must not survive into the fresh post-clear workspace",
         )
         cmd_output = self._cmd_in_workspace("ls -la /workspace")
         print(f"Alcatraz has following content after second start: {cmd_output}")
