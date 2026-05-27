@@ -4453,8 +4453,51 @@ class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
       - user-language vocabulary only.
     """
 
+    PINNED_BRANCH = "feat/X"
+
     def setUp(self):
         super().setUp()
+        self._stub_daemon_lifecycle()
+
+    def test_blocks_when_paused_even_though_on_pinned_branch(self):
+        self._given_paused_conflict_while_on_pinned_branch(pending_commits=2)
+        running_alcatraz = self._a_running_alcatraz()
+
+        exit_code, message = self._run_clear(running_alcatraz)
+
+        self._assert_clear_was_refused(exit_code)
+        self._assert_no_teardown_happened(running_alcatraz)
+        self._assert_message_guides_conflict_resolution(message)
+
+    # --- Arrange ------------------------------------------------------
+
+    def _given_paused_conflict_while_on_pinned_branch(self, pending_commits: int) -> None:
+        """The one scenario this class exists for: the outer repo sits ON
+        its pinned branch (so check_pin is OK — off-pin is NOT a reason to
+        block), the workspace holds `pending_commits` unsynced agent
+        commits, and promotion is paused on a working-tree conflict. That
+        conflict is therefore the only thing that can stop `clear`."""
+        self._outer_on(self.PINNED_BRANCH)
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(pending_commits)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch=self.PINNED_BRANCH,
+            inner_root=inner_root,
+            last_promoted=inner_root,  # nothing synced yet → all commits pending
+            paused={"reason": "git am failed (exit 128): patch does not apply"},
+        )
+
+    def _a_running_alcatraz(self) -> Mock:
+        alcatraz = Mock(spec=Alcatraz)
+        alcatraz.exists.return_value = True
+        alcatraz.is_running.return_value = True
+        return alcatraz
+
+    def _stub_daemon_lifecycle(self) -> None:
+        """cmd_clear calls these unconditionally; a refused clear must
+        reach neither, so we stub them and assert "not called" later."""
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -4466,56 +4509,43 @@ class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
 
-    def _run_clear(self, prison):
+    # --- Act ----------------------------------------------------------
+
+    def _run_clear(self, alcatraz: Mock) -> tuple[int, str]:
+        """Run `alcatrazer clear`; return its exit code and everything it
+        told the user. stdout and stderr are merged because the test
+        asserts on what the user sees, not which stream carried it."""
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            rc = start.cmd_clear(self.project_dir, prison=prison)
-        return rc, stdout.getvalue(), stderr.getvalue()
+            exit_code = start.cmd_clear(self.project_dir, prison=alcatraz)
+        return exit_code, stdout.getvalue() + stderr.getvalue()
 
-    def test_blocks_when_paused_with_pending_commits(self):
-        # Outer ON the pinned branch — check_pin is OK, so off-pin is
-        # NOT the reason. The conflict is at the apply layer (paused).
-        self._outer_on("feat/X")
-        inner_root = self._workspace_with_initial()
-        self._add_agent_commits(2)
-        self._write_workspace_pointer()
-        state.update_state(
-            self.alcatraz_dir,
-            pinned_branch="feat/X",
-            inner_root=inner_root,
-            last_promoted=inner_root,
-            paused={"reason": "git am failed (exit 128): patch does not apply"},
-        )
+    # --- Assert -------------------------------------------------------
 
-        prison = Mock(spec=Alcatraz)
-        prison.exists.return_value = True
-        prison.is_running.return_value = True
+    def _assert_clear_was_refused(self, exit_code: int) -> None:
+        self.assertNotEqual(exit_code, 0)
 
-        rc, out, err = self._run_clear(prison=prison)
-
-        # Non-zero exit; no destructive action taken.
-        self.assertNotEqual(rc, 0)
-        prison.stop.assert_not_called()
-        prison.remove.assert_not_called()
+    def _assert_no_teardown_happened(self, alcatraz: Mock) -> None:
+        """A refused clear leaves the running workspace untouched — no
+        docker damage, no daemon reap."""
+        alcatraz.stop.assert_not_called()
+        alcatraz.remove.assert_not_called()
         self.mock_shutdown.assert_not_called()
 
-        # Accept either stream so we don't bind to a specific one.
-        message = out + err
-        # Conflict explanation in git-rm/rename terms (not "stash").
+    def _assert_message_guides_conflict_resolution(self, message: str) -> None:
+        """The user learns it's a working-tree conflict, how to resolve it
+        (remove/rename the file — not stash, see
+        project_promotion_conflict_semantics), which branch the work
+        belongs to, and that --discard-pending is the escape hatch.
+        Because the repo is ON the pin, the off-pin "git checkout" advice
+        must be absent — the paused message takes precedence."""
         self.assertIn("working tree", message.lower())
         self.assertRegex(message, r"remove it or rename")
-        # Names the branch the work belongs to.
-        self.assertIn("'feat/X'", message)
-        # The discard override is offered.
+        self.assertIn(f"'{self.PINNED_BRANCH}'", message)
         self.assertIn("--discard-pending", message)
-        # Paused takes precedence over the off-pin advice — since outer
-        # is on the pin, the "git checkout <branch>" recovery line for
-        # the off-pin case must NOT appear.
-        self.assertNotIn("git checkout feat/X", " ".join(message.split()))
-        # User-language: forbidden jargon absent.
-        lower = message.lower()
-        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
-            self.assertNotIn(jargon, lower)
+        single_spaced = " ".join(message.split())
+        self.assertNotIn(f"git checkout {self.PINNED_BRANCH}", single_spaced)
+        self._assert_no_jargon(message)
 
 
 class CmdClearDiscardPendingTests(_CmdStatusTestBase):
