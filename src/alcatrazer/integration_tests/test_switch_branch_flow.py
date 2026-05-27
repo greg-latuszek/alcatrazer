@@ -386,8 +386,18 @@ class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(unittest.TestCase):
         (snapshot.py writes it once at workspace creation). The post-start
         message still names `feat/X`.
 
-        Fold-in: assert the post-start message still names `feat/X` and that
-        `alcatrazer status` reports on-hold while outer is on main.
+        Fold-in / planned scenario-aware message (see the TODO under start.py's
+        post-start block): when implemented, `start` should DETECT at the top of
+        cmd_start that outer's current branch ('main') differs from the pinned
+        branch ('feat/X') and print a scenario-aware notice instead of the
+        generic "syncing pauses until you return" line — telling the user (a)
+        agents are starting in HOLD mode so nothing will be promoted because
+        they switched branch while Alcatraz was frozen after `stop`, and (b) to
+        instead collaborate on 'main' the re-pin path is `git checkout feat/X &&
+        alcatrazer clear && git checkout main && alcatrazer start`. This test
+        should assert that notice (and that `alcatrazer status` reads on-hold
+        while outer is on main). Until that lands, the generic message ships and
+        the behavioural assertions below (pin unchanged + held) are what hold.
 
         Coverage gap: no test (mocked or otherwise) covers restart-after-
         branch-switch-while-stopped — the case where a naive implementation

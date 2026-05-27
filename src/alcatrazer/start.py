@@ -284,6 +284,23 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
             print(f"Alcatrazer is running, started on branch '{pinned}'.")
             print(f"Agent commits will be applied to '{pinned}' as the agent works.")
             print("If you switch to a different branch, syncing pauses until you return.")
+            # TODO (change_promotion_machinery follow-up): make this notice
+            # scenario-aware. Today's line is a forward-looking warning that is
+            # correct for the INITIAL start. But on a `stop` -> `git checkout
+            # other` -> `start` sequence the pin stays the original branch
+            # (subsequent-run never re-pins) and the daemon comes up already
+            # HELD — yet we still print the same generic line. Detect, at the
+            # top of cmd_start (before routing), that outer's current branch
+            # differs from state.json's pinned_branch and, when it does, print
+            # instead something like:
+            #   "Agents are starting in hold mode — no commits will be promoted
+            #    because you switched from '<pinned>' to '<current>' while
+            #    Alcatraz was frozen (after stop). To instead collaborate with
+            #    agents on '<current>', re-pin: git checkout <pinned> &&
+            #    alcatrazer clear && git checkout <current> && alcatrazer start."
+            # Keeps the user fully informed about BOTH the held state and the
+            # re-pin path. Not implemented yet — asserted by
+            # TestRestartKeepsPinWhenBranchSwitchedWhileStopped.
 
     return rc
 
