@@ -25,7 +25,6 @@ import unittest
 
 from alcatrazer.integration_tests.test_smoke import _docker_available
 
-
 # ── Baseline: a quiet outer repo ───────────────────────────────────────
 
 
@@ -59,7 +58,9 @@ class TestHeldOffPinAutoResume(unittest.TestCase):
     """The daemon holds while the user is off the pinned branch and replays
     everything that piled up the moment they return."""
 
-    def test_the_daemon_holds_promotion_then_replays_all_piled_commits_in_one_batch_when_the_user_leaves_and_returns_to_the_pinned_branch(self):
+    def test_the_daemon_holds_promotion_then_replays_all_piled_commits_in_one_batch_when_the_user_leaves_and_returns_to_the_pinned_branch(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start (pins feat/X); When the
         user `git checkout main`, agents make several commits inside while the
         daemon holds (no promotion, pending count grows), then the user
@@ -82,7 +83,9 @@ class TestHeldOnDeletedPin(unittest.TestCase):
     """The daemon holds when the pinned branch is deleted and resumes once
     the user recreates it (a rename folds in — delete + create)."""
 
-    def test_the_daemon_holds_promotion_when_the_pinned_branch_is_deleted_and_resumes_once_the_user_recreates_it(self):
+    def test_the_daemon_holds_promotion_when_the_pinned_branch_is_deleted_and_resumes_once_the_user_recreates_it(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, agent commits pending;
         When the user deletes feat/X (`git checkout main && git branch -D
         feat/X`) so the daemon holds (PIN_DELETED), then recreates feat/X and
@@ -100,7 +103,9 @@ class TestHeldOnDetachedHead(unittest.TestCase):
     checked out again. (Optional — close to the off-pin hold; include only
     to exercise the DETACHED check_pin state live.)"""
 
-    def test_the_daemon_holds_promotion_when_the_user_detaches_head_and_resumes_once_a_branch_is_checked_out(self):
+    def test_the_daemon_holds_promotion_when_the_user_detaches_head_and_resumes_once_a_branch_is_checked_out(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, agent commits; When the
         user `git checkout <sha>` (detached) so the daemon holds (DETACHED),
         then `git checkout feat/X`; Then the daemon resumes and promotes.
@@ -120,7 +125,9 @@ class TestPausedFileCollisionAutoResume(unittest.TestCase):
     their file. The daemon `--abort`s on conflict, so its diff never surfaces
     in outer — meaning removal (not in-tree merge resolution) is the only fix."""
 
-    def test_the_daemon_pauses_when_an_agent_added_file_collides_with_a_same_named_outer_file_then_resumes_once_the_user_removes_it(self):
+    def test_the_daemon_pauses_when_an_agent_added_file_collides_with_a_same_named_outer_file_then_resumes_once_the_user_removes_it(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, an agent commit that ADDS
         a new file `F` inside the workspace, and the user separately creating a
         file named `F` with DIFFERENT content in the outer repo; When the
@@ -149,7 +156,9 @@ class TestNonOverlappingEditsCoexist(unittest.TestCase):
     """The "surprising-but-fine" case: an agent commit lands while the user
     has unrelated uncommitted edits, and both survive."""
 
-    def test_the_daemon_lands_an_agent_commit_beside_the_users_uncommitted_edits_when_the_two_touch_different_files(self):
+    def test_the_daemon_lands_an_agent_commit_beside_the_users_uncommitted_edits_when_the_two_touch_different_files(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, an agent commit to file
         `A`, and an outer uncommitted edit to a DIFFERENT file `B`; When the
         daemon promotes; Then `git am` SUCCEEDS — the agent commit lands on
@@ -167,7 +176,9 @@ class TestAgentCommitsStackOnUserCommits(unittest.TestCase):
     """Outer moving ahead with the user's own commits is the expected case —
     agent patches stack on top as further fast-forwards."""
 
-    def test_the_daemon_stacks_agent_commits_on_top_of_the_users_own_commits_when_the_user_commits_on_the_pinned_branch_between_syncs(self):
+    def test_the_daemon_stacks_agent_commits_on_top_of_the_users_own_commits_when_the_user_commits_on_the_pinned_branch_between_syncs(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start (snapshot taken); When the
         user makes their OWN commit(s) on feat/X after the snapshot (outer
         moves ahead) and an agent also commits inside; Then the daemon applies

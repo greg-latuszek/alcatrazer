@@ -308,7 +308,9 @@ class TestBranchLifecycleAcrossMerge(unittest.TestCase):
     Complements TestSwitchBranchFlow, which asserts the *inverse* — a branch
     cut from main *before* the merge does NOT carry the agent work."""
 
-    def test_alcatrazer_carries_the_merged_agent_work_into_the_fresh_workspace_when_started_on_a_branch_cut_from_main_after_the_pinned_branch_merged(self):
+    def test_alcatrazer_carries_the_merged_agent_work_into_the_fresh_workspace_when_started_on_a_branch_cut_from_main_after_the_pinned_branch_merged(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start (pins feat/X), an agent
         commit promoted onto feat/X, then `clear`; When feat/X merges into
         `main` and the user cuts `feat/Y` off main and starts again; Then the
@@ -326,7 +328,9 @@ class TestFinalSyncDrainOnClear(unittest.TestCase):
     """`clear` on the pinned branch with commits still pending must drain
     them in the final sync before teardown — not lose them."""
 
-    def test_alcatrazer_drains_unpromoted_agent_commits_in_a_final_sync_before_teardown_when_cleared_on_the_pinned_branch(self):
+    def test_alcatrazer_drains_unpromoted_agent_commits_in_a_final_sync_before_teardown_when_cleared_on_the_pinned_branch(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, and agent commits that
         are still PENDING (not yet promoted — e.g. clear is invoked before the
         daemon's next poll); When `clear` runs on feat/X; Then the stop →
@@ -350,7 +354,9 @@ class TestStopRestartPreservesPin(unittest.TestCase):
     This is the same-branch case; the branch-switch-while-stopped variant
     is TestRestartKeepsPinWhenBranchSwitchedWhileStopped below."""
 
-    def test_alcatrazer_keeps_the_pin_and_the_workspace_intact_when_stopped_and_restarted_instead_of_cleared(self):
+    def test_alcatrazer_keeps_the_pin_and_the_workspace_intact_when_stopped_and_restarted_instead_of_cleared(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start (pins feat/X), an agent
         commit promoted, and the user STAYS on feat/X throughout; When `stop`
         then `start` (NOT clear); Then the pin is still feat/X, the inner
@@ -370,7 +376,9 @@ class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(unittest.TestCase):
     pin and the daemon simply holds until the user returns. Only `clear` +
     `start` re-pins to the current branch."""
 
-    def test_alcatrazer_keeps_the_original_pin_and_holds_promotion_when_restarted_after_the_user_switched_branches_while_stopped(self):
+    def test_alcatrazer_keeps_the_original_pin_and_holds_promotion_when_restarted_after_the_user_switched_branches_while_stopped(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start (pins feat/X), then `stop`
         (container frozen; workspace + state.json incl. pinned_branch preserved,
         NOT wiped); When the user `git checkout main` while stopped and then
@@ -412,7 +420,9 @@ class TestClearBlockedOffPin(unittest.TestCase):
     """`clear` must refuse — and preserve the workspace — when agent work is
     pending but the user has wandered off the pinned branch."""
 
-    def test_alcatrazer_refuses_to_clear_and_preserves_the_workspace_when_pending_agent_commits_exist_but_the_user_is_off_the_pinned_branch(self):
+    def test_alcatrazer_refuses_to_clear_and_preserves_the_workspace_when_pending_agent_commits_exist_but_the_user_is_off_the_pinned_branch(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, agent commits that pile
         up as PENDING after the user `git checkout main` (daemon holds); When
         `clear` runs while on main with pending commits; Then clear returns
@@ -430,7 +440,9 @@ class TestClearBlockedWhilePaused(unittest.TestCase):
     """`clear` must refuse when promotion is paused by a working-tree
     conflict, even though the user IS on the pinned branch."""
 
-    def test_alcatrazer_refuses_to_clear_while_promotion_is_paused_by_a_working_tree_conflict_even_on_the_pinned_branch(self):
+    def test_alcatrazer_refuses_to_clear_while_promotion_is_paused_by_a_working_tree_conflict_even_on_the_pinned_branch(
+        self,
+    ):
         """Given outer on `feat/X`, alcatrazer start, an uncommitted outer edit
         that OVERLAPS a file the agent also commits, so the daemon's `git am`
         fails → aborts → pauses with a pending commit; When `clear` runs while
@@ -448,7 +460,9 @@ class TestClearDiscardsPending(unittest.TestCase):
     """`clear --discard-pending` is the explicit escape hatch: tear down even
     though pending agent work would otherwise block."""
 
-    def test_alcatrazer_tears_down_the_workspace_and_discards_pending_agent_commits_when_cleared_with_discard_pending_off_the_pinned_branch(self):
+    def test_alcatrazer_tears_down_the_workspace_and_discards_pending_agent_commits_when_cleared_with_discard_pending_off_the_pinned_branch(
+        self,
+    ):
         """Given the same off-pin-with-pending state as TestClearBlockedOffPin;
         When `clear` runs with discard_pending=True; Then clear PROCEEDS — the
         workspace is wiped, the pin dropped, and the pending agent work is
@@ -466,7 +480,9 @@ class TestStartRefusesDetachedHead(unittest.TestCase):
     """`start` must refuse on a detached HEAD before building anything — the
     pin-at-start contract requires outer to be on a branch."""
 
-    def test_alcatrazer_refuses_to_start_and_creates_no_workspace_when_the_outer_repo_has_a_detached_head(self):
+    def test_alcatrazer_refuses_to_start_and_creates_no_workspace_when_the_outer_repo_has_a_detached_head(
+        self,
+    ):
         """Given a fresh init'd project whose outer repo is in detached HEAD
         (`git checkout <sha>`); When `start` runs; Then it returns nonzero with
         the explanatory "requires outer to be on a branch — git checkout
