@@ -105,8 +105,10 @@ class TestConfigLoading(unittest.TestCase):
             cmd.extend(extra_args)
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(0.5)  # Let it start
         return proc
@@ -263,8 +265,10 @@ class TestPidGuard(unittest.TestCase):
                 "--project-dir",
                 self.tmpdir,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(0.5)
         return proc
@@ -369,8 +373,10 @@ class TestSignalHandling(unittest.TestCase):
                 "--project-dir",
                 self.tmpdir,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(0.5)
         proc.send_signal(signal.SIGTERM)
@@ -388,8 +394,10 @@ class TestSignalHandling(unittest.TestCase):
                 "--project-dir",
                 self.tmpdir,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         time.sleep(0.5)
         proc.send_signal(signal.SIGINT)
@@ -486,8 +494,10 @@ class TestDaemonPromotion(unittest.TestCase):
                 "--project-dir",
                 self.test_project,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         return proc
 
@@ -657,8 +667,10 @@ class TestLogRotation(unittest.TestCase):
                 "--project-dir",
                 self.test_project,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # No test reads these pipes (assertions use the log file), so
+            # DEVNULL avoids leaking unclosed BufferedReaders at GC.
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         try:
             time.sleep(3)
