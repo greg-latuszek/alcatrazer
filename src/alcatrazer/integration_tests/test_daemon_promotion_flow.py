@@ -89,24 +89,33 @@ class TestHeldOnDetachedHead(unittest.TestCase):
 
 
 @unittest.skipUnless(_docker_available(), "Docker not available")
-class TestPausedConflictAutoResume(unittest.TestCase):
-    """The daemon pauses when an agent patch overlaps the user's uncommitted
-    edit and auto-resumes once the overlap is gone."""
+class TestPausedFileCollisionAutoResume(unittest.TestCase):
+    """The daemon pauses when an agent-added file collides with a same-named
+    file the user created in outer, and auto-resumes once the user removes
+    their file. The daemon `--abort`s on conflict, so its diff never surfaces
+    in outer — meaning removal (not in-tree merge resolution) is the only fix."""
 
-    def test_the_daemon_pauses_on_an_overlapping_working_tree_edit_then_resumes_once_the_user_commits_the_conflicting_change(self):
-        """Given outer on `feat/X`, alcatrazer start, an agent commit to file
-        `F`, and an outer uncommitted edit to `F` that OVERLAPS it; When the
-        daemon attempts promotion, `git am` fails → `am --abort` → paused with
-        the commit still pending, then the user commits (or stashes) the
-        conflicting edit so the overlap clears; Then the next cycle applies the
-        patch and resumes; the log shows Paused → Resumed.
+    def test_the_daemon_pauses_when_an_agent_added_file_collides_with_a_same_named_outer_file_then_resumes_once_the_user_removes_it(self):
+        """Given outer on `feat/X`, alcatrazer start, an agent commit that ADDS
+        a new file `F` inside the workspace, and the user separately creating a
+        file named `F` with DIFFERENT content in the outer repo; When the
+        daemon tries to promote, `git am` cannot apply the add (path `F`
+        already exists) → it runs `git am --abort` and pauses, leaving the
+        commit pending; Then — because the abort makes the attempted change
+        invisible and there are NO in-tree conflict markers to resolve — the
+        user removes their `F` (this test deletes it; renaming it aside,
+        stashing, or reverting to the snapshot-time content are equally valid
+        and out of scope), after which the next cycle applies the agent's `F`
+        and resumes. The log shows Paused → Resumed.
 
         Fold-in: while paused, assert `alcatrazer status` reports "paused" with
         the working-tree-conflict message.
 
         Coverage gap: only the `promote_once` unit `paused_on_conflict` test
-        and daemon log-parsing exist; the real `am` abort + auto-resume loop is
-        unproven end-to-end."""
+        and daemon log-parsing exist; the real `am` abort + remove-to-resolve +
+        auto-resume loop is unproven end-to-end. NB: resolution is file removal,
+        NOT committing/merging the user's version — the daemon's diff never
+        surfaces in outer (see project_promotion_conflict_semantics)."""
         self.fail("not yet implemented — see docstring")
 
 
