@@ -11,25 +11,26 @@ docs/features/change_promotion_machinery.md.
 
 Distinct purpose from test_switch_branch_flow.py (start/clear lifecycle)
 and test_smoke.py (security invariants + tooling availability), so it lives
-in its own file per the three-tier integration-test discipline. Gated
-behind Docker; run with `mise test-smoke`.
+in its own file per the three-tier integration-test discipline. Fixture +
+the git/files/daemon step vocabulary live once in
+`_promotion_flow.PromotionFlowTest`; each scenario below subclasses it and
+gets its own isolated container. Gated behind Docker; run with
+`mise test-smoke`.
 
-Phase-9 follow-up — empty RED placeholders. Each class frames one real-
-container flow; the body is intentionally absent (self.fail) until we
-implement them one by one. The prose method names exceed ruff's line-length
-(E501); left as-is to land the names first — lint handling decided
-separately.
+Empty RED placeholders. Each class frames one real-container flow; the body
+is intentionally absent (self.fail) until we implement them one by one. The
+prose method names exceed ruff's line-length; E501 is ignored for
+integration_tests/** (see pyproject) because the test name IS the spec.
 """
 
 import unittest
 
-from alcatrazer.integration_tests.test_smoke import _docker_available
+from alcatrazer.integration_tests._promotion_flow import PromotionFlowTest
 
 # ── Baseline: a quiet outer repo ───────────────────────────────────────
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestBaselinePromotion(unittest.TestCase):
+class TestBaselinePromotion(PromotionFlowTest):
     """The simplest happy path — outer left untouched, an agent commit lands
     on the pinned branch. The control the held / paused / collaboration cases
     below are contrasted against."""
@@ -53,8 +54,7 @@ class TestBaselinePromotion(unittest.TestCase):
 # ── Held state and auto-resume (off-pin / deleted / detached) ──────────
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestHeldOffPinAutoResume(unittest.TestCase):
+class TestHeldOffPinAutoResume(PromotionFlowTest):
     """The daemon holds while the user is off the pinned branch and replays
     everything that piled up the moment they return."""
 
@@ -78,8 +78,7 @@ class TestHeldOffPinAutoResume(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestHeldOnDeletedPin(unittest.TestCase):
+class TestHeldOnDeletedPin(PromotionFlowTest):
     """The daemon holds when the pinned branch is deleted and resumes once
     the user recreates it (a rename folds in — delete + create)."""
 
@@ -97,8 +96,7 @@ class TestHeldOnDeletedPin(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestHeldOnDetachedHead(unittest.TestCase):
+class TestHeldOnDetachedHead(PromotionFlowTest):
     """The daemon holds on a detached HEAD and resumes once a branch is
     checked out again. (Optional — close to the off-pin hold; include only
     to exercise the DETACHED check_pin state live.)"""
@@ -118,8 +116,7 @@ class TestHeldOnDetachedHead(unittest.TestCase):
 # ── Conflict semantics and transparent collaboration ───────────────────
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestPausedFileCollisionAutoResume(unittest.TestCase):
+class TestPausedFileCollisionAutoResume(PromotionFlowTest):
     """The daemon pauses when an agent-added file collides with a same-named
     file the user created in outer, and auto-resumes once the user removes
     their file. The daemon `--abort`s on conflict, so its diff never surfaces
@@ -151,8 +148,7 @@ class TestPausedFileCollisionAutoResume(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestNonOverlappingEditsCoexist(unittest.TestCase):
+class TestNonOverlappingEditsCoexist(PromotionFlowTest):
     """The "surprising-but-fine" case: an agent commit lands while the user
     has unrelated uncommitted edits, and both survive."""
 
@@ -171,8 +167,7 @@ class TestNonOverlappingEditsCoexist(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestAgentCommitsStackOnUserCommits(unittest.TestCase):
+class TestAgentCommitsStackOnUserCommits(PromotionFlowTest):
     """Outer moving ahead with the user's own commits is the expected case —
     agent patches stack on top as further fast-forwards."""
 

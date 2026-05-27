@@ -1,9 +1,6 @@
-"""End-to-end integration test for the switch-branch flow Phase 9
-enables.
+"""End-to-end integration tests for the start/clear lifecycle flows.
 
-Drives the real `alcatrazer init` / `start` / `clear` sequence against
-a real DockerPrison + real container, with a real outer git repo, to
-verify the user-visible promise:
+The headline promise (TestSwitchBranchFlow) is the switch-branch loop:
 
     git checkout -b feat/X
     alcatrazer start                     # workspace pinned to feat/X
@@ -14,52 +11,29 @@ verify the user-visible promise:
     alcatrazer start                     # fresh workspace pinned to
                                          # other-branch
 
-Today (pre-Phase-9) this is broken — `clear` preserves the workspace
-+ state.json, so the second `start` reuses the old pin and
-`alcatrazer status` reports ⚠ on hold on `other-branch` even though
-the user wanted a fresh workspace. The test fails RED on that
-behaviour; Phase 9.4 GREEN's `cmd_clear` extension makes it pass.
+These are integration tests in the strictest sense — no mocks at the prison
+layer, no host-side simulation of the wipe. The container actually runs,
+`find /workspace -mindepth 1 -delete` actually runs inside as the agent UID,
+and the bind-mount actually propagates the empty state to the host. That's
+the only way to verify the wipe-from-inside contract (Principle 2: agent
+never observes host UID).
 
-This test is an integration test in the strictest sense — no mocks at
-the prison layer, no host-side simulation of the wipe. The container
-actually runs, `find /workspace -mindepth 1 -delete` actually runs
-inside as the agent UID, and the bind-mount actually propagates the
-empty state to the host. That's the only way to verify the wipe-
-from-inside contract (Principle 2: agent never observes host UID).
-
-Lives in `integration_tests/` next to `test_smoke.py` but is NOT a
-smoke test (smoke is for security invariants + tooling availability
-checks per the three-tier discipline in install_method.md). Workflow
-integration tests are a separate purpose; both are gated behind
-Docker availability and opt out of the default `alcatrazer test` run
-via the integration-tests location.
+Fixture + the git/files/daemon step vocabulary live once in
+`_promotion_flow.PromotionFlowTest`; each scenario below subclasses it and
+gets its own isolated container (setUpClass runs once per class). Lives in
+`integration_tests/` next to `test_smoke.py` but is NOT a smoke test (smoke
+covers security invariants + tooling availability); both are gated behind
+Docker and opt out of the default `alcatrazer test` run via location.
 
 Requires Docker; run with `mise test-smoke`.
 """
 
-import contextlib
-import os
-import signal
-import subprocess
-import tempfile
-import time
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
-from alcatrazer import start as start_mod
-from alcatrazer import state
-from alcatrazer.docker_prison import DockerPrison
-from alcatrazer.integration_tests.test_smoke import (
-    CODING_ENV,
-    _docker_available,
-    _nuke_phantom_uid_files,
-    _seed_project,
-)
+from alcatrazer.integration_tests._promotion_flow import PromotionFlowTest
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestSwitchBranchFlow(unittest.TestCase):
+class TestSwitchBranchFlow(PromotionFlowTest):
     """Phase 9 Step 9.3 — alcatrazer clear + start re-pins to the
     user's currently-checked-out branch.
 
@@ -67,56 +41,6 @@ class TestSwitchBranchFlow(unittest.TestCase):
     the flow is stateful, and each step is a named action or
     observation, so a failure's call site names which step of the
     user-flow broke."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        cls.project_dir = Path(cls._tmp.name)
-        _seed_project(cls.project_dir)
-
-        with (
-            patch.object(
-                start_mod,
-                "ask_promotion_identity",
-                return_value=("Ghost Agent", "ghost@example.com"),
-            ),
-            patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
-        ):
-            rc = start_mod.cmd_init(cls.project_dir)
-        if rc != 0:
-            raise RuntimeError(f"cmd_init failed (rc={rc})")
-
-        cls.alcatraz_dir = cls.project_dir / ".alcatrazer"
-
-        # Speed up daemon polling so the agent-commit phase doesn't
-        # spend most of its time waiting (matches the lifecycle smoke).
-        config_path = cls.alcatraz_dir / "config.toml"
-        config_path.write_text(config_path.read_text().replace("interval = 5", "interval = 1"))
-
-        cls.workspace_name = (cls.alcatraz_dir / "workspace-dir").read_text().strip()
-        cls.workspace = cls.project_dir / cls.workspace_name
-        cls.prison = DockerPrison(cls.project_dir)
-
-    @classmethod
-    def tearDownClass(cls):
-        # Reap any leftover daemon (mid-test failure could leak one).
-        pid_file = cls.alcatraz_dir / "promotion-daemon.pid"
-        if pid_file.exists():
-            with contextlib.suppress(ProcessLookupError, ValueError, OSError):
-                pid = int(pid_file.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(0.5)
-                with contextlib.suppress(ChildProcessError):
-                    os.waitpid(pid, os.WNOHANG)
-        with contextlib.suppress(Exception):
-            cls.prison.stop()
-        with contextlib.suppress(Exception):
-            cls.prison.remove()
-        _nuke_phantom_uid_files(cls.project_dir)
-        with contextlib.suppress(Exception):
-            cls._tmp.cleanup()
-
-    # ── The switch-branch user-flow, read as prose ────────────────────
 
     def test_alcatrazer_repins_the_workspace_to_the_current_branch_when_restarted_after_clear(self):
         # The user branches off and starts: the workspace pins to feat/X.
@@ -152,156 +76,20 @@ class TestSwitchBranchFlow(unittest.TestCase):
         self._assert_workspace_has("user.txt")
         self._assert_workspace_lacks("agent.txt")
 
-    # ── Actors and their actions ──────────────────────────────────────
-
-    def _user_creates_branch(self, name: str) -> None:
-        self._git("checkout", "-b", name)
-
-    def _user_returns_to_branch(self, name: str) -> None:
-        self._git("checkout", name)
-
-    def _user_commits(self, message: str, filename: str) -> None:
-        result = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f"cd {self.project_dir} && echo {message!r} > {filename} && "
-                f"git add {filename} && git commit -qm {message!r}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, f"user commit failed: {result.stderr}")
-
-    def _agent_commits(self, message: str, filename: str) -> None:
-        result = self.prison.query(
-            [
-                "bash",
-                "-c",
-                f"cd /workspace && echo {message!r} > {filename} && "
-                f"git add {filename} && git commit -qm {message!r}",
-            ]
-        )
-        self.assertEqual(result.returncode, 0, f"agent commit failed: {result.stderr}")
-
-    def _alcatrazer_starts(self) -> None:
-        rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
-        self.assertEqual(rc, 0, "cmd_start should succeed")
-        print(f"workspace after start: {self._run_in_workspace('ls -la /workspace')}")
-
-    def _alcatrazer_clears(self) -> None:
-        rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
-        self.assertEqual(rc, 0, "cmd_clear should succeed")
-        # The container is gone now — inspect the host-side mount point.
-        print(f"workspace dir after clear: {self._run_in_outer_repo(f'ls -la {self.workspace}')}")
-        print(f"outer repo after clear: {self._run_in_outer_repo(f'ls -la {self.project_dir}')}")
-
-    # ── Observations ──────────────────────────────────────────────────
-
-    def _assert_workspace_pinned_to(self, branch: str) -> None:
-        self.assertEqual(
-            self._pinned_branch(),
-            branch,
-            f"pinned_branch should track outer's checked-out branch; got {self._pinned_branch()!r}",
-        )
-
-    def _assert_workspace_repo_exists(self) -> None:
-        self.assertTrue(
-            (self.workspace / ".git").is_dir(), "workspace should be a git repo after start"
-        )
-
-    def _assert_workspace_is_wiped(self) -> None:
-        # The mount point survives (bind-mount target), but its contents —
-        # incl. .git — are gone: the wipe ran inside the container as the
-        # agent UID, with no chown back to the host.
-        self.assertTrue(self.workspace.is_dir(), "workspace mount-point dir must remain")
-        self.assertEqual(
-            list(self.workspace.iterdir()),
-            [],
-            "after clear, inner workspace contents must be wiped (incl. .git)",
-        )
-
-    def _assert_pin_is_dropped(self) -> None:
-        self.assertFalse(
-            (self.alcatraz_dir / "state.json").exists(),
-            "after clear, state.json must be gone so the next start gets a fresh pin",
-        )
-
-    def _assert_daemon_synced_to_outer(self, subject: str) -> None:
-        self.assertTrue(
-            self._wait_until_outer_has_commit(subject),
-            f"daemon must promote commit {subject!r} to the outer branch",
-        )
-
-    def _assert_outer_has(self, filename: str) -> None:
-        self.assertTrue(
-            (self.project_dir / filename).exists(), f"outer working tree should contain {filename}"
-        )
-
-    def _assert_outer_lacks(self, filename: str) -> None:
-        self.assertFalse(
-            (self.project_dir / filename).exists(),
-            f"outer working tree should not contain {filename}",
-        )
-
-    def _assert_workspace_has(self, filename: str) -> None:
-        self.assertTrue(
-            (self.workspace / filename).exists(), f"inner workspace should contain {filename}"
-        )
-
-    def _assert_workspace_lacks(self, filename: str) -> None:
-        self.assertFalse(
-            (self.workspace / filename).exists(),
-            f"inner workspace should not contain {filename}",
-        )
-
-    # ── Low-level access to the two repos and the container ───────────
-
-    def _git(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", "-C", str(self.project_dir), *args],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-    def _pinned_branch(self) -> str | None:
-        return state.load_state(self.alcatraz_dir).get("pinned_branch")
-
-    def _run_in_workspace(self, command: str) -> str:
-        result = self.prison.query(["bash", "-c", command])
-        self.assertEqual(result.returncode, 0, f"command in workspace failed: {result.stderr}")
-        return result.stdout
-
-    def _run_in_outer_repo(self, command: str) -> str:
-        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, f"command in outer repo failed: {result.stderr}")
-        return str(result.stdout)
-
-    def _wait_until_outer_has_commit(self, subject: str, timeout: float = 15.0) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if subject in self._git("log", "--all", "--format=%s").stdout.splitlines():
-                return True
-            time.sleep(0.5)
-        return False
-
 
 # ══════════════════════════════════════════════════════════════════════
-# Phase-9 follow-up — empty RED placeholders for the start/clear lifecycle
-# flows the feature doc promises but only mocks cover today. Each class
-# frames one real-container user-flow; the body is intentionally absent
-# (self.fail) until we implement them one by one. See
-# docs/features/change_promotion_machinery.md.
+# Empty RED placeholders for the start/clear lifecycle flows the feature
+# doc promises but only mocks cover today. Each class subclasses
+# PromotionFlowTest (own isolated container) and frames one real-container
+# user-flow; the body is intentionally absent (self.fail) until we
+# implement them one by one. See docs/features/change_promotion_machinery.md.
 #
-# The prose method names below currently exceed ruff's line-length (E501);
-# left as-is to land the names first — lint handling (noqa / per-file
-# limit / shorter names) decided separately.
+# The prose method names exceed ruff's line-length; E501 is ignored for
+# integration_tests/** (see pyproject) because the test name IS the spec.
 # ══════════════════════════════════════════════════════════════════════
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestBranchLifecycleAcrossMerge(unittest.TestCase):
+class TestBranchLifecycleAcrossMerge(PromotionFlowTest):
     """The realistic feature loop: branch off main, agents commit, promote,
     clear, merge the branch into main, then start fresh on the next branch.
 
@@ -323,8 +111,7 @@ class TestBranchLifecycleAcrossMerge(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestFinalSyncDrainOnClear(unittest.TestCase):
+class TestFinalSyncDrainOnClear(PromotionFlowTest):
     """`clear` on the pinned branch with commits still pending must drain
     them in the final sync before teardown — not lose them."""
 
@@ -347,8 +134,7 @@ class TestFinalSyncDrainOnClear(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestStopRestartPreservesPin(unittest.TestCase):
+class TestStopRestartPreservesPin(PromotionFlowTest):
     """`stop` + `start` is a freeze-restart that keeps the SAME pin and
     workspace — the explicit contrast to `clear` + `start` (new pin).
     This is the same-branch case; the branch-switch-while-stopped variant
@@ -369,8 +155,7 @@ class TestStopRestartPreservesPin(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(unittest.TestCase):
+class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(PromotionFlowTest):
     """The dangerous-looking case made safe: switching the outer branch while
     stopped must NOT silently re-pin on restart — `start` keeps the original
     pin and the daemon simply holds until the user returns. Only `clear` +
@@ -415,8 +200,7 @@ class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestClearBlockedOffPin(unittest.TestCase):
+class TestClearBlockedOffPin(PromotionFlowTest):
     """`clear` must refuse — and preserve the workspace — when agent work is
     pending but the user has wandered off the pinned branch."""
 
@@ -435,8 +219,7 @@ class TestClearBlockedOffPin(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestClearBlockedWhilePaused(unittest.TestCase):
+class TestClearBlockedWhilePaused(PromotionFlowTest):
     """`clear` must refuse when promotion is paused by a working-tree
     conflict, even though the user IS on the pinned branch."""
 
@@ -455,8 +238,7 @@ class TestClearBlockedWhilePaused(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestClearDiscardsPending(unittest.TestCase):
+class TestClearDiscardsPending(PromotionFlowTest):
     """`clear --discard-pending` is the explicit escape hatch: tear down even
     though pending agent work would otherwise block."""
 
@@ -475,8 +257,7 @@ class TestClearDiscardsPending(unittest.TestCase):
         self.fail("not yet implemented — see docstring")
 
 
-@unittest.skipUnless(_docker_available(), "Docker not available")
-class TestStartRefusesDetachedHead(unittest.TestCase):
+class TestStartRefusesDetachedHead(PromotionFlowTest):
     """`start` must refuse on a detached HEAD before building anything — the
     pin-at-start contract requires outer to be on a branch."""
 
