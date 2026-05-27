@@ -346,17 +346,54 @@ class TestFinalSyncDrainOnClear(unittest.TestCase):
 @unittest.skipUnless(_docker_available(), "Docker not available")
 class TestStopRestartPreservesPin(unittest.TestCase):
     """`stop` + `start` is a freeze-restart that keeps the SAME pin and
-    workspace — the explicit contrast to `clear` + `start` (new pin)."""
+    workspace — the explicit contrast to `clear` + `start` (new pin).
+    This is the same-branch case; the branch-switch-while-stopped variant
+    is TestRestartKeepsPinWhenBranchSwitchedWhileStopped below."""
 
     def test_alcatrazer_keeps_the_pin_and_the_workspace_intact_when_stopped_and_restarted_instead_of_cleared(self):
         """Given outer on `feat/X`, alcatrazer start (pins feat/X), an agent
-        commit promoted; When `stop` then `start` (NOT clear); Then the pin is
-        still feat/X, the inner workspace is NOT wiped (no re-snapshot), and
-        the inner history/files survive across the restart.
+        commit promoted, and the user STAYS on feat/X throughout; When `stop`
+        then `start` (NOT clear); Then the pin is still feat/X, the inner
+        workspace is NOT wiped (no re-snapshot), the inner history/files
+        survive the restart, and the daemon resumes ACTIVE (on-pin).
 
         Coverage gap: the doc explicitly distinguishes stop/start (freeze-
         restart, same pin) from clear/start (fresh, new pin); only the
         clear/start half is proven end-to-end today."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(unittest.TestCase):
+    """The dangerous-looking case made safe: switching the outer branch while
+    stopped must NOT silently re-pin on restart — `start` keeps the original
+    pin and the daemon simply holds until the user returns. Only `clear` +
+    `start` re-pins to the current branch."""
+
+    def test_alcatrazer_keeps_the_original_pin_and_holds_promotion_when_restarted_after_the_user_switched_branches_while_stopped(self):
+        """Given outer on `feat/X`, alcatrazer start (pins feat/X), then `stop`
+        (container frozen; workspace + state.json incl. pinned_branch preserved,
+        NOT wiped); When the user `git checkout main` while stopped and then
+        `start` again; Then `start` takes the subsequent-run (resume) path — it
+        does NOT re-snapshot or re-pin — so the pin stays `feat/X` and the
+        workspace still mirrors feat/X's tree; because outer is now off-pin the
+        daemon HOLDS rather than applying feat/X's agent work onto `main`.
+        `git checkout feat/X` resumes promotion.
+
+        Verified against start.py: the detached-head guard does not fire (main
+        is a branch), routing enters _subsequent_run (workspace .git present +
+        image current), and subsequent-run never rewrites pinned_branch
+        (snapshot.py writes it once at workspace creation). The post-start
+        message still names `feat/X`.
+
+        Fold-in: assert the post-start message still names `feat/X` and that
+        `alcatrazer status` reports on-hold while outer is on main.
+
+        Coverage gap: no test (mocked or otherwise) covers restart-after-
+        branch-switch-while-stopped — the case where a naive implementation
+        might silently re-pin to `main` and replay feat/X-based patches onto
+        it. This is the guard that stop/start ≠ clear/start even across a
+        branch switch."""
         self.fail("not yet implemented — see docstring")
 
 
