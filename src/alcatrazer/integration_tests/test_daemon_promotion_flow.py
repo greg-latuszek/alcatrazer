@@ -48,7 +48,22 @@ class TestBaselinePromotion(PromotionFlowTest):
         covers this end-to-end; kept here as the control case for this file's
         scenario matrix, so the held / paused / collaboration variants read as
         deviations from a named baseline."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X, then leaves outer alone.
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: an agent commits a new file inside the workspace.
+        self._agent_commits("baseline: agent commits a feature file", "feature.txt")
+
+        # Then: the daemon lands exactly that commit on feat/X as the user,
+        # the working tree in lockstep with the advanced ref.
+        self._assert_daemon_synced_to_outer("baseline: agent commits a feature file")
+        self._assert_outer_has("feature.txt")
+        self._assert_outer_commit_count_is("feat/X", commits_before + 1)
+        self._assert_outer_tip_authored_and_committed_by(
+            "feat/X", "Ghost Agent", "ghost@example.com"
+        )
+        self._assert_outer_working_tree_is_clean()
 
 
 # ── Held state and auto-resume (off-pin / deleted / detached) ──────────

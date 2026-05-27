@@ -141,6 +141,14 @@ class PromotionFlowTest(unittest.TestCase):
         print(f"workspace dir after clear: {self._run_in_outer_repo(f'ls -la {self.workspace}')}")
         print(f"outer repo after clear: {self._run_in_outer_repo(f'ls -la {self.project_dir}')}")
 
+    # ── Composite givens ──────────────────────────────────────────────
+
+    def _given_alcatrazer_started_on_branch(self, branch: str) -> None:
+        """Branch off, start Alcatraz, and confirm the workspace pinned there."""
+        self._user_creates_branch(branch)
+        self._alcatrazer_starts()
+        self._assert_workspace_pinned_to(branch)
+
     # ── Observations ──────────────────────────────────────────────────
 
     def _assert_workspace_pinned_to(self, branch: str) -> None:
@@ -200,6 +208,37 @@ class PromotionFlowTest(unittest.TestCase):
             f"inner workspace should not contain {filename}",
         )
 
+    def _assert_outer_commit_count_is(self, branch: str, expected: int) -> None:
+        actual = self._outer_commit_count(branch)
+        self.assertEqual(
+            actual,
+            expected,
+            f"{branch} should hold {expected} commits after promotion; found {actual}",
+        )
+
+    def _assert_outer_tip_authored_and_committed_by(
+        self, branch: str, name: str, email: str
+    ) -> None:
+        # Both author and committer must be the user's promotion identity —
+        # the inner agent's (random) identity must not leak into either field.
+        author_name, author_email, committer_name, committer_email = self._git(
+            "log", "-1", "--format=%an%n%ae%n%cn%n%ce", branch
+        ).stdout.splitlines()
+        self.assertEqual(
+            [author_name, author_email, committer_name, committer_email],
+            [name, email, name, email],
+            f"{branch} tip should be authored AND committed as {name} <{email}>",
+        )
+
+    def _assert_outer_working_tree_is_clean(self) -> None:
+        # Tracked-file view only (`--untracked-files=no`): the init artifacts
+        # (.alcatrazer/, the workspace dir, coding-environment.toml, .env.example)
+        # are expected untracked entries, not part of the promotion contract.
+        # The bug this guards is a phantom "deleted: <tracked file>" left when
+        # the ref advances but the working tree doesn't — that surfaces here.
+        status = self._git("status", "--porcelain", "--untracked-files=no").stdout
+        self.assertEqual(status, "", f"outer working tree should be clean; git status:\n{status}")
+
     # ── Low-level access to the two repos and the container ───────────
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
@@ -230,3 +269,6 @@ class PromotionFlowTest(unittest.TestCase):
                 return True
             time.sleep(0.5)
         return False
+
+    def _outer_commit_count(self, branch: str) -> int:
+        return int(self._git("rev-list", "--count", branch).stdout.strip())
