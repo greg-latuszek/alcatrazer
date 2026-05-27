@@ -287,5 +287,150 @@ class TestSwitchBranchFlow(unittest.TestCase):
         return False
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Phase-9 follow-up — empty RED placeholders for the start/clear lifecycle
+# flows the feature doc promises but only mocks cover today. Each class
+# frames one real-container user-flow; the body is intentionally absent
+# (self.fail) until we implement them one by one. See
+# docs/features/change_promotion_machinery.md.
+#
+# The prose method names below currently exceed ruff's line-length (E501);
+# left as-is to land the names first — lint handling (noqa / per-file
+# limit / shorter names) decided separately.
+# ══════════════════════════════════════════════════════════════════════
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestBranchLifecycleAcrossMerge(unittest.TestCase):
+    """The realistic feature loop: branch off main, agents commit, promote,
+    clear, merge the branch into main, then start fresh on the next branch.
+
+    Complements TestSwitchBranchFlow, which asserts the *inverse* — a branch
+    cut from main *before* the merge does NOT carry the agent work."""
+
+    def test_alcatrazer_carries_the_merged_agent_work_into_the_fresh_workspace_when_started_on_a_branch_cut_from_main_after_the_pinned_branch_merged(self):
+        """Given outer on `feat/X`, alcatrazer start (pins feat/X), an agent
+        commit promoted onto feat/X, then `clear`; When feat/X merges into
+        `main` and the user cuts `feat/Y` off main and starts again; Then the
+        fresh workspace pins to feat/Y AND contains the promoted agent file
+        (inherited via main) — proving promoted work survives the PR-merge and
+        re-seeds the next workspace as its baseline.
+
+        Coverage gap: no end-to-end proof of the promote → merge → re-snapshot
+        round-trip. The existing switch test checks the inverse case only."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestFinalSyncDrainOnClear(unittest.TestCase):
+    """`clear` on the pinned branch with commits still pending must drain
+    them in the final sync before teardown — not lose them."""
+
+    def test_alcatrazer_drains_unpromoted_agent_commits_in_a_final_sync_before_teardown_when_cleared_on_the_pinned_branch(self):
+        """Given outer on `feat/X`, alcatrazer start, and agent commits that
+        are still PENDING (not yet promoted — e.g. clear is invoked before the
+        daemon's next poll); When `clear` runs on feat/X; Then the stop →
+        final-sync step drains the pending commits onto feat/X BEFORE the wipe,
+        so outer ends with the agent work; the workspace is wiped and the pin
+        dropped.
+
+        Coverage gap: the existing switch test WAITS for the daemon to promote,
+        then clears (nothing pending at clear time), so the final-sync drain
+        path is exercised only by the mocked cmd_clear `on_pin_with_pending`
+        test. Implementer note: getting commits to still be pending at clear
+        time is a real race — may require a slow poll interval or stopping the
+        daemon first."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestStopRestartPreservesPin(unittest.TestCase):
+    """`stop` + `start` is a freeze-restart that keeps the SAME pin and
+    workspace — the explicit contrast to `clear` + `start` (new pin)."""
+
+    def test_alcatrazer_keeps_the_pin_and_the_workspace_intact_when_stopped_and_restarted_instead_of_cleared(self):
+        """Given outer on `feat/X`, alcatrazer start (pins feat/X), an agent
+        commit promoted; When `stop` then `start` (NOT clear); Then the pin is
+        still feat/X, the inner workspace is NOT wiped (no re-snapshot), and
+        the inner history/files survive across the restart.
+
+        Coverage gap: the doc explicitly distinguishes stop/start (freeze-
+        restart, same pin) from clear/start (fresh, new pin); only the
+        clear/start half is proven end-to-end today."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestClearBlockedOffPin(unittest.TestCase):
+    """`clear` must refuse — and preserve the workspace — when agent work is
+    pending but the user has wandered off the pinned branch."""
+
+    def test_alcatrazer_refuses_to_clear_and_preserves_the_workspace_when_pending_agent_commits_exist_but_the_user_is_off_the_pinned_branch(self):
+        """Given outer on `feat/X`, alcatrazer start, agent commits that pile
+        up as PENDING after the user `git checkout main` (daemon holds); When
+        `clear` runs while on main with pending commits; Then clear returns
+        nonzero, the block message names the pending count and `feat/X`, and
+        the workspace + pin are preserved so the work stays recoverable.
+
+        Coverage gap: only the mocked cmd_clear `blocks_when_off_pin_with_
+        pending_commits` test exists; this proves the guard end-to-end against
+        a real held daemon and real pending commits."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestClearBlockedWhilePaused(unittest.TestCase):
+    """`clear` must refuse when promotion is paused by a working-tree
+    conflict, even though the user IS on the pinned branch."""
+
+    def test_alcatrazer_refuses_to_clear_while_promotion_is_paused_by_a_working_tree_conflict_even_on_the_pinned_branch(self):
+        """Given outer on `feat/X`, alcatrazer start, an uncommitted outer edit
+        that OVERLAPS a file the agent also commits, so the daemon's `git am`
+        fails → aborts → pauses with a pending commit; When `clear` runs while
+        still on feat/X; Then clear returns nonzero, the message explains the
+        paused conflict, and the workspace is preserved.
+
+        Coverage gap: only the mocked cmd_clear `blocks_when_paused_even_
+        though_on_pinned_branch` test exists; this drives a real `am` conflict,
+        real pause, and clear refusal."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestClearDiscardsPending(unittest.TestCase):
+    """`clear --discard-pending` is the explicit escape hatch: tear down even
+    though pending agent work would otherwise block."""
+
+    def test_alcatrazer_tears_down_the_workspace_and_discards_pending_agent_commits_when_cleared_with_discard_pending_off_the_pinned_branch(self):
+        """Given the same off-pin-with-pending state as TestClearBlockedOffPin;
+        When `clear` runs with discard_pending=True; Then clear PROCEEDS — the
+        workspace is wiped, the pin dropped, and the pending agent work is
+        intentionally discarded (outer feat/X unchanged).
+
+        Coverage gap: the override counterpart that proves the off-pin block is
+        escapable; only mocked (`discard_pending_flag_proceeds_through_
+        teardown`) today. Drive via cmd_start.cmd_clear(..., discard_pending=
+        True)."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestStartRefusesDetachedHead(unittest.TestCase):
+    """`start` must refuse on a detached HEAD before building anything — the
+    pin-at-start contract requires outer to be on a branch."""
+
+    def test_alcatrazer_refuses_to_start_and_creates_no_workspace_when_the_outer_repo_has_a_detached_head(self):
+        """Given a fresh init'd project whose outer repo is in detached HEAD
+        (`git checkout <sha>`); When `start` runs; Then it returns nonzero with
+        the explanatory "requires outer to be on a branch — git checkout
+        <branch> first" message, and NO container/workspace is created and no
+        pin is written.
+
+        Coverage gap: only the mocked start `refuses_with_explanatory_message_
+        on_detached_head` test exists; this proves the precondition halts the
+        real flow before any build/snapshot."""
+        self.fail("not yet implemented — see docstring")
+
+
 if __name__ == "__main__":
     unittest.main()

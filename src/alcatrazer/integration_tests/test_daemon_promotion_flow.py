@@ -1,0 +1,151 @@
+"""End-to-end integration tests for the promotion daemon's behaviour as
+the outer repo changes underneath it: holding when the user leaves the
+pinned branch, pausing on a working-tree conflict, and collaborating with
+the user's own concurrent edits and commits.
+
+These drive a real `DockerPrison` + real container + the real polling
+daemon against a real outer git repo — no mocks at the prison layer. They
+verify the user-visible promises in the "Held state and auto-resume" and
+"Conflict semantics" sections of
+docs/features/change_promotion_machinery.md.
+
+Distinct purpose from test_switch_branch_flow.py (start/clear lifecycle)
+and test_smoke.py (security invariants + tooling availability), so it lives
+in its own file per the three-tier integration-test discipline. Gated
+behind Docker; run with `mise test-smoke`.
+
+Phase-9 follow-up — empty RED placeholders. Each class frames one real-
+container flow; the body is intentionally absent (self.fail) until we
+implement them one by one. The prose method names exceed ruff's line-length
+(E501); left as-is to land the names first — lint handling decided
+separately.
+"""
+
+import unittest
+
+from alcatrazer.integration_tests.test_smoke import _docker_available
+
+
+# ── Held state and auto-resume (off-pin / deleted / detached) ──────────
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestHeldOffPinAutoResume(unittest.TestCase):
+    """The daemon holds while the user is off the pinned branch and replays
+    everything that piled up the moment they return."""
+
+    def test_the_daemon_holds_promotion_then_replays_all_piled_commits_in_one_batch_when_the_user_leaves_and_returns_to_the_pinned_branch(self):
+        """Given outer on `feat/X`, alcatrazer start (pins feat/X); When the
+        user `git checkout main`, agents make several commits inside while the
+        daemon holds (no promotion, pending count grows), then the user
+        `git checkout feat/X`; Then the next poll replays ALL piled commits in
+        one `git am`, feat/X advances by all of them, and the log shows exactly
+        one Held → one Resumed transition.
+
+        Fold-in: while held, assert `alcatrazer status` reports "on hold" with
+        the correct pending count (the held status surface, checked mid-flow
+        rather than in a separate container).
+
+        Coverage gap: only the `promote_once` unit `resumes_after_recheckout`
+        test and daemon log-parsing exist; never exercised against a real
+        polling daemon + real branch switch."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestHeldOnDeletedPin(unittest.TestCase):
+    """The daemon holds when the pinned branch is deleted and resumes once
+    the user recreates it (a rename folds in — delete + create)."""
+
+    def test_the_daemon_holds_promotion_when_the_pinned_branch_is_deleted_and_resumes_once_the_user_recreates_it(self):
+        """Given outer on `feat/X`, alcatrazer start, agent commits pending;
+        When the user deletes feat/X (`git checkout main && git branch -D
+        feat/X`) so the daemon holds (PIN_DELETED), then recreates feat/X and
+        checks it out; Then the daemon resumes and promotes the pending commits
+        onto the recreated feat/X.
+
+        Coverage gap: only the `check_pin` unit `returns_PIN_DELETED` test
+        exists; the recreate-and-resume loop is unproven end-to-end."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestHeldOnDetachedHead(unittest.TestCase):
+    """The daemon holds on a detached HEAD and resumes once a branch is
+    checked out again. (Optional — close to the off-pin hold; include only
+    to exercise the DETACHED check_pin state live.)"""
+
+    def test_the_daemon_holds_promotion_when_the_user_detaches_head_and_resumes_once_a_branch_is_checked_out(self):
+        """Given outer on `feat/X`, alcatrazer start, agent commits; When the
+        user `git checkout <sha>` (detached) so the daemon holds (DETACHED),
+        then `git checkout feat/X`; Then the daemon resumes and promotes.
+
+        Coverage gap: only the `check_pin` unit `returns_DETACHED` test exists.
+        Lower priority — nearly redundant with the off-pin hold flow."""
+        self.fail("not yet implemented — see docstring")
+
+
+# ── Conflict semantics and transparent collaboration ───────────────────
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestPausedConflictAutoResume(unittest.TestCase):
+    """The daemon pauses when an agent patch overlaps the user's uncommitted
+    edit and auto-resumes once the overlap is gone."""
+
+    def test_the_daemon_pauses_on_an_overlapping_working_tree_edit_then_resumes_once_the_user_commits_the_conflicting_change(self):
+        """Given outer on `feat/X`, alcatrazer start, an agent commit to file
+        `F`, and an outer uncommitted edit to `F` that OVERLAPS it; When the
+        daemon attempts promotion, `git am` fails → `am --abort` → paused with
+        the commit still pending, then the user commits (or stashes) the
+        conflicting edit so the overlap clears; Then the next cycle applies the
+        patch and resumes; the log shows Paused → Resumed.
+
+        Fold-in: while paused, assert `alcatrazer status` reports "paused" with
+        the working-tree-conflict message.
+
+        Coverage gap: only the `promote_once` unit `paused_on_conflict` test
+        and daemon log-parsing exist; the real `am` abort + auto-resume loop is
+        unproven end-to-end."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestNonOverlappingEditsCoexist(unittest.TestCase):
+    """The "surprising-but-fine" case: an agent commit lands while the user
+    has unrelated uncommitted edits, and both survive."""
+
+    def test_the_daemon_lands_an_agent_commit_beside_the_users_uncommitted_edits_when_the_two_touch_different_files(self):
+        """Given outer on `feat/X`, alcatrazer start, an agent commit to file
+        `A`, and an outer uncommitted edit to a DIFFERENT file `B`; When the
+        daemon promotes; Then `git am` SUCCEEDS — the agent commit lands on
+        feat/X while the user's uncommitted edit to `B` stays in the working
+        tree untouched (`git status` shows the new commit applied and `B` still
+        dirty). This is the "transparent collaboration" the design promises.
+
+        Coverage gap: Conflict-semantics case #1 (non-overlapping dirty tree)
+        is untested anywhere."""
+        self.fail("not yet implemented — see docstring")
+
+
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestAgentCommitsStackOnUserCommits(unittest.TestCase):
+    """Outer moving ahead with the user's own commits is the expected case —
+    agent patches stack on top as further fast-forwards."""
+
+    def test_the_daemon_stacks_agent_commits_on_top_of_the_users_own_commits_when_the_user_commits_on_the_pinned_branch_between_syncs(self):
+        """Given outer on `feat/X`, alcatrazer start (snapshot taken); When the
+        user makes their OWN commit(s) on feat/X after the snapshot (outer
+        moves ahead) and an agent also commits inside; Then the daemon applies
+        the agent patches as fast-forwards ON TOP of the user's commits —
+        feat/X reads O1 → user-commit(s) → agent-commit(s), with both
+        preserved.
+
+        Coverage gap: the doc calls this "the expected case, not an edge case",
+        but it is unproven end-to-end; the `apply_patch_stream` preserve-history
+        unit test never involves user commits made after the snapshot."""
+        self.fail("not yet implemented — see docstring")
+
+
+if __name__ == "__main__":
+    unittest.main()
