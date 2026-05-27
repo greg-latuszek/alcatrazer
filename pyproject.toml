@@ -77,3 +77,10 @@ select = [
 ignore = [
     "UP036",  # version guard blocks — we keep these for friendly errors when run directly with old Python
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Integration-test method names are full-sentence specs (who / does-what /
+# what-happens / under-what-conditions) — the name IS the documentation. Let
+# them run past the line-length limit rather than truncate the prose. Scoped
+# to E501 only, so every other rule still applies to these files.
+"src/alcatrazer/integration_tests/**" = ["E501"]
