@@ -3687,6 +3687,16 @@ class CmdClearTests(unittest.TestCase):
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
 
+    def _setup_workspace(self):
+        """A real post-`start` workspace always has a `workspace-dir`
+        marker; cmd_clear treats its absence as "not set up" and refuses
+        before any teardown. These tests exercise teardown, so they must
+        write it. No inner `.git` is created, so count_pending_commits
+        returns 0 and the pin/pending block never fires."""
+        alcatraz_dir = self.project_dir / ".alcatrazer"
+        alcatraz_dir.mkdir()
+        identity.store_workspace_dir(str(alcatraz_dir), ".ws-test")
+
     def _run(self, prison=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -3702,7 +3712,7 @@ class CmdClearTests(unittest.TestCase):
     def test_noop_when_alcatraz_absent_still_reaps_daemon(self):
         """No container to remove, but a lingering daemon might still
         exist (user did `docker rm` manually) — shut it down regardless."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = False
         prison.is_running.return_value = False
@@ -3714,7 +3724,7 @@ class CmdClearTests(unittest.TestCase):
         self.assertIn("nothing to clear", out.lower())
 
     def test_removes_running_alcatraz(self):
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3734,7 +3744,7 @@ class CmdClearTests(unittest.TestCase):
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
         to discard — remove, but don't bother calling stop on it."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = False
@@ -3746,7 +3756,7 @@ class CmdClearTests(unittest.TestCase):
     def test_does_not_touch_image_or_config(self):
         """Clear is strictly the container — image survives, no
         rebuild / recipe regeneration."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3757,7 +3767,7 @@ class CmdClearTests(unittest.TestCase):
     def test_ordering_docker_stop_then_daemon_then_docker_rm(self):
         """The three-step dance: docker down first, daemon finalizes,
         then discard container."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3780,7 +3790,7 @@ class CmdClearTests(unittest.TestCase):
         self.mock_shutdown.return_value = self.ShutdownResult(
             outcome="conflict", synced_count=1, conflict_branches=["feat/x"]
         )
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -4199,8 +4209,10 @@ class CmdStatusPausedStateTests(_CmdStatusTestBase):
         self.assertIn("Started from", out)
         self.assertIn("'feat/X'", out)
         # Working-tree conflict explanation + actionable next step.
+        # Conflict resolution is git-rm/rename of the conflicting file,
+        # not "stash" — see project_promotion_conflict_semantics.
         self.assertIn("working tree", out.lower())
-        self.assertRegex(out, r"[Cc]ommit or stash")
+        self.assertRegex(out, r"remove it or rename")
         # Pending commits = 1 (the agent commit waiting to apply).
         self.assertRegex(out, r"Pending commits:\s*1\b")
         # Last sync: never (last_promotion_time absent).
