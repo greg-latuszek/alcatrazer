@@ -318,7 +318,39 @@ class TestNonOverlappingEditsCoexist(PromotionFlowTest):
 
         Coverage gap: Conflict-semantics case #1 (non-overlapping dirty tree)
         is untested anywhere."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X.
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # The user has an in-progress, uncommitted edit to a tracked file.
+        # README.md is what `_seed_project` puts in the outer repo at
+        # bootstrap, so it's reliably tracked.
+        user_edit = "user's in-progress note\n"
+        self._user_edits_tracked_file_in_outer("README.md", user_edit)
+
+        # When the agent commits a NEW, differently-named file inside the
+        # workspace, the patch will only touch A.txt — no overlap with the
+        # user's dirty README.md.
+        agent_subject = "coexist: agent adds A.txt"
+        self._agent_commits(agent_subject, "A.txt")
+        self._assert_daemon_synced_to_outer(agent_subject)
+
+        # Then: feat/X grew by exactly the agent's commit, the agent's
+        # A.txt landed in outer, AND the user's uncommitted edit to
+        # README.md survives both as file content and as git's view (still
+        # modified-but-unstaged — not silently staged, stashed, or
+        # reverted). This is the design's "transparent collaboration"
+        # promise: the agent's commit appears under the user's cursor
+        # without disturbing it.
+        self._assert_outer_commit_count_is("feat/X", commits_before + 1)
+        self._assert_outer_has("A.txt")
+        self.assertEqual(
+            (self.project_dir / "README.md").read_text(),
+            user_edit,
+            "user's uncommitted edit to README.md must survive the agent's "
+            "promotion (the patch only touched A.txt — no path overlap)",
+        )
+        self._assert_outer_tracked_file_is_modified("README.md")
 
 
 class TestAgentCommitsStackOnUserCommits(PromotionFlowTest):

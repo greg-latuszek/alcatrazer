@@ -129,6 +129,13 @@ class PromotionFlowTest(unittest.TestCase):
         not in-tree merge, is what clears the way)."""
         (self.project_dir / filename).unlink()
 
+    def _user_edits_tracked_file_in_outer(self, filename: str, content: str) -> None:
+        """Modify an existing tracked file in the outer working tree without
+        staging or committing — i.e., make the file 'dirty' from git's view.
+        Same write-file mechanic as creating an untracked file, but different
+        intent (the file is already part of the repo's history)."""
+        (self.project_dir / filename).write_text(content)
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [
@@ -253,6 +260,20 @@ class PromotionFlowTest(unittest.TestCase):
             [author_name, author_email, committer_name, committer_email],
             [name, email, name, email],
             f"{branch} tip should be authored AND committed as {name} <{email}>",
+        )
+
+    def _assert_outer_tracked_file_is_modified(self, filename: str) -> None:
+        """Assert `filename` appears as modified-but-unstaged in `git status`
+        — i.e., the user's edit is still pending in the working tree, not
+        accidentally staged, stashed, or reverted by promotion."""
+        status = run_git_command(
+            ["-C", str(self.project_dir), "status", "--porcelain", filename], check=True
+        ).stdout
+        # Porcelain format: `XY <space> <path>`; " M <path>" is
+        # working-tree-modified, index-clean.
+        self.assertTrue(
+            status.startswith(" M "),
+            f"{filename} should be modified-but-unstaged; git status:\n{status!r}",
         )
 
     def _assert_outer_working_tree_is_clean(self) -> None:
