@@ -262,6 +262,23 @@ class PromotionFlowTest(unittest.TestCase):
             f"{branch} tip should be authored AND committed as {name} <{email}>",
         )
 
+    def _assert_outer_branch_tip_subjects(self, branch: str, *expected_top: str) -> None:
+        """Assert the N most-recent commit subjects on `branch` are exactly
+        `expected_top`, in order (newest first). Older commits below are
+        ignored (the seed isn't part of the claim). Used to lock the
+        stacking order when the user's commits and the agent's promoted
+        commits both land on the same branch."""
+        log = run_git_command(
+            ["-C", str(self.project_dir), "log", branch, "--format=%s"], check=True
+        ).stdout
+        actual = log.splitlines()[: len(expected_top)]
+        self.assertEqual(
+            list(expected_top),
+            actual,
+            f"{branch}'s most-recent commits should read {list(expected_top)} "
+            f"(newest first); got {actual}",
+        )
+
     def _assert_outer_tracked_file_is_modified(self, filename: str) -> None:
         """Assert `filename` appears as modified-but-unstaged in `git status`
         — i.e., the user's edit is still pending in the working tree, not

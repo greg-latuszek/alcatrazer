@@ -370,7 +370,44 @@ class TestAgentCommitsStackOnUserCommits(PromotionFlowTest):
         Coverage gap: the doc calls this "the expected case, not an edge case",
         but it is unproven end-to-end; the `apply_patch_stream` preserve-history
         unit test never involves user commits made after the snapshot."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X (snapshot taken at the
+        # seed commit; daemon polling).
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: the user makes their OWN commits on feat/X after the
+        # snapshot — outer moves ahead while Alcatraz keeps running.
+        # (The daemon may poll between these; with nothing pending inside
+        # it's a no-op cycle and feat/X just keeps growing on its own.)
+        self._user_commits("stack: user commit 1 of 2", "user-1.txt")
+        self._user_commits("stack: user commit 2 of 2", "user-2.txt")
+
+        # ... and the agent commits inside the workspace.
+        agent_subjects = [
+            "stack: agent commit 1 of 2",
+            "stack: agent commit 2 of 2",
+        ]
+        for i, subject in enumerate(agent_subjects, start=1):
+            self._agent_commits(subject, f"agent-{i}.txt")
+
+        # Then: the daemon's next poll applies the agent patches as fast-
+        # forwards ON TOP of the user's commits — both are preserved.
+        self._assert_daemon_synced_to_outer(agent_subjects[-1])
+
+        # feat/X grew by the user's commits + the agent's commits; every
+        # file is present; and the log order locks the stacking claim:
+        # newest-first reads agent-2, agent-1, user-2, user-1 (with the
+        # seed below — not asserted, not part of the claim).
+        self._assert_outer_commit_count_is("feat/X", commits_before + 2 + len(agent_subjects))
+        for filename in ("user-1.txt", "user-2.txt", "agent-1.txt", "agent-2.txt"):
+            self._assert_outer_has(filename)
+        self._assert_outer_branch_tip_subjects(
+            "feat/X",
+            "stack: agent commit 2 of 2",
+            "stack: agent commit 1 of 2",
+            "stack: user commit 2 of 2",
+            "stack: user commit 1 of 2",
+        )
 
 
 if __name__ == "__main__":
