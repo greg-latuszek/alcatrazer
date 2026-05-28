@@ -186,6 +186,20 @@ class PromotionFlowTest(unittest.TestCase):
         self.assertEqual(rc, 0, "cmd_start should succeed")
         print(f"workspace after start: {self._run_in_workspace('ls -la /workspace')}")
 
+    def _alcatrazer_start_is_refused(self) -> str:
+        """Run cmd_start, assert it refused (nonzero rc), return captured
+        stderr so the caller can lock the refusal-message contents (start's
+        precondition failures print to stderr)."""
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
+        self.assertNotEqual(rc, 0, f"cmd_start should refuse; stderr was:\n{stderr_buf.getvalue()}")
+        return stderr_buf.getvalue()
+
+    def _alcatrazer_stops(self) -> None:
+        rc = start_mod.cmd_stop(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_stop should succeed")
+
     def _alcatrazer_clears(self) -> None:
         rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
         self.assertEqual(rc, 0, "cmd_clear should succeed")

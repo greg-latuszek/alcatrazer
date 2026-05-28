@@ -220,7 +220,38 @@ class TestStopRestartPreservesPin(PromotionFlowTest):
         Coverage gap: the doc explicitly distinguishes stop/start (freeze-
         restart, same pin) from clear/start (fresh, new pin); only the
         clear/start half is proven end-to-end today."""
-        self.fail("not yet implemented — see docstring")
+        # Given: started on feat/X; agent commits and the daemon promotes
+        # so we have one promoted commit on outer's feat/X.
+        self._given_alcatrazer_started_on_branch("feat/X")
+        feat_x_count_before = self._outer_commit_count("feat/X")
+        first_subject = "stop-restart: agent commit before stop"
+        self._agent_commits(first_subject, "before-stop.txt")
+        self._assert_daemon_synced_to_outer(first_subject)
+        self._assert_outer_has("before-stop.txt")
+
+        # When: stop, then start again (NOT clear). User stays on feat/X
+        # throughout.
+        self._alcatrazer_stops()
+        self._alcatrazer_starts()
+
+        # Then: the pin is still feat/X, the workspace was NOT wiped
+        # (its .git survives), and the inner content from before stop is
+        # still there.
+        self._assert_workspace_pinned_to("feat/X")
+        self._assert_workspace_repo_exists()
+        self._assert_workspace_has("before-stop.txt")
+        self._assert_outer_has("before-stop.txt")
+
+        # And the daemon is ACTIVE (on-pin) — prove it by making ANOTHER
+        # agent commit after restart and observing it promote. feat/X
+        # grew by exactly the two commits (one before stop, one after
+        # restart) — the workspace was preserved across the freeze, not
+        # re-snapshotted.
+        second_subject = "stop-restart: agent commit after restart (proves daemon active)"
+        self._agent_commits(second_subject, "after-restart.txt")
+        self._assert_daemon_synced_to_outer(second_subject)
+        self._assert_outer_has("after-restart.txt")
+        self._assert_outer_commit_count_is("feat/X", feat_x_count_before + 2)
 
 
 class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(PromotionFlowTest):
@@ -405,7 +436,32 @@ class TestStartRefusesDetachedHead(PromotionFlowTest):
         Coverage gap: only the mocked start `refuses_with_explanatory_message_
         on_detached_head` test exists; this proves the precondition halts the
         real flow before any build/snapshot."""
-        self.fail("not yet implemented — see docstring")
+        # Given: a fresh init'd project (setUpClass did cmd_init) whose
+        # outer repo is in detached HEAD — there's no branch to pin to.
+        # The seed gives outer one commit on main, so detaching HEAD at
+        # that commit works.
+        self._user_detaches_head()
+
+        # When: start runs.
+        stderr = self._alcatrazer_start_is_refused()
+
+        # Then: stderr explains the precondition AND points the user at the
+        # recovery (`git checkout <branch>`); NO workspace dir was created;
+        # NO container was created; NO pin was written (no state.json).
+        # The precondition halted the flow before any docker / snapshot
+        # work — the user's outer repo state is undisturbed.
+        self.assertIn("detached HEAD", stderr)
+        self.assertIn("git checkout", stderr)
+        self.assertFalse(
+            self.workspace.exists(),
+            f"workspace dir {self.workspace} should not exist after refused start",
+        )
+        self.assertFalse(
+            self.prison.exists(),
+            "no container should exist after a refused start (precondition halts "
+            "the flow before any docker work)",
+        )
+        self._assert_pin_is_dropped()
 
 
 if __name__ == "__main__":
