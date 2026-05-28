@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 
 from alcatrazer import daemon, schema, state
+from alcatrazer.git_runner import run_git_command
 from alcatrazer.promote import PromotionOutcome
 
 
@@ -415,14 +416,8 @@ PROMOTED_EMAIL = "test@example.com"
 
 
 def git(repo: str, *args: str) -> str:
-    """Run a git command, return stdout."""
-    result = subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
+    """Thin local shim; the funnel still owns every git execution."""
+    return run_git_command(["-C", repo, *args], check=True).stdout.strip()
 
 
 class TestDaemonPromotion(unittest.TestCase):
@@ -438,7 +433,7 @@ class TestDaemonPromotion(unittest.TestCase):
         Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create the outer (target) repo
-        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        run_git_command(["init", self.test_project], check=True)
         git(self.test_project, "config", "user.name", PROMOTED_NAME)
         git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
         git(self.test_project, "config", "commit.gpgsign", "false")
@@ -449,7 +444,7 @@ class TestDaemonPromotion(unittest.TestCase):
 
         # Create the inner (source) workspace repo
         os.makedirs(self.workspace)
-        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        run_git_command(["init", self.workspace], check=True)
         git(self.workspace, "config", "user.name", "Alcatraz Agent")
         git(self.workspace, "config", "user.email", "alcatraz@localhost")
         git(self.workspace, "config", "commit.gpgsign", "false")
@@ -610,7 +605,7 @@ class TestLogRotation(unittest.TestCase):
         Path(self.alcatraz_dir, "workspace-dir").write_text(WORKSPACE_DIR_NAME + "\n")
 
         # Create outer repo
-        subprocess.run(["git", "init", self.test_project], capture_output=True, check=True)
+        run_git_command(["init", self.test_project], check=True)
         git(self.test_project, "config", "user.name", PROMOTED_NAME)
         git(self.test_project, "config", "user.email", PROMOTED_EMAIL)
         git(self.test_project, "config", "commit.gpgsign", "false")
@@ -620,7 +615,7 @@ class TestLogRotation(unittest.TestCase):
 
         # Create workspace
         os.makedirs(self.workspace)
-        subprocess.run(["git", "init", self.workspace], capture_output=True, check=True)
+        run_git_command(["init", self.workspace], check=True)
         git(self.workspace, "config", "user.name", "Alcatraz Agent")
         git(self.workspace, "config", "user.email", "alcatraz@localhost")
         git(self.workspace, "config", "commit.gpgsign", "false")
@@ -699,54 +694,29 @@ class TestRunCycleMirror(unittest.TestCase):
     def _make_inner(self, inner: Path) -> str:
         """Initial empty commit (inner_root) — caller adds more commits."""
         inner.mkdir()
-        subprocess.run(
-            ["git", "init", "-b", "main", str(inner)],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", "main", str(inner)], check=True)
         for k, v in (
             ("user.name", "Patricia Garcia"),
             ("user.email", "patricia@inner.example.com"),
             ("commit.gpgsign", "false"),
         ):
-            subprocess.run(
-                ["git", "-C", str(inner), "config", k, v],
-                capture_output=True,
-                check=True,
-            )
-        subprocess.run(
-            ["git", "-C", str(inner), "commit", "--allow-empty", "-m", "Initial commit"],
-            capture_output=True,
-            check=True,
+            run_git_command(["-C", str(inner), "config", k, v], check=True)
+        run_git_command(
+            ["-C", str(inner), "commit", "--allow-empty", "-m", "Initial commit"], check=True
         )
-        return subprocess.run(
-            ["git", "-C", str(inner), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+        return run_git_command(["-C", str(inner), "rev-parse", "HEAD"], check=True).stdout.strip()
 
     def _make_outer(self, outer: Path, branch: str) -> None:
         outer.mkdir()
-        subprocess.run(
-            ["git", "init", "-b", branch, str(outer)],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", branch, str(outer)], check=True)
         for k, v in (
             ("user.name", "Outer User"),
             ("user.email", "user@outer.example.com"),
             ("commit.gpgsign", "false"),
         ):
-            subprocess.run(
-                ["git", "-C", str(outer), "config", k, v],
-                capture_output=True,
-                check=True,
-            )
-        subprocess.run(
-            ["git", "-C", str(outer), "commit", "--allow-empty", "-m", "initial outer commit"],
-            capture_output=True,
-            check=True,
+            run_git_command(["-C", str(outer), "config", k, v], check=True)
+        run_git_command(
+            ["-C", str(outer), "commit", "--allow-empty", "-m", "initial outer commit"], check=True
         )
 
     def _capturing_logger(self):
@@ -762,16 +732,8 @@ class TestRunCycleMirror(unittest.TestCase):
 
     def _agent_commit(self, inner: Path, filename: str, content: str, message: str) -> None:
         Path(inner, filename).write_text(content)
-        subprocess.run(
-            ["git", "-C", str(inner), "add", filename],
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(inner), "commit", "-m", message],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["-C", str(inner), "add", filename], check=True)
+        run_git_command(["-C", str(inner), "commit", "-m", message], check=True)
 
     def test_end_to_end_promotes_agent_commit(self):
         """Manual-test shape: outer on feat/X with one initial commit;
@@ -796,11 +758,8 @@ class TestRunCycleMirror(unittest.TestCase):
                 inner, "feature.py", "def feature():\n    return 42\n", "agent: add feature"
             )
             self._make_outer(outer, "feat/X")
-            outer_initial = subprocess.run(
-                ["git", "-C", str(outer), "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=True,
+            outer_initial = run_git_command(
+                ["-C", str(outer), "rev-parse", "HEAD"], check=True
             ).stdout.strip()
 
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
@@ -820,29 +779,22 @@ class TestRunCycleMirror(unittest.TestCase):
             self.assertEqual(new_status, PromotionOutcome.PROMOTED)
             # Outer advanced from 1 to 2 commits.
             self.assertEqual(
-                subprocess.run(
-                    ["git", "-C", str(outer), "rev-list", "--count", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
+                run_git_command(
+                    ["-C", str(outer), "rev-list", "--count", "HEAD"], check=True
                 ).stdout.strip(),
                 "2",
             )
             # Original outer commit still ancestor of HEAD.
             self.assertEqual(
-                subprocess.run(
-                    ["git", "-C", str(outer), "merge-base", "--is-ancestor", outer_initial, "HEAD"],
-                    capture_output=True,
+                run_git_command(
+                    ["-C", str(outer), "merge-base", "--is-ancestor", outer_initial, "HEAD"],
                 ).returncode,
                 0,
             )
             # Working tree clean.
             self.assertEqual(
-                subprocess.run(
-                    ["git", "-C", str(outer), "status", "--porcelain"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
+                run_git_command(
+                    ["-C", str(outer), "status", "--porcelain"], check=True
                 ).stdout.strip(),
                 "",
             )
@@ -882,11 +834,7 @@ class TestRunCycleMirror(unittest.TestCase):
             # Outer initialised on `main`; feat/X exists but isn't
             # checked out (so check_pin returns OFF_PIN, not PIN_DELETED).
             self._make_outer(outer, "main")
-            subprocess.run(
-                ["git", "-C", str(outer), "branch", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "branch", "feat/X"], check=True)
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             log, records = self._capturing_logger()
@@ -934,11 +882,7 @@ class TestRunCycleMirror(unittest.TestCase):
 
             # Cycle 3: user recheckouts feat/X. PROMOTED with 2 piled
             # commits, log "Resumed: ..." mentioning the count.
-            subprocess.run(
-                ["git", "-C", str(outer), "checkout", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "checkout", "feat/X"], check=True)
             status3 = daemon._run_cycle_mirror(
                 source=inner,
                 target=outer,
@@ -980,89 +924,40 @@ class TestRunCycleMirror(unittest.TestCase):
 
             # Inner: initial with shared.py = v1; agent edits to v2.
             inner.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "main", str(inner)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", str(inner)], check=True)
             for k, v in (
                 ("user.name", "Patricia Garcia"),
                 ("user.email", "patricia@inner.example.com"),
                 ("commit.gpgsign", "false"),
             ):
-                subprocess.run(
-                    ["git", "-C", str(inner), "config", k, v],
-                    capture_output=True,
-                    check=True,
-                )
+                run_git_command(["-C", str(inner), "config", k, v], check=True)
             Path(inner, "shared.py").write_text("v1\n")
-            subprocess.run(
-                ["git", "-C", str(inner), "add", "shared.py"],
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(inner), "commit", "-m", "Initial commit"],
-                capture_output=True,
-                check=True,
-            )
-            inner_root = subprocess.run(
-                ["git", "-C", str(inner), "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=True,
+            run_git_command(["-C", str(inner), "add", "shared.py"], check=True)
+            run_git_command(["-C", str(inner), "commit", "-m", "Initial commit"], check=True)
+            inner_root = run_git_command(
+                ["-C", str(inner), "rev-parse", "HEAD"], check=True
             ).stdout.strip()
             Path(inner, "shared.py").write_text("v2 - agent\n")
-            subprocess.run(
-                ["git", "-C", str(inner), "add", "."],
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(inner), "commit", "-m", "agent: edit shared"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(inner), "add", "."], check=True)
+            run_git_command(["-C", str(inner), "commit", "-m", "agent: edit shared"], check=True)
 
             # Outer on feat/X: shared.py = v1 initially, then user
             # commits a conflicting edit to "v2 - user".
             outer.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "feat/X", str(outer)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "feat/X", str(outer)], check=True)
             for k, v in (
                 ("user.name", "Outer User"),
                 ("user.email", "user@outer.example.com"),
                 ("commit.gpgsign", "false"),
             ):
-                subprocess.run(
-                    ["git", "-C", str(outer), "config", k, v],
-                    capture_output=True,
-                    check=True,
-                )
+                run_git_command(["-C", str(outer), "config", k, v], check=True)
             Path(outer, "shared.py").write_text("v1\n")
-            subprocess.run(
-                ["git", "-C", str(outer), "add", "shared.py"],
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(outer), "commit", "-m", "initial outer"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "add", "shared.py"], check=True)
+            run_git_command(["-C", str(outer), "commit", "-m", "initial outer"], check=True)
             Path(outer, "shared.py").write_text("v2 - user\n")
-            subprocess.run(
-                ["git", "-C", str(outer), "add", "."],
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(outer), "commit", "-m", "user: conflicting edit"],
-                capture_output=True,
-                check=True,
+            run_git_command(["-C", str(outer), "add", "."], check=True)
+            run_git_command(
+                ["-C", str(outer), "commit", "-m", "user: conflicting edit"], check=True
             )
 
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
@@ -1093,11 +988,7 @@ class TestRunCycleMirror(unittest.TestCase):
 
             # User resolves: revert their conflicting commit so the
             # patch's base (v1) matches outer's HEAD content again.
-            subprocess.run(
-                ["git", "-C", str(outer), "reset", "--hard", "HEAD~1"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "reset", "--hard", "HEAD~1"], check=True)
 
             # Cycle 2: PROMOTED, "Resumed:" logged.
             status2 = daemon._run_cycle_mirror(

@@ -22,7 +22,6 @@ MVP) — this module stays backend-agnostic.
 import hashlib
 import secrets
 import shutil
-import subprocess
 import sys
 import textwrap
 import tomllib
@@ -37,6 +36,7 @@ from alcatrazer.daemon_lifecycle import (
     shutdown_sync_daemon,
 )
 from alcatrazer.docker_prison import DockerPrison
+from alcatrazer.git_runner import run_git_command
 from alcatrazer.languages import SUPPORTED_LANGUAGES
 from alcatrazer.status import count_pending_commits
 
@@ -529,11 +529,12 @@ def read_git_identity(project_dir: Path) -> tuple[str | None, str | None]:
     """Return (name, email) from git config — local first, global fallback, per field."""
 
     def get(scope: str, key: str) -> str | None:
-        result = subprocess.run(
-            ["git", "config", f"--{scope}", "--get", key],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
+        # `-C project_dir` sets the cwd so `--local` finds project_dir/.git/config;
+        # `--global` still reads ~/.gitconfig regardless of cwd. Either way the
+        # funnel routes this as ordinary-host-repo (project_dir is the outer
+        # repo, not the inner workspace).
+        result = run_git_command(
+            ["-C", str(project_dir), "config", f"--{scope}", "--get", key],
         )
         value = result.stdout.strip()
         return value if result.returncode == 0 and value else None
@@ -1092,28 +1093,26 @@ def create_workspace(project_dir: Path, workspace_name: str) -> Path:
     alcatrazer_dir.mkdir(parents=True, exist_ok=True)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
-        ["git", "init", str(workspace_dir)],
-        capture_output=True,
-        check=True,
-    )
+    run_git_command(["init", str(workspace_dir)], check=True)
 
     name, email = identity.ensure_identity(str(alcatrazer_dir))
 
-    def _wgit(*args: str) -> None:
-        subprocess.run(
-            ["git", "-C", str(workspace_dir), *args],
-            capture_output=True,
-            check=True,
-        )
-
-    _wgit("config", "--local", "user.name", name)
-    _wgit("config", "--local", "user.email", email)
-    _wgit("config", "--local", "commit.gpgsign", "false")
+    run_git_command(["-C", str(workspace_dir), "config", "--local", "user.name", name], check=True)
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "user.email", email], check=True
+    )
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "commit.gpgsign", "false"], check=True
+    )
     # Defensive: clear any host signing-key references so they cannot leak
     # into the inner repo's config.
-    _wgit("config", "--local", "user.signingkey", "")
-    _wgit("config", "--local", "gpg.ssh.allowedSignersFile", "")
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "user.signingkey", ""], check=True
+    )
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "gpg.ssh.allowedSignersFile", ""],
+        check=True,
+    )
 
     snapshot.snapshot_workspace(str(project_dir), str(workspace_dir), str(alcatrazer_dir))
 

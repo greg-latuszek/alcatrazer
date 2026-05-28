@@ -33,6 +33,7 @@ from alcatrazer import start as start_mod
 from alcatrazer import state
 from alcatrazer import status as status_mod
 from alcatrazer.docker_prison import DockerPrison
+from alcatrazer.git_runner import run_git_command
 from alcatrazer.integration_tests.test_smoke import (
     CODING_ENV,
     _docker_available,
@@ -102,10 +103,10 @@ class PromotionFlowTest(unittest.TestCase):
     # ── Actors and their actions ──────────────────────────────────────
 
     def _user_creates_branch(self, name: str) -> None:
-        self._git("checkout", "-b", name)
+        run_git_command(["-C", str(self.project_dir), "checkout", "-b", name], check=True)
 
     def _user_returns_to_branch(self, name: str) -> None:
-        self._git("checkout", name)
+        run_git_command(["-C", str(self.project_dir), "checkout", name], check=True)
 
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
@@ -223,8 +224,9 @@ class PromotionFlowTest(unittest.TestCase):
     ) -> None:
         # Both author and committer must be the user's promotion identity —
         # the inner agent's (random) identity must not leak into either field.
-        author_name, author_email, committer_name, committer_email = self._git(
-            "log", "-1", "--format=%an%n%ae%n%cn%n%ce", branch
+        author_name, author_email, committer_name, committer_email = run_git_command(
+            ["-C", str(self.project_dir), "log", "-1", "--format=%an%n%ae%n%cn%n%ce", branch],
+            check=True,
         ).stdout.splitlines()
         self.assertEqual(
             [author_name, author_email, committer_name, committer_email],
@@ -238,7 +240,10 @@ class PromotionFlowTest(unittest.TestCase):
         # are expected untracked entries, not part of the promotion contract.
         # The bug this guards is a phantom "deleted: <tracked file>" left when
         # the ref advances but the working tree doesn't — that surfaces here.
-        status = self._git("status", "--porcelain", "--untracked-files=no").stdout
+        status = run_git_command(
+            ["-C", str(self.project_dir), "status", "--porcelain", "--untracked-files=no"],
+            check=True,
+        ).stdout
         self.assertEqual(status, "", f"outer working tree should be clean; git status:\n{status}")
 
     def _assert_daemon_holds(self, timeout: float = 10.0) -> None:
@@ -279,14 +284,6 @@ class PromotionFlowTest(unittest.TestCase):
 
     # ── Low-level access to the two repos and the container ───────────
 
-    def _git(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", "-C", str(self.project_dir), *args],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
     def _pinned_branch(self) -> str | None:
         return state.load_state(self.alcatraz_dir).get("pinned_branch")
 
@@ -303,13 +300,20 @@ class PromotionFlowTest(unittest.TestCase):
     def _wait_until_outer_has_commit(self, subject: str, timeout: float = 15.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if subject in self._git("log", "--all", "--format=%s").stdout.splitlines():
+            outer_log = run_git_command(
+                ["-C", str(self.project_dir), "log", "--all", "--format=%s"], check=True
+            )
+            if subject in outer_log.stdout.splitlines():
                 return True
             time.sleep(0.5)
         return False
 
     def _outer_commit_count(self, branch: str) -> int:
-        return int(self._git("rev-list", "--count", branch).stdout.strip())
+        return int(
+            run_git_command(
+                ["-C", str(self.project_dir), "rev-list", "--count", branch], check=True
+            ).stdout.strip()
+        )
 
     def _daemon_log_text(self) -> str:
         log_file = self.alcatraz_dir / "promotion-daemon.log"

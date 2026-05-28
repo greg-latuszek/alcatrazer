@@ -18,26 +18,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 
 from alcatrazer import snapshot, state
+from alcatrazer.git_runner import run_git_command
 
 
 def git(repo: str, *args: str) -> str:
-    """Run a git command in the given repo, return stdout."""
-    result = subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
+    """Thin local shim; the funnel still owns every git execution."""
+    return run_git_command(["-C", repo, *args], check=True).stdout.strip()
 
 
 def make_repo(path: str, branch: str = "main") -> None:
     """Create a git repo with one commit on the given branch."""
-    subprocess.run(
-        ["git", "init", "-b", branch, path],
-        capture_output=True,
-        check=True,
-    )
+    run_git_command(["init", "-b", branch, path], check=True)
     git(path, "config", "user.name", "Test")
     git(path, "config", "user.email", "test@test.com")
     Path(path, "file.txt").write_text("hello")
@@ -102,11 +93,7 @@ class TestDetectDefaultBranch(unittest.TestCase):
 
             # Clone it — this sets origin/HEAD automatically
             local = Path(tmp) / "local"
-            subprocess.run(
-                ["git", "clone", str(remote), str(local)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(local.parent), "clone", str(remote), str(local)], check=True)
             # Also create a master branch locally
             git(str(local), "branch", "master")
 
@@ -121,21 +108,13 @@ class TestDetectDefaultBranch(unittest.TestCase):
             make_repo(str(remote), branch="master")
 
             local = Path(tmp) / "local"
-            subprocess.run(
-                ["git", "clone", str(remote), str(local)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(local.parent), "clone", str(remote), str(local)], check=True)
             self.assertEqual(snapshot.detect_default_branch(str(local)), "master")
 
     def test_returns_none_for_empty_repo(self):
         """A freshly git-init'd repo with no commits returns None."""
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(
-                ["git", "init", tmp],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", tmp], check=True)
             self.assertIsNone(snapshot.detect_default_branch(tmp))
 
     def test_raises_when_both_exist_without_origin_head(self):
@@ -328,11 +307,7 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_creates_commit_with_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
             # Add a file to stage
@@ -346,11 +321,7 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_commit_message_is_generic(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
             Path(workspace, "x.txt").write_text("x")
@@ -363,11 +334,7 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_all_files_are_committed(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
             Path(workspace, "a.txt").write_text("a")
@@ -385,11 +352,7 @@ class TestCreateInitialCommit(unittest.TestCase):
         """No files → empty initial commit (allow-empty)."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
 
@@ -401,11 +364,7 @@ class TestCreateInitialCommit(unittest.TestCase):
     def test_exactly_one_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
             Path(workspace, "file.txt").write_text("data")
@@ -419,11 +378,7 @@ class TestCreateInitialCommit(unittest.TestCase):
         """Commit must use the identity configured in the workspace, not host."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = tmp
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
             git(workspace, "config", "user.name", "Alcatraz Agent")
             git(workspace, "config", "user.email", "alcatraz@localhost")
             Path(workspace, "f.txt").write_text("x")
@@ -439,7 +394,7 @@ class TestCreateInitialCommit(unittest.TestCase):
 
 def init_workspace(workspace: str) -> None:
     """Simulate what initialize_alcatraz.sh does before calling snapshot."""
-    subprocess.run(["git", "init", workspace], capture_output=True, check=True)
+    run_git_command(["init", workspace], check=True)
     git(workspace, "config", "user.name", "Alcatraz Agent")
     git(workspace, "config", "user.email", "alcatraz@localhost")
     git(workspace, "config", "commit.gpgsign", "false")
@@ -481,11 +436,7 @@ class TestSnapshotWorkspace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
-            subprocess.run(
-                ["git", "init", outer],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", outer], check=True)
             init_workspace(workspace)
             snapshot.snapshot_workspace(outer, workspace)
 
@@ -557,11 +508,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
 
     def _make_workspace_with_commits(self, workspace: str, n: int) -> None:
         """Create a workspace with n commits beyond initial."""
-        subprocess.run(
-            ["git", "init", workspace],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", workspace], check=True)
         git(workspace, "config", "user.name", "Alcatraz Agent")
         git(workspace, "config", "user.email", "alcatraz@localhost")
         git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
@@ -588,11 +535,7 @@ class TestCountUnpromotedCommits(unittest.TestCase):
             workspace = str(Path(tmp) / "workspace")
             marks_dir = str(Path(tmp) / "marks")
             os.makedirs(marks_dir)
-            subprocess.run(
-                ["git", "init", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", workspace], check=True)
 
             count = snapshot.count_unpromoted_commits(workspace, marks_dir)
             self.assertEqual(count, 0)
@@ -647,11 +590,7 @@ class TestSnapshotCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             outer = str(Path(tmp) / "outer")
             workspace = str(Path(tmp) / "workspace")
-            subprocess.run(
-                ["git", "init", outer],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", outer], check=True)
             init_workspace(workspace)
 
             result = subprocess.run(
@@ -788,11 +727,7 @@ class TestCurrentBranch(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = str(Path(tmp) / "repo")
             make_repo(repo, branch="main")
-            subprocess.run(
-                ["git", "-C", repo, "checkout", "-b", "abc"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", repo, "checkout", "-b", "abc"], check=True)
             self.assertEqual(snapshot.current_branch(repo), "abc")
 
     def test_returns_none_for_detached_head(self):
@@ -800,21 +735,13 @@ class TestCurrentBranch(unittest.TestCase):
             repo = str(Path(tmp) / "repo")
             make_repo(repo, branch="main")
             sha = git(repo, "rev-parse", "HEAD")
-            subprocess.run(
-                ["git", "-C", repo, "checkout", "--detach", sha],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", repo, "checkout", "--detach", sha], check=True)
             self.assertIsNone(snapshot.current_branch(repo))
 
     def test_returns_none_for_empty_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = str(Path(tmp) / "repo")
-            subprocess.run(
-                ["git", "init", repo],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", repo], check=True)
             self.assertIsNone(snapshot.current_branch(repo))
 
 
@@ -863,11 +790,7 @@ class TestSnapshotRecordsState(unittest.TestCase):
             make_repo(outer, branch="main")
             # Move outer to a feature branch so the recorded pin is
             # observably different from the default branch.
-            subprocess.run(
-                ["git", "-C", outer, "checkout", "-b", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", outer, "checkout", "-b", "feat/X"], check=True)
             init_workspace(workspace)
 
             snapshot.snapshot_workspace(outer, workspace, str(alcatraz_dir))
@@ -896,11 +819,7 @@ class TestSnapshotUsesCurrentBranchTree(unittest.TestCase):
             alcatraz_dir = Path(tmp) / ".alcatrazer"
             make_repo(outer, branch="main")
             # Create feat/X with a file that is NOT on main.
-            subprocess.run(
-                ["git", "-C", outer, "checkout", "-b", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", outer, "checkout", "-b", "feat/X"], check=True)
             Path(outer, "feat_only.txt").write_text("feature work")
             git(outer, "add", "feat_only.txt")
             git(outer, "commit", "-m", "feat: feature-only file")

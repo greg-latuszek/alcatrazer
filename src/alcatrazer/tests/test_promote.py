@@ -20,20 +20,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "src"))
 from alcatrazer import promote as promote_mod
 from alcatrazer import state
+from alcatrazer.git_runner import run_git_command
 
 PROMOTED_NAME = "Test User"
 PROMOTED_EMAIL = "test@example.com"
 
 
 def git(repo: str, *args: str) -> str:
-    """Run a git command in the given repo, return stdout."""
-    result = subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
+    """Thin local shim; the funnel still owns every git execution."""
+    return run_git_command(["-C", repo, *args], check=True).stdout.strip()
 
 
 # ── Unit tests (no git repos needed) ────────────────────────────────
@@ -72,11 +67,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Inner: initial empty commit (inner_root) + agent commit
             # adding a binary blob and a text file.
-            subprocess.run(
-                ["git", "init", "-b", "main", inner],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner], check=True)
             git(inner, "config", "user.name", "Patricia Garcia")
             git(inner, "config", "user.email", "patricia@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -98,11 +89,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Outer repo with one initial commit, ready to receive
             # the rewritten patch on top.
-            subprocess.run(
-                ["git", "init", "-b", "main", outer],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", outer], check=True)
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -113,11 +100,11 @@ class TestRewriteFromHeader(unittest.TestCase):
             # Apply via plain `git am`. Success itself is an assertion:
             # if rewrite_from_header had corrupted the separator or
             # the binary section, git's parser would refuse here.
-            subprocess.run(
-                ["git", "-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
+            run_git_command(
+                ["-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
                 input=rewritten,
-                capture_output=True,
                 check=True,
+                text=False,
             )
 
             # Ask git directly: top commit's author is Alice.
@@ -177,11 +164,7 @@ class TestRewriteFromHeader(unittest.TestCase):
             # Inner workspace: identity = Patricia, and the commit
             # message body deliberately references that same email
             # as a config snippet.
-            subprocess.run(
-                ["git", "init", "-b", "main", inner],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner], check=True)
             git(inner, "config", "user.name", "Patricia Garcia")
             git(inner, "config", "user.email", "patricia@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -207,11 +190,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Outer repo with one initial commit so git am applies the
             # patch on top.
-            subprocess.run(
-                ["git", "init", "-b", "main", outer],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", outer], check=True)
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -222,11 +201,11 @@ class TestRewriteFromHeader(unittest.TestCase):
             # Apply the rewritten stream via plain `git am` (NOT
             # apply_patch_stream — we want to isolate rewrite_from_header
             # here; apply_patch_stream is tested separately).
-            subprocess.run(
-                ["git", "-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
+            run_git_command(
+                ["-C", outer, "am", "--keep-non-patch", "--whitespace=nowarn"],
                 input=rewritten,
-                capture_output=True,
                 check=True,
+                text=False,
             )
 
             # Ask git directly: who is the author of the top commit?
@@ -270,11 +249,7 @@ class TestPromoteOnce(unittest.TestCase):
         + `count` agent commits on top. Returns (inner_root, inner_tip).
         """
         inner.mkdir()
-        subprocess.run(
-            ["git", "init", "-b", "main", str(inner)],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", "main", str(inner)], check=True)
         git(str(inner), "config", "user.name", "Patricia Garcia")
         git(str(inner), "config", "user.email", "patricia@inner.example.com")
         git(str(inner), "config", "commit.gpgsign", "false")
@@ -290,11 +265,7 @@ class TestPromoteOnce(unittest.TestCase):
     def _make_outer_on_branch(self, outer: Path, branch: str) -> None:
         """Initialise outer as a git repo on `branch` with one commit."""
         outer.mkdir()
-        subprocess.run(
-            ["git", "init", "-b", branch, str(outer)],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", branch, str(outer)], check=True)
         git(str(outer), "config", "user.name", "Outer User")
         git(str(outer), "config", "user.email", "user@outer.example.com")
         git(str(outer), "config", "commit.gpgsign", "false")
@@ -359,11 +330,7 @@ class TestPromoteOnce(unittest.TestCase):
             # Outer on `main`; pinned_branch is feat/X but feat/X must
             # exist so the failure mode is OFF_PIN, not PIN_DELETED.
             self._make_outer_on_branch(outer, "main")
-            subprocess.run(
-                ["git", "-C", str(outer), "branch", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "branch", "feat/X"], check=True)
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             pre_head = git(str(outer), "rev-parse", "HEAD")
@@ -402,11 +369,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             inner_root, _ = self._make_inner_with_agent_commits(inner, count=1)
             self._make_outer_on_branch(outer, "main")
-            subprocess.run(
-                ["git", "-C", str(outer), "branch", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "branch", "feat/X"], check=True)
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             # Cycle 1: HELD (outer on main, not on feat/X).
@@ -423,11 +386,7 @@ class TestPromoteOnce(unittest.TestCase):
             inner_tip = git(str(inner), "rev-parse", "HEAD")
 
             # User recheckouts the pinned branch.
-            subprocess.run(
-                ["git", "-C", str(outer), "checkout", "feat/X"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(outer), "checkout", "feat/X"], check=True)
 
             # Cycle 2: PROMOTED with all 3 piled commits.
             result2 = promote_mod.promote_once(
@@ -463,33 +422,21 @@ class TestPromoteOnce(unittest.TestCase):
             # inner_root -> merge. Side commits exist but only on
             # the second-parent line of the merge.
             inner.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "main", str(inner)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", str(inner)], check=True)
             git(str(inner), "config", "user.name", "Patricia Garcia")
             git(str(inner), "config", "user.email", "patricia@inner.example.com")
             git(str(inner), "config", "commit.gpgsign", "false")
             git(str(inner), "commit", "--allow-empty", "-m", "Initial commit")
             inner_root = git(str(inner), "rev-parse", "HEAD")
 
-            subprocess.run(
-                ["git", "-C", str(inner), "checkout", "-b", "side"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(inner), "checkout", "-b", "side"], check=True)
             Path(inner, "side1.py").write_text("# side 1\n")
             git(str(inner), "add", "side1.py")
             git(str(inner), "commit", "-m", "side: commit 1")
             Path(inner, "side2.py").write_text("# side 2\n")
             git(str(inner), "add", "side2.py")
             git(str(inner), "commit", "-m", "side: commit 2")
-            subprocess.run(
-                ["git", "-C", str(inner), "checkout", "main"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", str(inner), "checkout", "main"], check=True)
             subprocess.run(
                 [
                     "git",
@@ -553,11 +500,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             # Inner: shared.py = "v1" at initial, agent edits to "v2".
             inner.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "main", str(inner)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", str(inner)], check=True)
             git(str(inner), "config", "user.name", "Patricia Garcia")
             git(str(inner), "config", "user.email", "patricia@inner.example.com")
             git(str(inner), "config", "commit.gpgsign", "false")
@@ -571,11 +514,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             # Outer on feat/X with a conflicting local edit on shared.py.
             outer.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "feat/X", str(outer)],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "feat/X", str(outer)], check=True)
             git(str(outer), "config", "user.name", "Outer User")
             git(str(outer), "config", "user.email", "user@outer.example.com")
             git(str(outer), "config", "commit.gpgsign", "false")
@@ -627,11 +566,7 @@ class TestCheckPin(unittest.TestCase):
     def _make_target_with_pinned_branch(self, target: str, pinned: str) -> None:
         """Initialize `target` as a git repo on `pinned`, with one
         commit so HEAD is real (not a "no commits yet" state)."""
-        subprocess.run(
-            ["git", "init", "-b", pinned, target],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", pinned, target], check=True)
         git(target, "config", "user.name", "Outer User")
         git(target, "config", "user.email", "user@outer.example.com")
         git(target, "config", "commit.gpgsign", "false")
@@ -651,11 +586,7 @@ class TestCheckPin(unittest.TestCase):
             target = str(Path(tmp) / "outer")
             self._make_target_with_pinned_branch(target, "feat/X")
             # Switch to a different existing branch.
-            subprocess.run(
-                ["git", "-C", target, "checkout", "-b", "main"],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", target, "checkout", "-b", "main"], check=True)
             self.assertEqual(
                 promote_mod.check_pin(Path(target), "feat/X"),
                 promote_mod.PinStatus.OFF_PIN,
@@ -666,11 +597,7 @@ class TestCheckPin(unittest.TestCase):
             target = str(Path(tmp) / "outer")
             self._make_target_with_pinned_branch(target, "feat/X")
             sha = git(target, "rev-parse", "HEAD")
-            subprocess.run(
-                ["git", "-C", target, "checkout", "--detach", sha],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["-C", target, "checkout", "--detach", sha], check=True)
             self.assertEqual(
                 promote_mod.check_pin(Path(target), "feat/X"),
                 promote_mod.PinStatus.DETACHED,
@@ -704,11 +631,7 @@ class TestFormatPatchStream(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
-            subprocess.run(
-                ["git", "init", "-b", "main", workspace],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", workspace], check=True)
             git(workspace, "config", "user.name", "Test")
             git(workspace, "config", "user.email", "t@test")
             git(workspace, "config", "commit.gpgsign", "false")
@@ -744,11 +667,7 @@ class TestApplyPatchStream(unittest.TestCase):
         """Bootstrap an inner workspace: initial commit + one agent
         commit adding `feature.py`. Returns (inner_root_sha, patch_stream).
         """
-        subprocess.run(
-            ["git", "init", "-b", "main", workspace],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", "main", workspace], check=True)
         git(workspace, "config", "user.name", "Patricia Garcia")
         git(workspace, "config", "user.email", "patricia@inner.example.com")
         git(workspace, "config", "commit.gpgsign", "false")
@@ -763,11 +682,7 @@ class TestApplyPatchStream(unittest.TestCase):
     def _make_outer_with_one_commit(self, outer: str) -> None:
         """Bootstrap outer with one user commit so apply_patch_stream
         applies on top, not as the very first commit."""
-        subprocess.run(
-            ["git", "init", "-b", "main", outer],
-            capture_output=True,
-            check=True,
-        )
+        run_git_command(["init", "-b", "main", outer], check=True)
         git(outer, "config", "user.name", "Outer User")
         git(outer, "config", "user.email", "user@outer.example.com")
         git(outer, "config", "commit.gpgsign", "false")
@@ -818,11 +733,7 @@ class TestApplyPatchStream(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
 
             # Inner: initial + 2 agent commits.
-            subprocess.run(
-                ["git", "init", "-b", "main", inner_ws],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner_ws], check=True)
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -845,9 +756,8 @@ class TestApplyPatchStream(unittest.TestCase):
             # Branch length: O1 + 2 agent patches = 3 commits.
             self.assertEqual(int(git(outer, "rev-list", "--count", "HEAD")), 3)
             # O1 still ancestor of HEAD — outer history preserved.
-            result = subprocess.run(
-                ["git", "-C", outer, "merge-base", "--is-ancestor", o1_sha, "HEAD"],
-                capture_output=True,
+            result = run_git_command(
+                ["-C", outer, "merge-base", "--is-ancestor", o1_sha, "HEAD"],
             )
             self.assertEqual(
                 result.returncode,
@@ -905,11 +815,7 @@ class TestApplyPatchStream(unittest.TestCase):
 
             # Inner: initial commit with shared.py = "original",
             # then agent modifies it to "agent change".
-            subprocess.run(
-                ["git", "init", "-b", "main", inner_ws],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner_ws], check=True)
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -926,11 +832,7 @@ class TestApplyPatchStream(unittest.TestCase):
             # base) but is then modified by the user to "user change".
             # The patch will conflict because its base contents diverge
             # from outer's HEAD contents.
-            subprocess.run(
-                ["git", "init", "-b", "main", outer],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", outer], check=True)
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -989,11 +891,7 @@ class TestApplyPatchStream(unittest.TestCase):
 
             # Inner: initial empty commit (inner_root) + agent commit
             # with SPLIT author/committer.
-            subprocess.run(
-                ["git", "init", "-b", "main", inner],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner], check=True)
             git(inner, "config", "user.name", "Default Inner")
             git(inner, "config", "user.email", "default@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -1007,10 +905,9 @@ class TestApplyPatchStream(unittest.TestCase):
             split_env["GIT_AUTHOR_EMAIL"] = "jane@inner.example.com"
             split_env["GIT_COMMITTER_NAME"] = "John Committer"
             split_env["GIT_COMMITTER_EMAIL"] = "john@inner.example.com"
-            subprocess.run(
-                ["git", "-C", inner, "commit", "-m", "agent: split-identity commit"],
+            run_git_command(
+                ["-C", inner, "commit", "-m", "agent: split-identity commit"],
                 env=split_env,
-                capture_output=True,
                 check=True,
             )
             # Sanity: inner really has the split identity we set up.
@@ -1059,11 +956,7 @@ class TestApplyPatchStream(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
 
             # Inner: initial + an EMPTY agent commit (no diff).
-            subprocess.run(
-                ["git", "init", "-b", "main", inner_ws],
-                capture_output=True,
-                check=True,
-            )
+            run_git_command(["init", "-b", "main", inner_ws], check=True)
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -1096,7 +989,7 @@ class TestResolveIdentity(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.target = os.path.join(self.tmpdir, "target")
         os.makedirs(self.target)
-        subprocess.run(["git", "init", self.target], capture_output=True, check=True)
+        run_git_command(["init", self.target], check=True)
         git(self.target, "config", "commit.gpgsign", "false")
         # Local fixture path — `resolve_identity` accepts any path, doesn't
         # care where it lives. Mirrors the real post-refactor location

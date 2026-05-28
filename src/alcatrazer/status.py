@@ -15,13 +15,13 @@ the shadow permanently.
 """
 
 import os
-import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 
 from alcatrazer import identity, promote, snapshot, state
+from alcatrazer.git_runner import run_git_command
 
 
 def _read_daemon_pid(pid_file: Path) -> int | None:
@@ -61,28 +61,13 @@ def count_pending_commits(workspace: Path, promotion_state: dict | None) -> int:
     inner_root = promotion_state.get("inner_root")
     last_promoted = promotion_state.get("last_promoted")
     count_start_commit = last_promoted or inner_root
-    # `-c safe.directory=<workspace>`: the inner workspace dir is owned by
-    # the container's agent UID (a phantom UID on the host whenever the
-    # host user's UID differs from the container's agent UID), and Git
-    # 2.35+ refuses to operate on such a repo by default ("dubious
-    # ownership"). Without this override the rev-list fails silently and
-    # we'd report Pending: 0 even when commits are piled up — i.e.
-    # `alcatrazer status` would be wrong for any user whose UID does not
-    # match the container's agent UID. Same workaround the daemon uses
-    # for promote (daemon.py:279-286).
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(workspace),
-            "-c",
-            f"safe.directory={workspace}",
-            "rev-list",
-            "--count",
-            f"{count_start_commit}..HEAD",
-        ],
-        capture_output=True,
-        text=True,
+    # The funnel auto-detects that `workspace` is the inner Alcatraz
+    # workspace and prepends `-c safe.directory=<workspace>` for us —
+    # without that override, the rev-list fails silently on hosts where
+    # the user's UID differs from the container's agent UID and we'd
+    # report Pending: 0 even when commits are piled up.
+    result = run_git_command(
+        ["-C", str(workspace), "rev-list", "--count", f"{count_start_commit}..HEAD"],
     )
     if result.returncode != 0:
         return 0

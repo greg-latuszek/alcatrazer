@@ -37,7 +37,6 @@ if sys.version_info < (3, 11):
 
 import os
 import re
-import subprocess
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,16 +44,7 @@ from enum import Enum
 from pathlib import Path
 
 from alcatrazer import snapshot, state
-
-
-def git(repo: Path, *args: str) -> str:
-    """Run a git command in the given repo, return stdout."""
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+from alcatrazer.git_runner import run_git_command
 
 
 def resolve_identity(
@@ -62,8 +52,8 @@ def resolve_identity(
 ) -> tuple[str, str]:
     """Resolve author identity via the three-layer priority chain."""
     # Layer 1: git config (local > global, same as git does)
-    name = git(target_repo, "config", "user.name")
-    email = git(target_repo, "config", "user.email")
+    name = run_git_command(["-C", str(target_repo), "config", "user.name"]).stdout.strip()
+    email = run_git_command(["-C", str(target_repo), "config", "user.email"]).stdout.strip()
 
     # Layer 2: .alcatrazer/config.toml [promotion] section
     if toml_file.exists():
@@ -187,9 +177,8 @@ def format_patch_stream(source: Path, since_sha: str) -> bytes:
     Per change_promotion_machinery.md Phase 2 Step 2.4 (revised in
     Phase 3 Step 3.6 — dropped `--first-parent`).
     """
-    result = subprocess.run(
+    result = run_git_command(
         [
-            "git",
             "-C",
             str(source),
             "format-patch",
@@ -198,8 +187,8 @@ def format_patch_stream(source: Path, since_sha: str) -> bytes:
             "--keep-subject",
             f"{since_sha}..refs/heads/main",
         ],
-        capture_output=True,
         check=True,
+        text=False,
     )
     return result.stdout
 
@@ -236,16 +225,14 @@ def check_pin(target: Path, pinned_branch: str) -> PinStatus:
     """
     # 1. Does the pinned branch still exist?
     pin_exists = (
-        subprocess.run(
+        run_git_command(
             [
-                "git",
                 "-C",
                 str(target),
                 "rev-parse",
                 "--verify",
                 f"refs/heads/{pinned_branch}",
             ],
-            capture_output=True,
         ).returncode
         == 0
     )
@@ -313,9 +300,8 @@ def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> No
     env["GIT_COMMITTER_NAME"] = name
     env["GIT_COMMITTER_EMAIL"] = email
 
-    result = subprocess.run(
+    result = run_git_command(
         [
-            "git",
             "-C",
             str(target),
             "am",
@@ -325,7 +311,7 @@ def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> No
             "--empty=drop",
         ],
         input=rewritten,
-        capture_output=True,
+        text=False,
         env=env,
     )
     if result.returncode != 0:
@@ -333,10 +319,7 @@ def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> No
         # the pre-call state. `--abort` is itself best-effort: failure
         # to abort is rare but if it happens we still raise the
         # original conflict so the caller knows the operation failed.
-        subprocess.run(
-            ["git", "-C", str(target), "am", "--abort"],
-            capture_output=True,
-        )
+        run_git_command(["-C", str(target), "am", "--abort"])
         raise PromotionConflictError(
             f"git am failed (exit {result.returncode}): "
             + result.stderr.decode("utf-8", errors="replace")
@@ -437,10 +420,8 @@ def promote_once(
 
     # 5. Success — advance state. last_promoted moves to inner's tip;
     # last_promotion_time stamped UTC ISO 8601; paused cleared.
-    inner_tip = subprocess.run(
-        ["git", "-C", str(source), "rev-parse", "refs/heads/main"],
-        capture_output=True,
-        text=True,
+    inner_tip = run_git_command(
+        ["-C", str(source), "rev-parse", "refs/heads/main"],
         check=True,
     ).stdout.strip()
     state.update_state(

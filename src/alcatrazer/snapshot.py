@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from alcatrazer import state
+from alcatrazer.git_runner import run_git_command
 
 
 class NotAGitRepoError(Exception):
@@ -21,21 +22,12 @@ class AmbiguousBranchError(Exception):
     """Raised when both main and master exist and origin/HEAD is not set."""
 
 
-def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
-    """Run a git command in the given repo."""
-    return subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-    )
-
-
 def require_git_repo(path: str) -> Path:
     """Verify path is inside a git working tree. Return the repo root.
 
     Raises NotAGitRepoError if not inside a git repository.
     """
-    result = _git(path, "rev-parse", "--show-toplevel")
+    result = run_git_command(["-C", path, "rev-parse", "--show-toplevel"])
     if result.returncode != 0:
         raise NotAGitRepoError(
             f"Not a git repository: {path}\n"
@@ -55,19 +47,23 @@ def detect_default_branch(repo: str) -> str | None:
     Returns None if the repo has no commits (greenfield).
     """
     # Check if repo has any commits at all
-    result = _git(repo, "rev-parse", "HEAD")
+    result = run_git_command(["-C", repo, "rev-parse", "HEAD"])
     if result.returncode != 0:
         return None
 
     # Tier 1: origin/HEAD
-    result = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+    result = run_git_command(["-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD"])
     if result.returncode == 0:
         # refs/remotes/origin/main -> main
         return result.stdout.strip().split("/")[-1]
 
     # Tier 2: existence check
-    has_main = _git(repo, "rev-parse", "--verify", "refs/heads/main").returncode == 0
-    has_master = _git(repo, "rev-parse", "--verify", "refs/heads/master").returncode == 0
+    has_main = (
+        run_git_command(["-C", repo, "rev-parse", "--verify", "refs/heads/main"]).returncode == 0
+    )
+    has_master = (
+        run_git_command(["-C", repo, "rev-parse", "--verify", "refs/heads/master"]).returncode == 0
+    )
 
     if has_main and has_master:
         raise AmbiguousBranchError(
@@ -100,10 +96,10 @@ def is_detached_head(repo: str) -> bool:
     change_promotion_machinery.md): promotion is bound to a starting
     branch, and detached HEAD has no branch to bind to.
     """
-    has_head = _git(repo, "rev-parse", "HEAD").returncode == 0
+    has_head = run_git_command(["-C", repo, "rev-parse", "HEAD"]).returncode == 0
     if not has_head:
         return False
-    on_branch = _git(repo, "symbolic-ref", "--short", "HEAD").returncode == 0
+    on_branch = run_git_command(["-C", repo, "symbolic-ref", "--short", "HEAD"]).returncode == 0
     return not on_branch
 
 
@@ -113,14 +109,14 @@ def current_branch(repo: str) -> str | None:
     no commits yet). Used only to warn the user when they've asked us
     to snapshot a repo whose HEAD isn't on the default branch.
     """
-    result = _git(repo, "symbolic-ref", "--short", "HEAD")
+    result = run_git_command(["-C", repo, "symbolic-ref", "--short", "HEAD"])
     if result.returncode != 0:
         return None
     name = result.stdout.strip()
     # `git symbolic-ref --short HEAD` succeeds on a brand-new repo
     # (HEAD points at refs/heads/<init.defaultBranch> even before any
     # commits exist); filter those out by checking for commits.
-    head = _git(repo, "rev-parse", "HEAD")
+    head = run_git_command(["-C", repo, "rev-parse", "HEAD"])
     if head.returncode != 0:
         return None
     return name or None
@@ -136,10 +132,10 @@ def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
         return
 
     # git archive exports tracked files, piped to tar for extraction
-    archive = subprocess.run(
-        ["git", "-C", repo, "archive", branch],
-        capture_output=True,
+    archive = run_git_command(
+        ["-C", repo, "archive", branch],
         check=True,
+        text=False,
     )
     subprocess.run(
         ["tar", "-xf", "-", "-C", workspace, "--exclude=.alcatrazer", "--exclude=.env"],
@@ -174,8 +170,8 @@ def create_initial_commit(workspace: str) -> None:
     Uses --allow-empty for greenfield repos (no files to commit).
     Commit identity comes from the workspace's git config.
     """
-    _git(workspace, "add", "-A")
-    _git(workspace, "commit", "--allow-empty", "-m", "Initial commit")
+    run_git_command(["-C", workspace, "add", "-A"])
+    run_git_command(["-C", workspace, "commit", "--allow-empty", "-m", "Initial commit"])
 
 
 def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None = None) -> None:
@@ -215,7 +211,7 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
     create_initial_commit(workspace)
 
     if alcatraz_dir is not None:
-        inner_root_sha = _git(workspace, "rev-parse", "HEAD").stdout.strip()
+        inner_root_sha = run_git_command(["-C", workspace, "rev-parse", "HEAD"]).stdout.strip()
         pinned_branch = current_branch(outer_repo)
         state.update_state(
             Path(alcatraz_dir),
@@ -235,26 +231,20 @@ def count_unpromoted_commits(workspace: str, marks_dir: str) -> int:
         return 0
 
     # Check if repo has any commits
-    result = _git(workspace, "rev-parse", "HEAD")
+    result = run_git_command(["-C", workspace, "rev-parse", "HEAD"])
     if result.returncode != 0:
         return 0
 
     export_marks = Path(marks_dir) / "promote-export-marks"
     if not export_marks.exists():
         # No marks = never promoted = all commits are unpromoted
-        result = _git(workspace, "rev-list", "--count", "--all")
+        result = run_git_command(["-C", workspace, "rev-list", "--count", "--all"])
         return int(result.stdout.strip()) if result.returncode == 0 else 0
 
     # With marks, fast-export only outputs commits not yet exported
-    cmd = [
-        "git",
-        "-C",
-        workspace,
-        "fast-export",
-        "--all",
-        f"--import-marks={export_marks}",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_git_command(
+        ["-C", workspace, "fast-export", "--all", f"--import-marks={export_marks}"]
+    )
     commits = re.findall(r"^commit (.+)$", result.stdout, re.MULTILINE)
     return len(commits)
 

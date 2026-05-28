@@ -270,20 +270,11 @@ def main():
     check_pid(pid_file)
     write_pid(pid_file)
 
-    # Tell git the inner-repo path is safe to operate on despite
-    # ownership mismatch. The Alcatraz's entrypoint chowns /workspace
-    # to the phantom UID so the agent user inside the container can
-    # write to the bind-mounted workspace; that chown propagates to
-    # the host, leaving the inner repo owned by a UID the host user
-    # doesn't recognize. Git 2.35+ refuses to operate on such repos
-    # by default ("dubious ownership"). Setting safe.directory for
-    # this specific path via env-var config (additive to the user's
-    # normal gitconfig — no persistent side-effect on ~/.gitconfig)
-    # unblocks promote's fast-export without opening the gate for any
-    # other path.
-    os.environ["GIT_CONFIG_COUNT"] = "1"
-    os.environ["GIT_CONFIG_KEY_0"] = "safe.directory"
-    os.environ["GIT_CONFIG_VALUE_0"] = str(workspace_path)
+    # No safe.directory env setup here: every git call against the inner
+    # workspace below goes through `git_runner.run_git_command`, which
+    # auto-detects the workspace path and prepends `-c safe.directory=`
+    # per call. Centralising it in the funnel keeps the dubious-ownership
+    # bypass in one place instead of two.
 
     # --- Signal handling for clean shutdown ---
     shutdown_event = threading.Event()
