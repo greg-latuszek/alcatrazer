@@ -108,7 +108,40 @@ class TestBranchLifecycleAcrossMerge(PromotionFlowTest):
 
         Coverage gap: no end-to-end proof of the promote → merge → re-snapshot
         round-trip. The existing switch test checks the inverse case only."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X, the agent commits a
+        # file, the daemon promotes it onto feat/X.
+        self._given_alcatrazer_started_on_branch("feat/X")
+        agent_subject = "merge-loop: agent adds feature.py on feat/X"
+        self._agent_commits(agent_subject, "feature.py")
+        self._assert_daemon_synced_to_outer(agent_subject)
+        self._assert_outer_has("feature.py")
+
+        # When: the user clears (terminal teardown — workspace wiped, pin
+        # dropped, but the promoted commit stays on outer's feat/X).
+        self._alcatrazer_clears()
+        self._assert_pin_is_dropped()
+        self._assert_workspace_is_wiped()
+        self._assert_outer_has("feature.py")
+
+        # When: the user merges feat/X into main (the PR-merge step), so
+        # main now carries the agent's work as part of its history.
+        self._user_returns_to_branch("main")
+        self._user_merges_branch_into_current("feat/X")
+        self._assert_outer_has("feature.py")
+
+        # When: the user cuts a new branch off main and starts again.
+        self._user_creates_branch("feat/Y")
+        self._alcatrazer_starts()
+
+        # Then: the fresh workspace pins to feat/Y AND its snapshot
+        # contains the previously-promoted agent file (inherited via
+        # main) — promoted work survives the PR-merge and re-seeds the
+        # next workspace as its baseline. This is the complement of
+        # TestSwitchBranchFlow, which asserts the inverse case (branch
+        # cut BEFORE the merge → agent work absent from the new
+        # workspace).
+        self._assert_workspace_pinned_to("feat/Y")
+        self._assert_workspace_has("feature.py")
 
 
 class TestFinalSyncDrainOnClear(PromotionFlowTest):

@@ -136,6 +136,14 @@ class PromotionFlowTest(unittest.TestCase):
         intent (the file is already part of the repo's history)."""
         (self.project_dir / filename).write_text(content)
 
+    def _user_merges_branch_into_current(self, branch: str) -> None:
+        """Merge `branch` into the currently-checked-out branch (the PR-merge
+        step). `--no-edit` suppresses the editor for merge-commit cases so
+        the test never blocks waiting for input; fast-forward merges (the
+        common case here, when the source-branch's parent hasn't moved on
+        the target) ignore the flag."""
+        run_git_command(["-C", str(self.project_dir), "merge", "--no-edit", branch], check=True)
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [
