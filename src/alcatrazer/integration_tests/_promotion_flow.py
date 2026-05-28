@@ -108,6 +108,11 @@ class PromotionFlowTest(unittest.TestCase):
     def _user_returns_to_branch(self, name: str) -> None:
         run_git_command(["-C", str(self.project_dir), "checkout", name], check=True)
 
+    def _user_deletes_branch(self, name: str) -> None:
+        # git refuses to delete the currently-checked-out branch, so the caller
+        # must `_user_returns_to_branch(<elsewhere>)` first.
+        run_git_command(["-C", str(self.project_dir), "branch", "-D", name], check=True)
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [

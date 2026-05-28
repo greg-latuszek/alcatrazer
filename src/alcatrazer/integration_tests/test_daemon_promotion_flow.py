@@ -141,7 +141,42 @@ class TestHeldOnDeletedPin(PromotionFlowTest):
 
         Coverage gap: only the `check_pin` unit `returns_PIN_DELETED` test
         exists; the recreate-and-resume loop is unproven end-to-end."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X (daemon running, on-pin).
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: the user steps off feat/X and deletes it; the daemon holds.
+        # (git refuses to delete the currently-checked-out branch, hence the
+        # intermediate `git checkout main`.)
+        self._user_returns_to_branch("main")
+        self._user_deletes_branch("feat/X")
+        self._assert_daemon_holds()
+
+        # ... and several agent commits pile up inside while held.
+        piled_subjects = [
+            "deleted-pin: agent commit 1 of 3",
+            "deleted-pin: agent commit 2 of 3",
+            "deleted-pin: agent commit 3 of 3",
+        ]
+        for i, subject in enumerate(piled_subjects, start=1):
+            self._agent_commits(subject, f"piled-{i}.txt")
+
+        # When the user recreates feat/X (off main) and checks it out, the
+        # next poll replays ALL piled commits in one batch onto the new feat/X.
+        # The recreated branch points at main's tip — same content as the
+        # original feat/X tip (the seed), so `git am` applies cleanly.
+        self._user_creates_branch("feat/X")
+        self._assert_daemon_synced_to_outer(piled_subjects[-1])
+
+        # Then: the recreated feat/X advanced by exactly N commits, every
+        # piled file is present, and the log shows exactly one Held → one
+        # Resumed transition (no thrashing across the off-pin / deleted /
+        # recreated state changes; the daemon collapses HELD → HELD
+        # transitions by design).
+        self._assert_outer_commit_count_is("feat/X", commits_before + len(piled_subjects))
+        for i in range(1, len(piled_subjects) + 1):
+            self._assert_outer_has(f"piled-{i}.txt")
+        self._assert_daemon_log_records_one_held_resumed_cycle()
 
 
 class TestHeldOnDetachedHead(PromotionFlowTest):
