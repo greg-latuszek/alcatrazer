@@ -164,7 +164,7 @@ inner_root := <recorded once at workspace creation, persisted in
 
 # Each cycle (single source ref → outer's pinned branch):
 git -C $inner format-patch                                    \
-    --stdout --binary --keep-subject --first-parent           \
+    --stdout --binary --keep-subject                          \
     ${last_promoted_or_inner_root}..refs/heads/main           \
   | rewrite_from_header(name, email)                          \
   | git -C $outer am                                          \
@@ -177,8 +177,10 @@ git -C $inner format-patch                                    \
 - `${last_promoted_or_inner_root}..refs/heads/main` excludes the
   workspace root (and any already-promoted commits) from the stream,
   so outer's existing history stays intact.
-- `--first-parent` walks inner-`main`'s mainline only, ignoring
-  agent-private side-branch topology. See "Inner-main linearity".
+- Default history walking (no `--first-parent`). `format-patch`
+  never emits a patch for a merge commit under *any* flag, so the
+  merge itself is dropped while its constituent side-branch commits
+  surface as individual patches. See "Inner-main linearity".
 - `--binary` keeps non-text content applicable.
 - `--keep-subject` prevents `format-patch` from re-prefixing
   subjects with `[PATCH]`.
@@ -393,26 +395,41 @@ above them.
 
 ## Inner-main linearity
 
-`format-patch --first-parent` follows inner-`main`'s mainline only.
-If agents create internal branches and merge them in:
+`format-patch` walks inner-`main` with default history traversal and
+emits one patch per **non-merge** commit in range. Merge commits are
+never turned into patches — `format-patch` declines to represent a
+merge under any flag combination tested (`--first-parent`, `-m`,
+`--merges`, `--diff-merges=first-parent`, `--cc`, `-c`). If agents
+create internal branches and merge them in:
 
 - **Fast-forward merge:** trivially linear, every commit appears in
   the stream.
 - **Squash merge:** appears as a single commit on inner-`main`, gets
   one patch.
-- **Real merge commit:** `--first-parent` follows the mainline
-  parent; the side-branch commits don't appear individually. Outer
-  sees the merge commit's tree as a single patch.
+- **Real merge commit:** the merge commit itself produces no patch;
+  its constituent side-branch commits each surface as an individual
+  patch, landing in outer as separate, atomic, reviewable entries.
+
+> **Implementation note (revised in Phase 3, Step 3.6).** The original
+> design assumed `format-patch --first-parent` would collapse a real
+> merge into a single squashed patch on the mainline. Empirically it
+> does no such thing: `format-patch` never emits a patch for a merge,
+> and `--first-parent` would have *suppressed* the side commits
+> entirely (zero patches for the merge's payload). The flag was
+> dropped in favor of default walking, which surfaces each side commit
+> as its own patch. This is also product-better — atomic per-commit
+> review before push is exactly the promise Alcatrazer makes, and a
+> single giant merge-shaped patch would defeat it.
 
 **Agents are not informed of this.** A core principle is that agents
 inside the workspace must believe they're in a vanilla repo — they
 don't know outer exists, don't know about promotion, don't know
-about this constraint. So we don't add a CLAUDE.md instruction
-saying "keep inner-`main` linear". `--first-parent` accepts whatever
+about this behavior. So we don't add a CLAUDE.md instruction
+saying "keep inner-`main` linear". Default walking accepts whatever
 topology agents produce on inner-`main` and surfaces it to outer as
-a sequence of patches. If a future-merge produces an undesirable
-patch (e.g. a giant merge-of-many-files), that's a workspace-level
-conversation about how agents coordinate, not a promotion concern.
+a sequence of non-merge patches. If a future merge produces an
+undesirable patch sequence, that's a workspace-level conversation
+about how agents coordinate, not a promotion concern.
 
 ## Recording state
 
@@ -580,8 +597,9 @@ silent migration code that nobody benefits from.
     Substitutes the `From:` line in each mbox entry. Bytes-only.
   - New `format_patch_stream(source: Path, since_sha: str) -> bytes`.
     Wraps `git format-patch --stdout --binary --keep-subject
-    --first-parent <since>..refs/heads/main`. Empty bytes when
-    nothing to promote.
+    <since>..refs/heads/main` (default walking, no `--first-parent`
+    — see "Inner-main linearity"). Empty bytes when nothing to
+    promote.
   - New `apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> None`.
     Runs `git -C target am --committer-date-is-author-date
     --keep-non-patch --whitespace=nowarn --empty=drop` with stream on
@@ -692,9 +710,12 @@ silent migration code that nobody benefits from.
     - `test_promote_once_resumes_after_recheckout` — held state
       accumulates, recheckout pinned → next call promotes all piled
       commits in one `am`.
-    - `test_promote_once_first_parent_flattens_inner_merges` —
-      inner has a merge commit on `main`; stream contains one patch
-      for it, side-branch commits absent.
+    - `test_inner_merge_appears_as_individual_side_commits` —
+      inner has a merge commit on `main`; the merge produces no
+      patch, but each side-branch commit lands as an individual
+      patch in outer. (Revised from the original
+      `..._first_parent_flattens_inner_merges` — see "Inner-main
+      linearity".)
   - `tests/test_snapshot.py`
     - `test_snapshot_records_inner_root` — `.alcatrazer/inner-root`
       equals `git rev-parse HEAD` of the workspace's Initial commit.
@@ -705,19 +726,33 @@ silent migration code that nobody benefits from.
       matches `feat/X`'s tree, not `main`'s.
     - `test_snapshot_refuses_detached_outer` — outer in detached
       HEAD → start fails with explanatory message.
-  - `tests/test_daemon.py`
-    - End-to-end: outer on `feat/X`, agent commits, daemon promotes
-      onto `feat/X`, working tree clean, original outer commit still
-      ancestor. **Closes the manual-test bug under automation.**
-    - Held-state: outer switches to `main` mid-cycle, daemon holds,
-      switches back, daemon replays piled commits.
-    - Conflict: pre-seed overlap, daemon pauses, user resolves,
-      daemon resumes.
-  - `tests/test_clear.py`
-    - `test_clear_blocks_with_pending_off_pin`
-    - `test_clear_discards_with_flag`
-    - `test_clear_proceeds_on_pin_with_pending` — final sync drains
-      onto pinned branch.
+  - `integration_tests/test_daemon_promotion_flow.py` (real
+    Docker-backed daemon; the planned `tests/test_daemon.py` unit
+    suite was superseded by these end-to-end scenarios)
+    - `TestBaselinePromotion` — outer on `feat/X`, agent commits,
+      daemon promotes onto `feat/X`, working tree clean, original
+      outer commit still ancestor. **Closes the manual-test bug
+      under automation.**
+    - `TestHeldOffPinAutoResume` — outer switches off-pin mid-cycle,
+      daemon holds, switches back, daemon replays piled commits.
+    - `TestHeldOnDeletedPin` / `TestHeldOnDetachedHead` — the other
+      two hold triggers, each resuming on recovery.
+    - `TestPausedFileCollisionAutoResume` /
+      `TestNonOverlappingEditsCoexist` /
+      `TestAgentCommitsStackOnUserCommits` — the conflict-and-coexist
+      matrix: pause-on-collision + resume, edits beside a promoted
+      commit, agent commits stacking on user commits.
+  - clear-flow tests (the planned `tests/test_clear.py` split between
+    unit and integration):
+    - `tests/test_start.py` (unit) —
+      `test_blocks_when_off_pin_with_pending_commits`,
+      `test_blocks_when_paused_even_though_on_pinned_branch`,
+      `test_discard_pending_flag_proceeds_through_teardown`,
+      `test_on_pin_with_pending_proceeds_and_acknowledges_drain`.
+    - `integration_tests/test_switch_branch_flow.py` (real backend) —
+      `TestClearBlockedOffPin`, `TestClearBlockedWhilePaused`,
+      `TestClearDiscardsPending`, `TestFinalSyncDrainOnClear`
+      (final sync drains onto the pinned branch).
   - **Deleted entirely:** all existing tests for alcatraz-tree mode,
     marks-file behavior, multi-branch promotion, `conflict/resolve-*`
     branches. The mode and its tests retire together.
@@ -755,8 +790,10 @@ silent migration code that nobody benefits from.
   be added later if there's reason to make this not-`main`. Out of
   scope.)
 - **Does not preserve inner side-branch topology in outer.**
-  `--first-parent` flattens. If a future feature needs the full
-  topology, that's a separate design.
+  Merge commits are dropped (`format-patch` emits no patch for them);
+  their side-branch commits land as a flat sequence of individual
+  patches. If a future feature needs the full topology, that's a
+  separate design.
 - **Does not auto-stash outer's uncommitted changes on conflict.**
   Pause + surface; don't silently mutate the user's working tree.
 - **Does not change the `[promotion]` identity config schema.**
@@ -883,7 +920,9 @@ has exactly N patches.
 
 **Step 2.4** `[GREEN]` — Implement `format_patch_stream(source,
 since_sha) -> bytes` wrapping `git format-patch --stdout --binary
---keep-subject --first-parent <since>..refs/heads/main`.
+--keep-subject --first-parent <since>..refs/heads/main`. *(The
+`--first-parent` flag was later dropped in Step 3.6 — see the
+revision note there; the shipped wrapper uses default walking.)*
 
 **Step 2.5** `[RED]` — Test `apply_patch_stream` advances target
 branch and updates working tree. Outer with one commit, apply
