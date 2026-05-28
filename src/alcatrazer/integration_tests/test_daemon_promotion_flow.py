@@ -90,7 +90,40 @@ class TestHeldOffPinAutoResume(PromotionFlowTest):
         Coverage gap: only the `promote_once` unit `resumes_after_recheckout`
         test and daemon log-parsing exist; never exercised against a real
         polling daemon + real branch switch."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X (daemon running, on-pin).
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: the user switches to main; the next poll holds promotion.
+        self._user_returns_to_branch("main")
+        self._assert_daemon_holds()
+
+        # ... and several agent commits pile up inside while held.
+        piled_subjects = [
+            "hold flow: agent commit 1 of 3",
+            "hold flow: agent commit 2 of 3",
+            "hold flow: agent commit 3 of 3",
+        ]
+        for i, subject in enumerate(piled_subjects, start=1):
+            self._agent_commits(subject, f"piled-{i}.txt")
+
+        # While held: none reach outer; status reports on-hold + pending count.
+        self._assert_outer_commit_count_is("feat/X", commits_before)
+        self._assert_status_reports_on_hold_with_pending(len(piled_subjects))
+
+        # When the user returns to feat/X, the next poll replays ALL piled
+        # commits in one batch (arrival of the LAST in outer implies all
+        # earlier ones landed too, since `git am` applies them in order).
+        self._user_returns_to_branch("feat/X")
+        self._assert_daemon_synced_to_outer(piled_subjects[-1])
+
+        # Then: feat/X advanced by exactly N commits, every piled file is
+        # present, and the log shows exactly one Held → one Resumed
+        # transition (no thrashing under sustained hold).
+        self._assert_outer_commit_count_is("feat/X", commits_before + len(piled_subjects))
+        for i in range(1, len(piled_subjects) + 1):
+            self._assert_outer_has(f"piled-{i}.txt")
+        self._assert_daemon_log_records_one_held_resumed_cycle()
 
 
 class TestHeldOnDeletedPin(PromotionFlowTest):

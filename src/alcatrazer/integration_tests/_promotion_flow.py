@@ -19,6 +19,7 @@ Requires Docker; run with `mise test-smoke`.
 """
 
 import contextlib
+import io
 import os
 import signal
 import subprocess
@@ -30,6 +31,7 @@ from unittest.mock import patch
 
 from alcatrazer import start as start_mod
 from alcatrazer import state
+from alcatrazer import status as status_mod
 from alcatrazer.docker_prison import DockerPrison
 from alcatrazer.integration_tests.test_smoke import (
     CODING_ENV,
@@ -239,6 +241,42 @@ class PromotionFlowTest(unittest.TestCase):
         status = self._git("status", "--porcelain", "--untracked-files=no").stdout
         self.assertEqual(status, "", f"outer working tree should be clean; git status:\n{status}")
 
+    def _assert_daemon_holds(self, timeout: float = 10.0) -> None:
+        """Wait until the daemon's log records a Held transition.
+
+        The fixture's poll interval is 1s, so the next poll after the user
+        moved off-pin will log the Held line; we poll the log file rather
+        than guess at a sleep."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if "Held:" in self._daemon_log_text():
+                return
+            time.sleep(0.2)
+        self.fail(
+            f"daemon should have logged a Held transition within {timeout}s; "
+            f"log:\n{self._daemon_log_text()}"
+        )
+
+    def _assert_daemon_log_records_one_held_resumed_cycle(self) -> None:
+        log = self._daemon_log_text()
+        held = sum(1 for line in log.splitlines() if "Held:" in line)
+        resumed = sum(1 for line in log.splitlines() if "Resumed:" in line)
+        self.assertEqual(
+            (held, resumed),
+            (1, 1),
+            f"daemon should log exactly one Held + one Resumed transition; "
+            f"got Held={held} Resumed={resumed}. Log:\n{log}",
+        )
+
+    def _assert_status_reports_on_hold_with_pending(self, count: int) -> None:
+        output = self._alcatrazer_status_output()
+        self.assertIn("on hold", output, f"status should report on-hold; got:\n{output}")
+        self.assertIn(
+            f"Pending commits:  {count}",
+            output,
+            f"status should report {count} pending commit(s); got:\n{output}",
+        )
+
     # ── Low-level access to the two repos and the container ───────────
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
@@ -272,3 +310,13 @@ class PromotionFlowTest(unittest.TestCase):
 
     def _outer_commit_count(self, branch: str) -> int:
         return int(self._git("rev-list", "--count", branch).stdout.strip())
+
+    def _daemon_log_text(self) -> str:
+        log_file = self.alcatraz_dir / "promotion-daemon.log"
+        return log_file.read_text() if log_file.exists() else ""
+
+    def _alcatrazer_status_output(self) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            status_mod.cmd_status(self.project_dir)
+        return buf.getvalue()
