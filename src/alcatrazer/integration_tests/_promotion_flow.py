@@ -113,6 +113,10 @@ class PromotionFlowTest(unittest.TestCase):
         # must `_user_returns_to_branch(<elsewhere>)` first.
         run_git_command(["-C", str(self.project_dir), "branch", "-D", name], check=True)
 
+    def _user_detaches_head(self) -> None:
+        """Detach HEAD at the current commit (no branch is checked out)."""
+        run_git_command(["-C", str(self.project_dir), "checkout", "--detach", "HEAD"], check=True)
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [

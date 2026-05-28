@@ -193,7 +193,35 @@ class TestHeldOnDetachedHead(PromotionFlowTest):
 
         Coverage gap: only the `check_pin` unit `returns_DETACHED` test exists.
         Lower priority — nearly redundant with the off-pin hold flow."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X (daemon running, on-pin).
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: the user detaches HEAD; the daemon holds (DETACHED).
+        self._user_detaches_head()
+        self._assert_daemon_holds()
+
+        # ... and several agent commits pile up inside while held.
+        piled_subjects = [
+            "detached: agent commit 1 of 3",
+            "detached: agent commit 2 of 3",
+            "detached: agent commit 3 of 3",
+        ]
+        for i, subject in enumerate(piled_subjects, start=1):
+            self._agent_commits(subject, f"piled-{i}.txt")
+
+        # When the user reattaches HEAD by checking out feat/X, the next
+        # poll replays ALL piled commits in one batch.
+        self._user_returns_to_branch("feat/X")
+        self._assert_daemon_synced_to_outer(piled_subjects[-1])
+
+        # Then: feat/X advanced by exactly N commits, every piled file is
+        # present, and the log shows exactly one Held → one Resumed
+        # transition.
+        self._assert_outer_commit_count_is("feat/X", commits_before + len(piled_subjects))
+        for i in range(1, len(piled_subjects) + 1):
+            self._assert_outer_has(f"piled-{i}.txt")
+        self._assert_daemon_log_records_one_held_resumed_cycle()
 
 
 # ── Conflict semantics and transparent collaboration ───────────────────
