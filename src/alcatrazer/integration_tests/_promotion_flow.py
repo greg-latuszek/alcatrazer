@@ -193,6 +193,22 @@ class PromotionFlowTest(unittest.TestCase):
         print(f"workspace dir after clear: {self._run_in_outer_repo(f'ls -la {self.workspace}')}")
         print(f"outer repo after clear: {self._run_in_outer_repo(f'ls -la {self.project_dir}')}")
 
+    def _alcatrazer_clear_is_blocked(self) -> str:
+        """Run cmd_clear, assert it refused (nonzero rc), return captured
+        stderr so the caller can assert on the block-message contents (the
+        block path prints to stderr via `explain_action_abandon`)."""
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            rc = start_mod.cmd_clear(self.project_dir, prison=self.prison)
+        self.assertNotEqual(rc, 0, f"cmd_clear should refuse; stderr was:\n{stderr_buf.getvalue()}")
+        return stderr_buf.getvalue()
+
+    def _alcatrazer_clears_with_discard_pending(self) -> None:
+        """The escape-hatch flag: clear proceeds with teardown even when
+        pending agent work would otherwise block (off-pin / paused)."""
+        rc = start_mod.cmd_clear(self.project_dir, prison=self.prison, discard_pending=True)
+        self.assertEqual(rc, 0, "cmd_clear(discard_pending=True) should succeed")
+
     # ── Composite givens ──────────────────────────────────────────────
 
     def _given_alcatrazer_started_on_branch(self, branch: str) -> None:
@@ -230,6 +246,28 @@ class PromotionFlowTest(unittest.TestCase):
         self.assertFalse(
             (self.alcatraz_dir / "state.json").exists(),
             "after clear, state.json must be gone so the next start gets a fresh pin",
+        )
+
+    def _assert_workspace_is_preserved(self) -> None:
+        """After a refused clear, the workspace dir AND its .git must remain
+        intact — the agent's work stays recoverable for the user to resolve
+        the underlying condition (return to pin / fix conflict) and retry."""
+        self.assertTrue(
+            (self.workspace / ".git").is_dir(),
+            "workspace .git should be preserved after a refused clear",
+        )
+
+    def _assert_pin_is_still_set_to(self, branch: str) -> None:
+        """After a refused clear, state.json must remain with its original
+        pinned_branch — the clear did NOT drop the pin."""
+        self.assertTrue(
+            (self.alcatraz_dir / "state.json").exists(),
+            "state.json should be preserved after a refused clear",
+        )
+        self.assertEqual(
+            self._pinned_branch(),
+            branch,
+            f"pin should still be {branch!r} after a refused clear",
         )
 
     def _assert_daemon_synced_to_outer(self, subject: str) -> None:

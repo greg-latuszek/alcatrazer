@@ -284,7 +284,29 @@ class TestClearBlockedOffPin(PromotionFlowTest):
         Coverage gap: only the mocked cmd_clear `blocks_when_off_pin_with_
         pending_commits` test exists; this proves the guard end-to-end against
         a real held daemon and real pending commits."""
-        self.fail("not yet implemented — see docstring")
+        # Given: started on feat/X with a slow daemon (so agent commits stay
+        # PENDING, not promoted in the background); agents pile up several
+        # commits; the user then switches off the pinned branch.
+        self._user_creates_branch("feat/X")
+        self._slow_daemon_poll_to(seconds=300)
+        self._alcatrazer_starts()
+
+        for i in range(1, 4):
+            self._agent_commits(f"clear-block-off-pin: agent commit {i} of 3", f"pending-{i}.txt")
+        self._user_returns_to_branch("main")
+
+        # When: clear runs (no --discard-pending).
+        stderr = self._alcatrazer_clear_is_blocked()
+
+        # Then: clear refused, naming the pending count and the pinned
+        # branch; workspace + pin preserved so the work stays recoverable
+        # (the user can `git checkout feat/X` and retry to drain via the
+        # final sync).
+        self.assertIn("cannot clear", stderr)
+        self.assertIn("feat/X", stderr)
+        self.assertIn("3 agent commit", stderr)
+        self._assert_workspace_is_preserved()
+        self._assert_pin_is_still_set_to("feat/X")
 
 
 class TestClearBlockedWhilePaused(PromotionFlowTest):
@@ -303,7 +325,26 @@ class TestClearBlockedWhilePaused(PromotionFlowTest):
         Coverage gap: only the mocked cmd_clear `blocks_when_paused_even_
         though_on_pinned_branch` test exists; this drives a real `am` conflict,
         real pause, and clear refusal."""
-        self.fail("not yet implemented — see docstring")
+        # Given: started on feat/X; outer has an untracked F.txt that will
+        # collide with the agent's add-F.txt commit; daemon polls, am
+        # fails, pauses with a pending commit. (User stays on feat/X — the
+        # block is by paused-state, not off-pin.)
+        self._given_alcatrazer_started_on_branch("feat/X")
+        self._user_creates_file_in_outer("F.txt", "user's version\n")
+        self._agent_commits("clear-block-paused: agent adds F.txt", "F.txt")
+        self._assert_daemon_pauses()
+
+        # When: clear runs while still on feat/X (paused).
+        stderr = self._alcatrazer_clear_is_blocked()
+
+        # Then: clear refused, message names the pinned branch and the
+        # overlap; workspace + pin preserved (the user can remove their
+        # F.txt, the daemon resumes, then clear succeeds).
+        self.assertIn("cannot clear", stderr)
+        self.assertIn("feat/X", stderr)
+        self.assertIn("overlaps", stderr)
+        self._assert_workspace_is_preserved()
+        self._assert_pin_is_still_set_to("feat/X")
 
 
 class TestClearDiscardsPending(PromotionFlowTest):
@@ -322,7 +363,30 @@ class TestClearDiscardsPending(PromotionFlowTest):
         escapable; only mocked (`discard_pending_flag_proceeds_through_
         teardown`) today. Drive via cmd_start.cmd_clear(..., discard_pending=
         True)."""
-        self.fail("not yet implemented — see docstring")
+        # Given: same setup as TestClearBlockedOffPin — pending commits AND
+        # the user wandered off feat/X to main (so the daemon's final sync
+        # is held and can't drain them either; --discard-pending is the
+        # only way out).
+        self._user_creates_branch("feat/X")
+        self._slow_daemon_poll_to(seconds=300)
+        self._alcatrazer_starts()
+        feat_x_count_before = self._outer_commit_count("feat/X")
+
+        for i in range(1, 4):
+            self._agent_commits(f"discard-pending: agent commit {i} of 3", f"discarded-{i}.txt")
+        self._user_returns_to_branch("main")
+
+        # When: clear runs WITH discard_pending=True.
+        self._alcatrazer_clears_with_discard_pending()
+
+        # Then: clear proceeds — workspace wiped, pin dropped. The agent's
+        # commits did NOT land on feat/X (user was off-pin throughout, so
+        # the daemon's final-sync was held and couldn't promote them; the
+        # --discard-pending flag made cmd_clear proceed anyway, throwing
+        # the agent work away as the user explicitly opted in to).
+        self._assert_workspace_is_wiped()
+        self._assert_pin_is_dropped()
+        self._assert_outer_commit_count_is("feat/X", feat_x_count_before)
 
 
 class TestStartRefusesDetachedHead(PromotionFlowTest):
