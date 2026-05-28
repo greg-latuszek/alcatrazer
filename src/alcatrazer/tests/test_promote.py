@@ -334,7 +334,7 @@ class TestPromoteOnce(unittest.TestCase):
             # Outer on `main`; pinned_branch is feat/X but feat/X must
             # exist so the failure mode is OFF_PIN, not PIN_DELETED.
             self._make_outer_on_branch(outer, "main")
-            run_git_command(["-C", str(outer), "branch", "feat/X"], check=True)
+            git(str(outer), "branch", "feat/X")
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             pre_head = git(str(outer), "rev-parse", "HEAD")
@@ -373,7 +373,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             inner_root, _ = self._make_inner_with_agent_commits(inner, count=1)
             self._make_outer_on_branch(outer, "main")
-            run_git_command(["-C", str(outer), "branch", "feat/X"], check=True)
+            git(str(outer), "branch", "feat/X")
             state.update_state(alcatraz_dir, pinned_branch="feat/X", inner_root=inner_root)
 
             # Cycle 1: HELD (outer on main, not on feat/X).
@@ -390,7 +390,7 @@ class TestPromoteOnce(unittest.TestCase):
             inner_tip = git(str(inner), "rev-parse", "HEAD")
 
             # User recheckouts the pinned branch.
-            run_git_command(["-C", str(outer), "checkout", "feat/X"], check=True)
+            git(str(outer), "checkout", "feat/X")
 
             # Cycle 2: PROMOTED with all 3 piled commits.
             result2 = promote_mod.promote_once(
@@ -433,14 +433,14 @@ class TestPromoteOnce(unittest.TestCase):
             git(str(inner), "commit", "--allow-empty", "-m", "Initial commit")
             inner_root = git(str(inner), "rev-parse", "HEAD")
 
-            run_git_command(["-C", str(inner), "checkout", "-b", "side"], check=True)
+            git(str(inner), "checkout", "-b", "side")
             Path(inner, "side1.py").write_text("# side 1\n")
             git(str(inner), "add", "side1.py")
             git(str(inner), "commit", "-m", "side: commit 1")
             Path(inner, "side2.py").write_text("# side 2\n")
             git(str(inner), "add", "side2.py")
             git(str(inner), "commit", "-m", "side: commit 2")
-            run_git_command(["-C", str(inner), "checkout", "main"], check=True)
+            git(str(inner), "checkout", "main")
             subprocess.run(
                 [
                     "git",
@@ -590,7 +590,7 @@ class TestCheckPin(unittest.TestCase):
             target = str(Path(tmp) / "outer")
             self._make_target_with_pinned_branch(target, "feat/X")
             # Switch to a different existing branch.
-            run_git_command(["-C", target, "checkout", "-b", "main"], check=True)
+            git(target, "checkout", "-b", "main")
             self.assertEqual(
                 promote_mod.check_pin(Path(target), "feat/X"),
                 promote_mod.PinStatus.OFF_PIN,
@@ -601,7 +601,7 @@ class TestCheckPin(unittest.TestCase):
             target = str(Path(tmp) / "outer")
             self._make_target_with_pinned_branch(target, "feat/X")
             sha = git(target, "rev-parse", "HEAD")
-            run_git_command(["-C", target, "checkout", "--detach", sha], check=True)
+            git(target, "checkout", "--detach", sha)
             self.assertEqual(
                 promote_mod.check_pin(Path(target), "feat/X"),
                 promote_mod.PinStatus.DETACHED,
