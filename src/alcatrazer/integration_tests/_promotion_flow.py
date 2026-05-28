@@ -117,6 +117,18 @@ class PromotionFlowTest(unittest.TestCase):
         """Detach HEAD at the current commit (no branch is checked out)."""
         run_git_command(["-C", str(self.project_dir), "checkout", "--detach", "HEAD"], check=True)
 
+    def _user_creates_file_in_outer(self, filename: str, content: str) -> None:
+        """Create an untracked file in the outer working tree (no git add, no
+        commit) — used to stage a path-collision with an agent commit so the
+        daemon's `git am` fails with 'already exists in working directory'."""
+        (self.project_dir / filename).write_text(content)
+
+    def _user_removes_file_in_outer(self, filename: str) -> None:
+        """Delete a file from the outer working tree — the resolution path for
+        a path-collision pause (the daemon's diff never surfaces, so removal,
+        not in-tree merge, is what clears the way)."""
+        (self.project_dir / filename).unlink()
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [
@@ -280,6 +292,46 @@ class PromotionFlowTest(unittest.TestCase):
             (1, 1),
             f"daemon should log exactly one Held + one Resumed transition; "
             f"got Held={held} Resumed={resumed}. Log:\n{log}",
+        )
+
+    def _assert_daemon_pauses(self, timeout: float = 10.0) -> None:
+        """Wait until the daemon's log records a Paused transition.
+
+        Same shape as _assert_daemon_holds — poll the log rather than
+        guess a sleep, so the next cycle that hits an `am` conflict and
+        runs `am --abort` triggers the wait release."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if "Paused:" in self._daemon_log_text():
+                return
+            time.sleep(0.2)
+        self.fail(
+            f"daemon should have logged a Paused transition within {timeout}s; "
+            f"log:\n{self._daemon_log_text()}"
+        )
+
+    def _assert_status_reports_paused(self) -> None:
+        output = self._alcatrazer_status_output()
+        self.assertIn("paused", output, f"status should report paused; got:\n{output}")
+        # The user-facing hint must point at removal/rename — the daemon's
+        # diff never surfaces in outer, so committing/merging the user's
+        # version is not a resolution path (see
+        # project_promotion_conflict_semantics).
+        self.assertIn(
+            "remove it or rename",
+            output,
+            f"status should explain removal-as-resolution; got:\n{output}",
+        )
+
+    def _assert_daemon_log_records_one_paused_resumed_cycle(self) -> None:
+        log = self._daemon_log_text()
+        paused = sum(1 for line in log.splitlines() if "Paused:" in line)
+        resumed = sum(1 for line in log.splitlines() if "Resumed:" in line)
+        self.assertEqual(
+            (paused, resumed),
+            (1, 1),
+            f"daemon should log exactly one Paused + one Resumed transition; "
+            f"got Paused={paused} Resumed={resumed}. Log:\n{log}",
         )
 
     def _assert_status_reports_on_hold_with_pending(self, count: int) -> None:

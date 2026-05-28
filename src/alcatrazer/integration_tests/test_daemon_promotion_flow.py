@@ -256,7 +256,50 @@ class TestPausedFileCollisionAutoResume(PromotionFlowTest):
         auto-resume loop is unproven end-to-end. NB: resolution is file removal,
         NOT committing/merging the user's version — the daemon's diff never
         surfaces in outer (see project_promotion_conflict_semantics)."""
-        self.fail("not yet implemented — see docstring")
+        # Given: the user starts Alcatraz on feat/X.
+        self._given_alcatrazer_started_on_branch("feat/X")
+        commits_before = self._outer_commit_count("feat/X")
+
+        # Pre-create an untracked F.txt in outer with different content from
+        # what the agent will commit. (Order matters: the outer collision
+        # must exist BEFORE the agent commit, so the daemon's next poll
+        # sees a doomed apply rather than a clean apply followed by a
+        # stale untracked file.)
+        self._user_creates_file_in_outer("F.txt", "user's version\n")
+
+        # When the agent commits the same-named file inside with different
+        # content, the daemon's `git am` cannot apply the add (path
+        # exists in outer's working tree), runs `am --abort`, and pauses
+        # — leaving outer's HEAD and tree untouched.
+        agent_subject = "paused: agent adds F.txt"
+        self._agent_commits(agent_subject, "F.txt")
+        self._assert_daemon_pauses()
+        self._assert_outer_commit_count_is("feat/X", commits_before)
+        self.assertEqual(
+            (self.project_dir / "F.txt").read_text(),
+            "user's version\n",
+            "outer's F.txt must still hold the user's content (am --abort rolled back)",
+        )
+        self._assert_status_reports_paused()
+
+        # When the user removes their colliding F.txt — the only resolution,
+        # since the daemon's diff never surfaced and there are no in-tree
+        # conflict markers to merge — the next cycle applies the agent's
+        # commit and resumes.
+        self._user_removes_file_in_outer("F.txt")
+        self._assert_daemon_synced_to_outer(agent_subject)
+
+        # Then: feat/X grew by exactly the one promoted commit, F.txt now
+        # holds the agent's content (the user's version was discarded by
+        # the user's own removal — not by promotion), and the log shows
+        # exactly one Paused → one Resumed transition.
+        self._assert_outer_commit_count_is("feat/X", commits_before + 1)
+        self._assert_outer_has("F.txt")
+        self.assertEqual(
+            (self.project_dir / "F.txt").read_text(),
+            f"{agent_subject}\n",
+        )
+        self._assert_daemon_log_records_one_paused_resumed_cycle()
 
 
 class TestNonOverlappingEditsCoexist(PromotionFlowTest):
