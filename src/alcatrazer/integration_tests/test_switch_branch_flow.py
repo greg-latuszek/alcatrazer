@@ -296,7 +296,55 @@ class TestRestartKeepsPinWhenBranchSwitchedWhileStopped(PromotionFlowTest):
         might silently re-pin to `main` and replay feat/X-based patches onto
         it. This is the guard that stop/start ≠ clear/start even across a
         branch switch."""
-        self.fail("not yet implemented — see docstring")
+        # Given: started on feat/X.
+        self._given_alcatrazer_started_on_branch("feat/X")
+
+        # When: stop, switch the outer branch while frozen, then start
+        # again — capture the post-start output so we can lock the
+        # scenario-aware notice (the TODO under start.py:286).
+        self._alcatrazer_stops()
+        self._user_returns_to_branch("main")
+        start_output = self._alcatrazer_starts_and_returns_output()
+
+        # Then: the pin stays the original (feat/X) — NOT silently re-
+        # pinned to the user's new branch. subsequent-run never re-
+        # writes pinned_branch; only `clear` + `start` re-pins. Without
+        # this guard, agent work would silently replay onto the wrong
+        # branch.
+        self._assert_workspace_pinned_to("feat/X")
+
+        # And the post-start output is scenario-aware (per the TODO at
+        # start.py: detect that outer's current branch ('main') differs
+        # from state.json's pinned_branch ('feat/X') and print a notice
+        # that tells the user (a) agents are starting in HOLD mode — no
+        # commits will be promoted now — and (b) the re-pin recovery
+        # path is `git checkout <pinned> && alcatrazer clear && git
+        # checkout <current> && alcatrazer start`. The generic "syncing
+        # pauses if you switch" line is wrong here because the user has
+        # ALREADY switched: they need to know they're in the held state
+        # now, not be warned about a future switch.
+        self.assertIn(
+            "hold",
+            start_output.lower(),
+            f"start output should signal HOLD mode given the off-pin restart; got:\n{start_output}",
+        )
+        self.assertIn(
+            "feat/X",
+            start_output,
+            f"start output should name the original pinned branch; got:\n{start_output}",
+        )
+        self.assertIn(
+            "main",
+            start_output,
+            f"start output should name the user's current branch (scenario-aware); "
+            f"got:\n{start_output}",
+        )
+        self.assertIn(
+            "alcatrazer clear",
+            start_output,
+            f"start output should include the `alcatrazer clear` re-pin recovery "
+            f"path; got:\n{start_output}",
+        )
 
 
 class TestClearBlockedOffPin(PromotionFlowTest):

@@ -196,6 +196,17 @@ class PromotionFlowTest(unittest.TestCase):
         self.assertNotEqual(rc, 0, f"cmd_start should refuse; stderr was:\n{stderr_buf.getvalue()}")
         return stderr_buf.getvalue()
 
+    def _alcatrazer_starts_and_returns_output(self) -> str:
+        """Run cmd_start, assert it succeeded, return captured stdout (the
+        post-start user-facing message etc.). Used by tests that need to
+        assert on what the user sees printed by start, not just on the
+        exit code or behavioural state."""
+        stdout_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf):
+            rc = start_mod.cmd_start(self.project_dir, prison=self.prison)
+        self.assertEqual(rc, 0, "cmd_start should succeed")
+        return stdout_buf.getvalue()
+
     def _alcatrazer_stops(self) -> None:
         rc = start_mod.cmd_stop(self.project_dir, prison=self.prison)
         self.assertEqual(rc, 0, "cmd_stop should succeed")
