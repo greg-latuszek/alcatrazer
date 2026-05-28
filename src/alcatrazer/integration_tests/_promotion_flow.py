@@ -144,6 +144,19 @@ class PromotionFlowTest(unittest.TestCase):
         the target) ignore the flag."""
         run_git_command(["-C", str(self.project_dir), "merge", "--no-edit", branch], check=True)
 
+    def _slow_daemon_poll_to(self, *, seconds: int) -> None:
+        """Rewrite `config.toml`'s daemon poll interval. Must be called BEFORE
+        `_alcatrazer_starts` — the daemon reads its config once at startup.
+
+        Used by tests that need pending commits to STAY PENDING throughout
+        the test body (no background polling promoting them), so the only
+        way they can reach outer is via the final-sync step inside
+        `cmd_clear`'s shutdown_sync_daemon call."""
+        config_path = self.alcatraz_dir / "config.toml"
+        text = config_path.read_text()
+        # setUpClass wrote `interval = 1`; rewrite to the test's chosen value.
+        config_path.write_text(text.replace("interval = 1", f"interval = {seconds}"))
+
     def _user_commits(self, message: str, filename: str) -> None:
         result = subprocess.run(
             [
@@ -367,6 +380,20 @@ class PromotionFlowTest(unittest.TestCase):
             "remove it or rename",
             output,
             f"status should explain removal-as-resolution; got:\n{output}",
+        )
+
+    def _assert_daemon_final_sync_drained(self, expected_count: int) -> None:
+        """Assert the daemon's log records a graceful final-sync that promoted
+        exactly `expected_count` commits — the drain step inside `cmd_clear`'s
+        shutdown_sync_daemon call. Locks the claim that the commits landed
+        via the final sync, not via a coincidental regular poll just before
+        clear (which would surface as final-sync count == 0)."""
+        log = self._daemon_log_text()
+        expected_line = f"Final sync (graceful shutdown): {expected_count} commit(s) synced"
+        self.assertIn(
+            expected_line,
+            log,
+            f"daemon log should record `{expected_line}`; got:\n{log}",
         )
 
     def _assert_daemon_log_records_one_paused_resumed_cycle(self) -> None:

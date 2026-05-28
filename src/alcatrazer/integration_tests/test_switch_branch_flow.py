@@ -164,7 +164,42 @@ class TestFinalSyncDrainOnClear(PromotionFlowTest):
         test. Implementer note: getting commits to still be pending at clear
         time is a real race — may require a slow poll interval or stopping the
         daemon first."""
-        self.fail("not yet implemented — see docstring")
+        # Given: feat/X branched off AND the daemon configured to poll very
+        # rarely, so agent commits made just before `clear` stay PENDING —
+        # the daemon doesn't get a chance to promote them on the regular
+        # poll loop, so the only way they reach outer is via the final-
+        # sync step inside `clear`'s shutdown_sync_daemon call.
+        self._user_creates_branch("feat/X")
+        self._slow_daemon_poll_to(seconds=300)
+        self._alcatrazer_starts()
+        commits_before = self._outer_commit_count("feat/X")
+
+        # When: the agent makes several commits inside the workspace.
+        pending_subjects = [
+            "final-sync drain: pending commit 1 of 3",
+            "final-sync drain: pending commit 2 of 3",
+            "final-sync drain: pending commit 3 of 3",
+        ]
+        for i, subject in enumerate(pending_subjects, start=1):
+            self._agent_commits(subject, f"pending-{i}.txt")
+
+        # When: clear runs on feat/X with all three commits pending.
+        self._alcatrazer_clears()
+
+        # Then: the clear's stop → shutdown_sync_daemon step drained ALL
+        # pending commits via the daemon's final-sync handler. The
+        # daemon's `Final sync (graceful shutdown): N commit(s) synced`
+        # log line records the drain count — locks the claim that it was
+        # the final sync (not a stray regular poll) that did the work
+        # (which would surface as final-sync count = 0). Workspace
+        # wiped, pin dropped, outer's feat/X retains the agent's work —
+        # no commits lost.
+        self._assert_daemon_final_sync_drained(len(pending_subjects))
+        self._assert_pin_is_dropped()
+        self._assert_workspace_is_wiped()
+        self._assert_outer_commit_count_is("feat/X", commits_before + len(pending_subjects))
+        for i in range(1, len(pending_subjects) + 1):
+            self._assert_outer_has(f"pending-{i}.txt")
 
 
 class TestStopRestartPreservesPin(PromotionFlowTest):
