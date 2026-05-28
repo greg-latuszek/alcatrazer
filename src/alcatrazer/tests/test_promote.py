@@ -31,6 +31,10 @@ def git(repo: str, *args: str) -> str:
     return run_git_command(["-C", repo, *args], check=True).stdout.strip()
 
 
+def init_git_repo(repo: str, branch: str) -> str:
+    return run_git_command(["init", "-b", branch, repo], check=True).stdout.strip()
+
+
 # ── Unit tests (no git repos needed) ────────────────────────────────
 
 
@@ -67,7 +71,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Inner: initial empty commit (inner_root) + agent commit
             # adding a binary blob and a text file.
-            run_git_command(["init", "-b", "main", inner], check=True)
+            init_git_repo(repo=inner, branch="main")
             git(inner, "config", "user.name", "Patricia Garcia")
             git(inner, "config", "user.email", "patricia@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -89,7 +93,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Outer repo with one initial commit, ready to receive
             # the rewritten patch on top.
-            run_git_command(["init", "-b", "main", outer], check=True)
+            init_git_repo(repo=outer, branch="main")
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -164,7 +168,7 @@ class TestRewriteFromHeader(unittest.TestCase):
             # Inner workspace: identity = Patricia, and the commit
             # message body deliberately references that same email
             # as a config snippet.
-            run_git_command(["init", "-b", "main", inner], check=True)
+            init_git_repo(repo=inner, branch="main")
             git(inner, "config", "user.name", "Patricia Garcia")
             git(inner, "config", "user.email", "patricia@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -190,7 +194,7 @@ class TestRewriteFromHeader(unittest.TestCase):
 
             # Outer repo with one initial commit so git am applies the
             # patch on top.
-            run_git_command(["init", "-b", "main", outer], check=True)
+            init_git_repo(repo=outer, branch="main")
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -249,7 +253,7 @@ class TestPromoteOnce(unittest.TestCase):
         + `count` agent commits on top. Returns (inner_root, inner_tip).
         """
         inner.mkdir()
-        run_git_command(["init", "-b", "main", str(inner)], check=True)
+        init_git_repo(repo=str(inner), branch="main")
         git(str(inner), "config", "user.name", "Patricia Garcia")
         git(str(inner), "config", "user.email", "patricia@inner.example.com")
         git(str(inner), "config", "commit.gpgsign", "false")
@@ -265,7 +269,7 @@ class TestPromoteOnce(unittest.TestCase):
     def _make_outer_on_branch(self, outer: Path, branch: str) -> None:
         """Initialise outer as a git repo on `branch` with one commit."""
         outer.mkdir()
-        run_git_command(["init", "-b", branch, str(outer)], check=True)
+        init_git_repo(repo=str(outer), branch=branch)
         git(str(outer), "config", "user.name", "Outer User")
         git(str(outer), "config", "user.email", "user@outer.example.com")
         git(str(outer), "config", "commit.gpgsign", "false")
@@ -422,7 +426,7 @@ class TestPromoteOnce(unittest.TestCase):
             # inner_root -> merge. Side commits exist but only on
             # the second-parent line of the merge.
             inner.mkdir()
-            run_git_command(["init", "-b", "main", str(inner)], check=True)
+            init_git_repo(repo=str(inner), branch="main")
             git(str(inner), "config", "user.name", "Patricia Garcia")
             git(str(inner), "config", "user.email", "patricia@inner.example.com")
             git(str(inner), "config", "commit.gpgsign", "false")
@@ -500,7 +504,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             # Inner: shared.py = "v1" at initial, agent edits to "v2".
             inner.mkdir()
-            run_git_command(["init", "-b", "main", str(inner)], check=True)
+            init_git_repo(repo=str(inner), branch="main")
             git(str(inner), "config", "user.name", "Patricia Garcia")
             git(str(inner), "config", "user.email", "patricia@inner.example.com")
             git(str(inner), "config", "commit.gpgsign", "false")
@@ -514,7 +518,7 @@ class TestPromoteOnce(unittest.TestCase):
 
             # Outer on feat/X with a conflicting local edit on shared.py.
             outer.mkdir()
-            run_git_command(["init", "-b", "feat/X", str(outer)], check=True)
+            init_git_repo(repo=str(outer), branch="feat/X")
             git(str(outer), "config", "user.name", "Outer User")
             git(str(outer), "config", "user.email", "user@outer.example.com")
             git(str(outer), "config", "commit.gpgsign", "false")
@@ -566,7 +570,7 @@ class TestCheckPin(unittest.TestCase):
     def _make_target_with_pinned_branch(self, target: str, pinned: str) -> None:
         """Initialize `target` as a git repo on `pinned`, with one
         commit so HEAD is real (not a "no commits yet" state)."""
-        run_git_command(["init", "-b", pinned, target], check=True)
+        init_git_repo(repo=target, branch=pinned)
         git(target, "config", "user.name", "Outer User")
         git(target, "config", "user.email", "user@outer.example.com")
         git(target, "config", "commit.gpgsign", "false")
@@ -631,7 +635,7 @@ class TestFormatPatchStream(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
-            run_git_command(["init", "-b", "main", workspace], check=True)
+            init_git_repo(repo=workspace, branch="main")
             git(workspace, "config", "user.name", "Test")
             git(workspace, "config", "user.email", "t@test")
             git(workspace, "config", "commit.gpgsign", "false")
@@ -667,7 +671,7 @@ class TestApplyPatchStream(unittest.TestCase):
         """Bootstrap an inner workspace: initial commit + one agent
         commit adding `feature.py`. Returns (inner_root_sha, patch_stream).
         """
-        run_git_command(["init", "-b", "main", workspace], check=True)
+        init_git_repo(repo=workspace, branch="main")
         git(workspace, "config", "user.name", "Patricia Garcia")
         git(workspace, "config", "user.email", "patricia@inner.example.com")
         git(workspace, "config", "commit.gpgsign", "false")
@@ -682,7 +686,7 @@ class TestApplyPatchStream(unittest.TestCase):
     def _make_outer_with_one_commit(self, outer: str) -> None:
         """Bootstrap outer with one user commit so apply_patch_stream
         applies on top, not as the very first commit."""
-        run_git_command(["init", "-b", "main", outer], check=True)
+        init_git_repo(repo=outer, branch="main")
         git(outer, "config", "user.name", "Outer User")
         git(outer, "config", "user.email", "user@outer.example.com")
         git(outer, "config", "commit.gpgsign", "false")
@@ -733,7 +737,7 @@ class TestApplyPatchStream(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
 
             # Inner: initial + 2 agent commits.
-            run_git_command(["init", "-b", "main", inner_ws], check=True)
+            init_git_repo(repo=inner_ws, branch="main")
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -815,7 +819,7 @@ class TestApplyPatchStream(unittest.TestCase):
 
             # Inner: initial commit with shared.py = "original",
             # then agent modifies it to "agent change".
-            run_git_command(["init", "-b", "main", inner_ws], check=True)
+            init_git_repo(repo=inner_ws, branch="main")
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -832,7 +836,7 @@ class TestApplyPatchStream(unittest.TestCase):
             # base) but is then modified by the user to "user change".
             # The patch will conflict because its base contents diverge
             # from outer's HEAD contents.
-            run_git_command(["init", "-b", "main", outer], check=True)
+            init_git_repo(repo=outer, branch="main")
             git(outer, "config", "user.name", "Outer User")
             git(outer, "config", "user.email", "user@outer.example.com")
             git(outer, "config", "commit.gpgsign", "false")
@@ -891,7 +895,7 @@ class TestApplyPatchStream(unittest.TestCase):
 
             # Inner: initial empty commit (inner_root) + agent commit
             # with SPLIT author/committer.
-            run_git_command(["init", "-b", "main", inner], check=True)
+            init_git_repo(repo=inner, branch="main")
             git(inner, "config", "user.name", "Default Inner")
             git(inner, "config", "user.email", "default@inner.example.com")
             git(inner, "config", "commit.gpgsign", "false")
@@ -956,7 +960,7 @@ class TestApplyPatchStream(unittest.TestCase):
             outer = str(Path(tmp) / "outer")
 
             # Inner: initial + an EMPTY agent commit (no diff).
-            run_git_command(["init", "-b", "main", inner_ws], check=True)
+            init_git_repo(repo=inner_ws, branch="main")
             git(inner_ws, "config", "user.name", "Patricia Garcia")
             git(inner_ws, "config", "user.email", "patricia@inner.example.com")
             git(inner_ws, "config", "commit.gpgsign", "false")
@@ -989,7 +993,7 @@ class TestResolveIdentity(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.target = os.path.join(self.tmpdir, "target")
         os.makedirs(self.target)
-        run_git_command(["init", self.target], check=True)
+        init_git_repo(repo=self.target, branch="main")
         git(self.target, "config", "commit.gpgsign", "false")
         # Local fixture path — `resolve_identity` accepts any path, doesn't
         # care where it lives. Mirrors the real post-refactor location
