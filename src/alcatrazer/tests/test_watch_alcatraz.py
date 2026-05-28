@@ -774,7 +774,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=None,
-            )
+            ).outcome
 
             self.assertEqual(new_status, PromotionOutcome.PROMOTED)
             # Outer advanced from 1 to 2 commits.
@@ -850,7 +850,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=None,
-            )
+            ).outcome
             self.assertEqual(status1, PromotionOutcome.HELD)
             joined_cycle1 = "\n".join(r.getMessage() for r in records)
             self.assertIn("Held", joined_cycle1)
@@ -868,7 +868,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=status1,
-            )
+            ).outcome
             self.assertEqual(status2, PromotionOutcome.HELD)
             # No new log records since cycle 1 — transition-only logging
             # must suppress repeat-Held noise.
@@ -891,7 +891,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=status2,
-            )
+            ).outcome
             self.assertEqual(status3, PromotionOutcome.PROMOTED)
             new_messages = "\n".join(r.getMessage() for r in records[records_after_cycle1:])
             # Resumed message names the branch and the count, uses
@@ -973,7 +973,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=None,
-            )
+            ).outcome
             self.assertEqual(status1, PromotionOutcome.PAUSED)
             joined_cycle1 = "\n".join(r.getMessage() for r in records)
             # Paused message uses git vocabulary ("working tree",
@@ -999,7 +999,7 @@ class TestRunCycleMirror(unittest.TestCase):
                 email="user@outer.example.com",
                 log=log,
                 last_logged_status=status1,
-            )
+            ).outcome
             self.assertEqual(status2, PromotionOutcome.PROMOTED)
             new_messages = "\n".join(r.getMessage() for r in records[records_after_cycle1:])
             # Resumed log names the branch and says "conflict ...

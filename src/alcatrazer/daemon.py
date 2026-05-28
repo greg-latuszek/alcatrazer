@@ -125,8 +125,9 @@ def _run_cycle_mirror(
     last_logged_status,
 ):
     """Run one mirror-mode promotion cycle and emit transition-only
-    log entries. Returns the resulting `PromotionOutcome` so the
-    caller can pass it as `last_logged_status` on the next call.
+    log entries. Returns the full `PromotionResult` so callers can read
+    both `.outcome` (for `last_logged_status` tracking on the next call)
+    and `.commit_count` (for the shutdown handler's final-sync line).
 
     Log messages use git's vocabulary and the actual branch names —
     see docs/coding_conventions.md "User-facing strings speak the
@@ -215,7 +216,7 @@ def _run_cycle_mirror(
             "and Alcatrazer will resume."
         )
 
-    return outcome
+    return result
 
 
 def _default_project_dir() -> Path:
@@ -316,6 +317,11 @@ def main():
     # Track the previous outcome to enable transition-only logging
     # via _run_cycle_mirror (only logs on state changes, not every poll).
     last_logged_status = None
+    # Tracks the most-recent cycle's promoted-commit count so the
+    # shutdown handler's final-sync line can report `N commit(s) synced`
+    # (the count that `daemon_lifecycle._parse_shutdown_log` parses for
+    # `cmd_stop`/`cmd_clear`'s user-facing "N synced" line).
+    last_cycle_commit_count = 0
 
     # Shared between main-loop polls and the final-sync on shutdown —
     # extracted so the shutdown path doesn't duplicate logging.
@@ -323,8 +329,8 @@ def main():
         """Run one promote cycle. All logging happens inside
         _run_cycle_mirror; this function returns silently. Errors
         bubble up for the caller to log."""
-        nonlocal last_logged_status
-        last_logged_status = _run_cycle_mirror(
+        nonlocal last_logged_status, last_cycle_commit_count
+        result = _run_cycle_mirror(
             source=source_repo,
             target=target_repo,
             alcatraz_dir=marks_dir,
@@ -333,6 +339,8 @@ def main():
             log=log,
             last_logged_status=last_logged_status,
         )
+        last_logged_status = result.outcome
+        last_cycle_commit_count = result.commit_count
 
     # --- Main polling loop ---
     try:
@@ -355,7 +363,7 @@ def main():
         prefix = "graceful shutdown" if shutdown_intent == "requested" else "unexpected shutdown"
         try:
             run_cycle()
-            log.info("Final sync (%s) complete", prefix)
+            log.info("Final sync (%s): %d commit(s) synced", prefix, last_cycle_commit_count)
         except Exception as exc:
             log.error("Final sync (%s) failed: %s", prefix, exc)
 
