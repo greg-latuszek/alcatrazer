@@ -174,15 +174,31 @@ class TestExtractSnapshot(unittest.TestCase):
             )
 
     def test_noop_for_none_branch(self):
-        """None branch (empty repo) is a no-op — no files extracted."""
+        """None branch (detached HEAD, rejected upstream) is a no-op — no
+        files extracted."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = str(Path(tmp) / "workspace")
             os.makedirs(workspace)
-            # No outer repo needed — None means greenfield
+            # No outer repo needed — None means "no branch to archive"
             snapshot.extract_snapshot(tmp, None, workspace)
             # Workspace should remain empty (only dirs we created)
             files = list(Path(workspace).iterdir())
             self.assertEqual(files, [])
+
+    def test_extract_snapshot_extracts_nothing_when_the_outer_branch_is_unborn(self):
+        """A greenfield outer repo carries a branch name (`main`) but no
+        commit yet, so there is no tree to archive. extract_snapshot must
+        no-op rather than run `git archive main` — which fails on an unborn
+        branch — leaving the workspace empty for the agent's first commit
+        to fill. This is the greenfield counterpart of the None-branch
+        no-op: a real branch name, but nothing born to extract."""
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            os.makedirs(workspace)
+            run_git_command(["init", "-b", "main", outer], check=True)
+            snapshot.extract_snapshot(outer, "main", workspace)
+            self.assertEqual(list(Path(workspace).iterdir()), [])
 
     def test_only_tracked_files_extracted(self):
         """Untracked files in outer repo are not in the snapshot."""
@@ -738,11 +754,49 @@ class TestCurrentBranch(unittest.TestCase):
             run_git_command(["-C", repo, "checkout", "--detach", sha], check=True)
             self.assertIsNone(snapshot.current_branch(repo))
 
-    def test_returns_none_for_empty_repo(self):
+    def test_current_branch_returns_the_branch_name_for_an_unborn_branch_with_no_commits_yet(
+        self,
+    ):
+        """A freshly-`git init`'d repo sits on its default branch (`main`)
+        with no commits yet — HEAD is a symbolic ref that resolves to no
+        object. current_branch must report that branch name (`main`): it is
+        the branch the first commit will land on, so the workspace can pin
+        to it. It previously returned None, conflating 'unborn branch' with
+        'no branch at all' (detached / non-git); greenfield promotion needs
+        the real name. See change_promotion_machinery.md greenfield support."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = str(Path(tmp) / "repo")
-            run_git_command(["init", repo], check=True)
-            self.assertIsNone(snapshot.current_branch(repo))
+            run_git_command(["init", "-b", "main", repo], check=True)
+            self.assertEqual(snapshot.current_branch(repo), "main")
+
+
+class TestUnbornHead(unittest.TestCase):
+    """Unit tests for the is_unborn_head() predicate — the greenfield
+    sibling of is_detached_head(). Unborn = HEAD is on a branch (the
+    symbolic ref resolves) but that branch has no commit yet; detached =
+    the inverse (a commit, but no branch). Together the two predicates
+    classify the two HEAD anomalies the snapshot and pin logic must tell
+    apart."""
+
+    def test_is_unborn_head_is_true_when_the_repo_is_on_a_branch_with_no_commits_yet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = str(Path(tmp) / "repo")
+            run_git_command(["init", "-b", "main", repo], check=True)
+            self.assertTrue(snapshot.is_unborn_head(repo))
+
+    def test_is_unborn_head_is_false_once_head_points_at_a_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = str(Path(tmp) / "repo")
+            make_repo(repo, branch="main")
+            self.assertFalse(snapshot.is_unborn_head(repo))
+
+    def test_is_unborn_head_is_false_when_head_is_detached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = str(Path(tmp) / "repo")
+            make_repo(repo, branch="main")
+            sha = git(repo, "rev-parse", "HEAD")
+            run_git_command(["-C", repo, "checkout", "--detach", sha], check=True)
+            self.assertFalse(snapshot.is_unborn_head(repo))
 
 
 class TestSnapshotRecordsState(unittest.TestCase):
@@ -797,6 +851,27 @@ class TestSnapshotRecordsState(unittest.TestCase):
 
             recorded = state.load_state(alcatraz_dir).get("pinned_branch")
             self.assertEqual(recorded, "feat/X")
+
+    def test_records_pinned_branch_as_the_unborn_branch_name_for_a_greenfield_outer_repo(self):
+        """`state.json.pinned_branch` is the outer's current branch name
+        even when the outer repo has no commits yet — the
+        `git init && alcatrazer start`-before-the-first-commit first run.
+        The recorded pin is `main` (the branch the daemon will create with
+        the agent's first promoted commit), not None. This locks the
+        greenfield first-run flow that surfaced the `pinned_branch=None`
+        manual-test bug.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = str(Path(tmp) / "outer")
+            workspace = str(Path(tmp) / "workspace")
+            alcatraz_dir = Path(tmp) / ".alcatrazer"
+            run_git_command(["init", "-b", "main", outer], check=True)
+            init_workspace(workspace)
+
+            snapshot.snapshot_workspace(outer, workspace, str(alcatraz_dir))
+
+            recorded = state.load_state(alcatraz_dir).get("pinned_branch")
+            self.assertEqual(recorded, "main")
 
 
 class TestSnapshotUsesCurrentBranchTree(unittest.TestCase):

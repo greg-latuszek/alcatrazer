@@ -619,6 +619,24 @@ class TestCheckPin(unittest.TestCase):
                 promote_mod.PinStatus.PIN_DELETED,
             )
 
+    def test_check_pin_returns_OK_when_the_pin_is_the_current_unborn_branch(self):
+        """A greenfield outer repo sits on its pinned branch (`main`) with
+        no commit yet, so `refs/heads/main` does not exist. That missing
+        ref is NOT a deleted pin — it is the branch the first `git am`
+        will create. check_pin must classify it as OK so the daemon
+        promotes the agent's first commit, rather than holding forever on
+        PIN_DELETED. Distinguishes 'unborn pinned branch' (HEAD is on it,
+        no commits) from a genuinely deleted pin (HEAD is elsewhere)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = str(Path(tmp) / "outer")
+            # `git init -b main` with no commit — unborn `main`, exactly
+            # the state after `git init` before anything is committed.
+            init_git_repo(repo=target, branch="main")
+            self.assertEqual(
+                promote_mod.check_pin(Path(target), "main"),
+                promote_mod.PinStatus.OK,
+            )
+
 
 class TestFormatPatchStream(unittest.TestCase):
     """Phase 2 (change_promotion_machinery.md L812-818): primitive

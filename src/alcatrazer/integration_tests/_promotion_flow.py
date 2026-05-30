@@ -56,7 +56,7 @@ class PromotionFlowTest(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         cls.project_dir = Path(cls._tmp.name)
-        _seed_project(cls.project_dir)
+        cls._seed_outer_repo(cls.project_dir)
 
         with (
             patch.object(
@@ -99,6 +99,17 @@ class PromotionFlowTest(unittest.TestCase):
         _nuke_phantom_uid_files(cls.project_dir)
         with contextlib.suppress(Exception):
             cls._tmp.cleanup()
+
+    # ── Outer-repo seeding (overridable per scenario) ─────────────────
+
+    @classmethod
+    def _seed_outer_repo(cls, project_dir: Path) -> None:
+        """Seed the outer git repo each scenario starts from. Default: a
+        repo with one commit on `main` (the common case every existing
+        scenario assumes). Greenfield scenarios override this to leave the
+        repo commit-less — an unborn `main` — exercising the
+        `git init && alcatrazer start`-before-the-first-commit first run."""
+        _seed_project(project_dir)
 
     # ── Actors and their actions ──────────────────────────────────────
 
@@ -299,6 +310,21 @@ class PromotionFlowTest(unittest.TestCase):
         self.assertTrue(
             self._wait_until_outer_has_commit(subject),
             f"daemon must promote commit {subject!r} to the outer branch",
+        )
+
+    def _assert_outer_branch_is_unborn(self, branch: str) -> None:
+        """The branch carries no commit yet — `refs/heads/<branch>` does
+        not exist. The greenfield starting state the first promotion
+        resolves by creating the branch from the agent's first patch."""
+        ref_exists = (
+            run_git_command(
+                ["-C", str(self.project_dir), "rev-parse", "--verify", f"refs/heads/{branch}"]
+            ).returncode
+            == 0
+        )
+        self.assertFalse(
+            ref_exists,
+            f"{branch} should be unborn (no ref) before the first promotion",
         )
 
     def _assert_outer_has(self, filename: str) -> None:

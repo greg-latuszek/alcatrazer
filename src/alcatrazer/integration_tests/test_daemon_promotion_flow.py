@@ -25,6 +25,7 @@ integration_tests/** (see pyproject) because the test name IS the spec.
 
 import unittest
 
+from alcatrazer.git_runner import run_git_command
 from alcatrazer.integration_tests._promotion_flow import PromotionFlowTest
 
 # ── Baseline: a quiet outer repo ───────────────────────────────────────
@@ -63,6 +64,57 @@ class TestBaselinePromotion(PromotionFlowTest):
         self._assert_outer_tip_authored_and_committed_by(
             "feat/X", "Ghost Agent", "ghost@example.com"
         )
+        self._assert_outer_working_tree_is_clean()
+
+
+class TestPromotionIntoGreenfieldOuterRepo(PromotionFlowTest):
+    """The first-run greenfield case: `git init` then `alcatrazer start`
+    before any commit exists. Outer's `main` is unborn — a branch name with
+    no commit — so the daemon must pin to it and let the agent's first
+    commit create the branch via `git am`, rather than hold forever
+    treating the missing ref as a deleted pin."""
+
+    @classmethod
+    def _seed_outer_repo(cls, project_dir):
+        # Brand-new repo, no commit — `main` is unborn, exactly the state
+        # `git init` leaves before the user or agent commits anything.
+        run_git_command(["init", "-b", "main", str(project_dir)], check=True)
+        run_git_command(["-C", str(project_dir), "config", "user.name", "Outer User"], check=True)
+        run_git_command(
+            ["-C", str(project_dir), "config", "user.email", "user@example.com"], check=True
+        )
+
+    def test_the_daemon_promotes_the_agents_first_commit_onto_an_unborn_branch_when_the_outer_repo_starts_empty(
+        self,
+    ):
+        """Given a brand-new outer repo with no commits (unborn `main`),
+        alcatrazer start pins to `main`; When the agent makes the very first
+        commit inside the workspace; Then the daemon promotes it onto outer's
+        `main`, creating the branch from nothing — the file lands in the
+        working tree, `main` holds exactly one commit authored AND committed
+        as the user, and `git status` is clean.
+
+        Coverage gap: every other promotion scenario starts from a seeded
+        outer that already has a commit; the greenfield first-run — where the
+        first `git am` must create the branch ref — is unproven end-to-end,
+        and is exactly the flow that surfaced the `pinned_branch=None` bug
+        (daemon held forever on a branch named `None`)."""
+        # Given: outer is greenfield (unborn `main`, seeded by the
+        # _seed_outer_repo override); start pins to `main`.
+        self._alcatrazer_starts()
+        self._assert_workspace_pinned_to("main")
+        self._assert_outer_branch_is_unborn("main")
+
+        # When: the agent makes the very first commit inside the workspace.
+        agent_subject = "greenfield: agent writes the first file"
+        self._agent_commits(agent_subject, "app.py")
+
+        # Then: the daemon creates `main` from the agent's patch — the file
+        # lands, main holds exactly one commit as the user, tree clean.
+        self._assert_daemon_synced_to_outer(agent_subject)
+        self._assert_outer_has("app.py")
+        self._assert_outer_commit_count_is("main", 1)
+        self._assert_outer_tip_authored_and_committed_by("main", "Ghost Agent", "ghost@example.com")
         self._assert_outer_working_tree_is_clean()
 
 
