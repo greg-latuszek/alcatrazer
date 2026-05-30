@@ -62,7 +62,7 @@ class PromotionFlowTest(unittest.TestCase):
             patch.object(
                 start_mod,
                 "ask_promotion_identity",
-                return_value=("Ghost Agent", "ghost@example.com"),
+                return_value=("Outer Developer", "outer.dev@example.com"),
             ),
             patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
         ):

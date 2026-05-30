@@ -79,7 +79,7 @@ from alcatrazer.selftest import _AlcatrazSecurityInvariants
 #   → shim → Node 22 → exit 0, stdout "v22.x.y"
 #
 # ask_promotion_identity is patched the same way — returns a fixed
-# Ghost Agent rather than prompting for name/email.
+# Outer Developer rather than prompting for name/email.
 
 CODING_ENV = {
     "languages": {
@@ -310,7 +310,7 @@ class TestAlcatrazSmokeCI(
             patch.object(
                 start_mod,
                 "ask_promotion_identity",
-                return_value=("Ghost Agent", "ghost@example.com"),
+                return_value=("Outer Developer", "outer.dev@example.com"),
             ),
             patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
         ):
@@ -382,7 +382,7 @@ class TestAlcatrazSmokeLifecycle(unittest.TestCase):
             patch.object(
                 start_mod,
                 "ask_promotion_identity",
-                return_value=("Ghost Agent", "ghost@example.com"),
+                return_value=("Outer Developer", "outer.dev@example.com"),
             ),
             patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
         ):
