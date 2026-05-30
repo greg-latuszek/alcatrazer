@@ -1300,6 +1300,13 @@ def cmd_selftest(project_dir: Path) -> int:
     """Run `--run-selftest`: execute the bundled security invariants against
     the Alcatraz just started at `project_dir`. Returns 0 on success or
     non-zero on failure (count of failures is shown by the test runner)."""
+    # Header on stderr (the same stream TextTestRunner writes to) so it sits
+    # directly above the test lines, visibly separating the security check
+    # from cmd_start's post-start message printed just before it.
+    print(
+        "\nChecking security of started Alcatraz (due to --run-selftest):\n",
+        file=sys.stderr,
+    )
     TestCase = selftest.make_alcatraz_selftest_testcase(project_dir)
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
