@@ -1461,3 +1461,54 @@ The two-step side-container approach also pairs cleanly with the
 "side container vs exec-after-resume" choice already made: the
 chown is just a second `docker run --rm` with different flags, no
 new infrastructure.
+
+**Greenfield outer repo: pin to the unborn branch (post-v0.1.1
+follow-up).** A release-readiness manual test ran the first-run
+sequence `git init && alcatrazer init && alcatrazer start` *before
+making any commit*. The workspace came up dead: `pinned_branch` was
+recorded as `None`, the daemon held every cycle on a branch named
+`None`, and `alcatrazer status` advised the nonsense `git branch
+None`. The pin-at-start preconditions guarded against detached HEAD
+but not against an empty outer repo.
+
+Root cause: `snapshot.current_branch()` and `promote.check_pin()`
+both conflated *"no commits yet"* with *"no branch at all"*. A fresh
+`git init` leaves HEAD on an **unborn** branch — `git symbolic-ref
+--short HEAD` returns the name (`main`), but `git rev-parse HEAD`
+fails because no commit exists. `current_branch()` discarded the
+valid name via a `rev-parse HEAD` guard (→ `None`), and `check_pin()`
+read the missing `refs/heads/main` ref as `PIN_DELETED`.
+
+The key finding that decided the fix: the promotion machinery
+(`format-patch | am`) **already** handles an empty outer. `git am`
+prints *"applying to an empty history"* and creates the root commit
+on the unborn branch — verified empirically. So the right move is to
+**support** greenfield, not refuse it: a brand-new project can be
+started, scaffolded by agents from zero, and promoted onto `main`.
+
+This surfaced a clean two-axis taxonomy of HEAD states, probed by two
+orthogonal git commands:
+
+|                       | `symbolic-ref --short HEAD` (on a branch?) | `rev-parse --verify HEAD` (HEAD born?) |
+| --------------------- | ------------------------------------------ | -------------------------------------- |
+| Normal, on a branch   | ✓ name                                     | ✓ SHA                                  |
+| **Unborn branch**     | ✓ name                                     | ✗                                      |
+| **Detached HEAD**     | ✗                                          | ✓ SHA                                  |
+| Not a git repo        | ✗                                          | ✗                                      |
+
+`is_unborn_head` (branch, no commit) and `is_detached_head` (commit,
+no branch) are the two anomalies along opposite axes. Changes:
+
+- `current_branch()` returns the `symbolic-ref` name even for an
+  unborn branch (only detached / non-git yield `None`).
+- New `is_unborn_head()` predicate; `extract_snapshot()` no-ops on an
+  unborn branch (no tree to archive) instead of crashing on
+  `git archive <branch>`.
+- `check_pin()` returns `OK` (not `PIN_DELETED`) when the missing pin
+  ref is the *current* unborn branch — the first `git am` creates it
+  (without this it would be a chicken-and-egg hold: the ref only
+  exists after a promotion, but promotion is gated on the ref).
+
+Covered by snapshot/promote unit tests and an end-to-end
+`TestPromotionIntoGreenfieldOuterRepo` (real Docker daemon promoting
+the agent's first commit onto an unborn `main`).
