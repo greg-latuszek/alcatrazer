@@ -103,32 +103,58 @@ def is_detached_head(repo: str) -> bool:
     return not on_branch
 
 
-def current_branch(repo: str) -> str | None:
-    """Return the currently checked-out branch name, or None when that
-    concept doesn't apply (detached HEAD, or a freshly-init'd repo with
-    no commits yet). Used only to warn the user when they've asked us
-    to snapshot a repo whose HEAD isn't on the default branch.
+def is_unborn_head(repo: str) -> bool:
+    """True if `repo` is on a branch that has no commit yet — an *unborn*
+    branch (`git symbolic-ref --short HEAD` succeeds while `git rev-parse
+    --verify HEAD` fails).
+
+    The greenfield sibling of is_detached_head — the two predicates name
+    the two HEAD anomalies along opposite axes:
+    - unborn   = a branch name, but no commit (a fresh `git init`)
+    - detached = a commit, but no branch name
+
+    A non-git directory is neither (symbolic-ref fails too). Used by
+    extract_snapshot to skip archiving when there is no tree to archive.
     """
-    result = run_git_command(["-C", repo, "symbolic-ref", "--short", "HEAD"])
+    on_branch = (
+        run_git_command(["-C", repo, "symbolic-ref", "--quiet", "--short", "HEAD"]).returncode == 0
+    )
+    if not on_branch:
+        return False
+    head_is_born = (
+        run_git_command(["-C", repo, "rev-parse", "--verify", "--quiet", "HEAD"]).returncode == 0
+    )
+    return not head_is_born
+
+
+def current_branch(repo: str) -> str | None:
+    """Return the currently checked-out branch name, or None when HEAD is
+    not on a branch at all (detached HEAD, or a non-git directory).
+
+    A freshly-`git init`'d repo with no commits yet (an *unborn* branch)
+    still has a branch name — HEAD is a symbolic ref pointing at
+    `refs/heads/<init.defaultBranch>` — and that name IS returned.
+    Promotion pins to this name, so the greenfield case must report `main`
+    (the branch the first commit will create), not None. The earlier
+    implementation discarded it via a `rev-parse HEAD` guard, which is what
+    produced the dead `pinned_branch=None` workspace. The unborn-vs-born
+    distinction, when a caller needs it, lives in is_unborn_head.
+    """
+    result = run_git_command(["-C", repo, "symbolic-ref", "--quiet", "--short", "HEAD"])
     if result.returncode != 0:
         return None
-    name = result.stdout.strip()
-    # `git symbolic-ref --short HEAD` succeeds on a brand-new repo
-    # (HEAD points at refs/heads/<init.defaultBranch> even before any
-    # commits exist); filter those out by checking for commits.
-    head = run_git_command(["-C", repo, "rev-parse", "HEAD"])
-    if head.returncode != 0:
-        return None
-    return name or None
+    return result.stdout.strip() or None
 
 
 def extract_snapshot(repo: str, branch: str | None, workspace: str) -> None:
     """Extract files from repo's branch into workspace via git archive.
 
-    If branch is None (greenfield/empty repo), this is a no-op.
-    Excludes .alcatrazer/ and .env even if tracked.
+    No-op when there is no tree to archive: either branch is None (detached
+    HEAD, rejected upstream) or the branch is unborn — a greenfield repo
+    that carries a branch name but no commit yet, where `git archive
+    <branch>` would fail. Excludes .alcatrazer/ and .env even if tracked.
     """
-    if branch is None:
+    if branch is None or is_unborn_head(repo):
         return
 
     # git archive exports tracked files, piped to tar for extraction
@@ -186,9 +212,10 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
     - `inner_root` — SHA of the workspace's `Initial commit`. Format-patch
       range boundary for every later promotion cycle.
     - `pinned_branch` — outer's currently-checked-out branch name at
-      snapshot time (None on detached HEAD; Step 1.8 will preempt that
-      case in `start.cmd_start` so the snapshot never runs on detached
-      HEAD in production).
+      snapshot time. A greenfield outer (no commits yet) still pins to its
+      unborn branch name (`main`); only detached HEAD yields None, and that
+      case is preempted in `start.cmd_start` (Step 1.8) so the snapshot
+      never runs on detached HEAD in production.
 
     Both are written once at workspace creation, never updated — promotion
     is bound to this branch and origin commit for the workspace's life
@@ -203,8 +230,9 @@ def snapshot_workspace(outer_repo: str, workspace: str, alcatraz_dir: str | None
     # prior "default branch only" rule is retired per
     # change_promotion_machinery.md (Step 1.6); detached-HEAD is
     # rejected upstream in cmd_start (Step 1.8) so by the time we get
-    # here, current_branch returns a real branch name (or None for
-    # an empty outer repo, which extract_snapshot treats as a no-op).
+    # here, current_branch returns a real branch name. For a greenfield
+    # outer (no commits) that name is the unborn branch (`main`), and
+    # extract_snapshot no-ops because there is no tree to archive.
     branch = current_branch(outer_repo)
     extract_snapshot(outer_repo, branch, workspace)
     filter_gitignore(workspace)

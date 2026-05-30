@@ -209,7 +209,10 @@ def check_pin(target: Path, pinned_branch: str) -> PinStatus:
     """Classify outer's HEAD against the recorded pin.
 
     Precedence (most-specific first):
-    1. `pinned_branch` no longer exists in target → `PIN_DELETED`
+    1. `pinned_branch` no longer exists in target → `PIN_DELETED`,
+       UNLESS it is the current unborn branch (HEAD is on it, no commit
+       yet — greenfield first run) → `OK`, since the first `git am` will
+       create the ref.
     2. HEAD is detached (independent of whether `pinned_branch`
        exists) → `DETACHED`
     3. Current branch equals `pinned_branch` → `OK`
@@ -237,6 +240,13 @@ def check_pin(target: Path, pinned_branch: str) -> PinStatus:
         == 0
     )
     if not pin_exists:
+        # A missing ref has two very different causes:
+        #   - the user deleted the pinned branch (genuinely gone), or
+        #   - the pinned branch is unborn — HEAD is on it, but no commit
+        #     exists yet (greenfield first run). The first `git am` will
+        #     create the ref, so this is OK, not a deleted pin.
+        if snapshot.current_branch(str(target)) == pinned_branch:
+            return PinStatus.OK
         return PinStatus.PIN_DELETED
 
     # 2. Detached HEAD? (reuses snapshot's narrow detector)
