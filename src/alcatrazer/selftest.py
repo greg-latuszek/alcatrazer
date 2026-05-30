@@ -22,6 +22,13 @@ Per-test independence: each assertion issues its own
 blob. Rationale in install_method.md under "Per-test independence (no
 batch scripts)".
 
+Each test method carries a single-line docstring written as a plain
+sentence (subject, what it verifies, and the security consequence).
+`alcatrazer start --run-selftest` prints that sentence — not the dotted
+test id — so the user reads a security report, not implementation
+detail (see `start.cmd_selftest`). The sentences follow the
+code-as-prose test convention (who / does-what / what-happens)
+
 Naming: uses "Alcatraz" rather than "container" because the invariants
 are backend-agnostic — a future PodmanPrison / SysboxPrison / VMPrison
 would reuse the same assertions (only the `query` mechanics differ).
@@ -69,11 +76,13 @@ class _AlcatrazSecurityInvariants:
     # --- 1. User identity (dev-base layer) ------------------------------
 
     def test_alcatraz_runs_as_phantom_uid(self):
+        """The agent inside Alcatraz runs under the phantom UID, so that even if escaped has no such UID on host."""
         result = self.prison.query(["id"])
         self.assertEqual(result.returncode, 0)
         self.assertIn(f"uid={self.expected['uid']}", result.stdout)
 
     def test_alcatraz_user_is_agent(self):
+        """The shell user inside Alcatraz is the unprivileged 'agent', never root."""
         result = self.prison.query(["whoami"])
         self.assertEqual(result.returncode, 0)
         self.assertIn("agent", result.stdout)
@@ -81,24 +90,15 @@ class _AlcatrazSecurityInvariants:
     # --- 2. Host credential isolation (dev-base layer) ------------------
 
     def test_no_ssh_directory(self):
+        """No ~/.ssh nor ~/.gnupg directory exists inside Alcatraz, so the host's secrets are unknown to agents."""
         # `test -d` returns 0 if directory exists; we want non-zero (absent).
+        result = self.prison.query(["test", "-d", "/home/agent/.gnupg"])
+        self.assertNotEqual(result.returncode, 0)
         result = self.prison.query(["test", "-d", "/home/agent/.ssh"])
         self.assertNotEqual(result.returncode, 0)
 
-    def test_no_gnupg_directory(self):
-        result = self.prison.query(["test", "-d", "/home/agent/.gnupg"])
-        self.assertNotEqual(result.returncode, 0)
-
-    def test_global_git_config_no_alcatraz_branding(self):
-        # cat ~/.gitconfig, tolerate missing file
-        result = self.prison.query(["bash", "-c", "cat ~/.gitconfig 2>/dev/null || true"])
-        self.assertNotIn(
-            "alcatraz",
-            result.stdout.lower(),
-            f"Global git config contains 'alcatraz': {result.stdout}",
-        )
-
     def test_no_host_signing_key_paths_in_global_git_config(self):
+        """The Alcatraz git config exposes no host path to a signing key, so host key locations stay hidden."""
         result = self.prison.query(["bash", "-c", "cat ~/.gitconfig 2>/dev/null || true"])
         self.assertNotRegex(
             result.stdout,
@@ -107,11 +107,13 @@ class _AlcatrazSecurityInvariants:
         )
 
     def test_global_signing_key_empty_or_unset(self):
+        """The Alcatraz git config defines no commit-signing key, so commits can't be signed with a host key."""
         result = self.prison.query(["git", "config", "--global", "user.signingkey"])
         # Either unset (non-zero exit, empty stdout) or explicitly empty.
         self.assertEqual(result.stdout.strip(), "")
 
     def test_global_commit_signing_disabled(self):
+        """The Alcatraz git config disables commit signing, so the agent's commits are never GPG-signed."""
         result = self.prison.query(["git", "config", "--global", "commit.gpgsign"])
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "false")
@@ -119,6 +121,7 @@ class _AlcatrazSecurityInvariants:
     # --- 3. Environment discipline (dev-base layer) ---------------------
 
     def test_no_leaked_secret_env_vars(self):
+        """The Alcatraz environment exposes no secret-like variables beyond the LLM API keys the user opted into."""
         result = self.prison.query(
             [
                 "bash",
@@ -137,17 +140,26 @@ class _AlcatrazSecurityInvariants:
 
     # --- 4. Workspace git identity is the agent (dev-base anti-leak) ----
 
-    def test_workspace_git_user_name_is_agent(self):
+    def test_workspace_git_user_is_agent(self):
+        """The Alcatraz git attributes commits to the agent, never to the Project Repository's developer."""
         result = self.prison.query(["git", "-C", "/workspace", "config", "--local", "user.name"])
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), self.expected["name"])
-
-    def test_workspace_git_user_email_is_agent(self):
         result = self.prison.query(["git", "-C", "/workspace", "config", "--local", "user.email"])
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), self.expected["email"])
 
-    def test_workspace_git_config_no_alcatraz_branding(self):
+    def test_git_config_doesnt_reveal_alcatraz_branding(self):
+        """The Alcatraz git config carries no 'alcatraz' branding, so it never reveals the sandbox."""
+        # global git config
+        # cat ~/.gitconfig, tolerate missing file
+        result = self.prison.query(["bash", "-c", "cat ~/.gitconfig 2>/dev/null || true"])
+        self.assertNotIn(
+            "alcatraz",
+            result.stdout.lower(),
+            f"Global git config contains 'alcatraz': {result.stdout}",
+        )
+        # repo level git config
         result = self.prison.query(["git", "-C", "/workspace", "config", "--local", "--list"])
         self.assertNotIn(
             "alcatraz",
@@ -156,8 +168,9 @@ class _AlcatrazSecurityInvariants:
         )
 
     def test_workspace_initial_commit_authored_by_agent(self):
-        """Read-only identity check against the existing initial commit
-        (created by create_workspace at install time). No new commits."""
+        """The Alcatraz git initial commit is authored and committed by the agent, so no Project Repository identity enters its history."""
+        # Read-only: inspects the existing initial commit (created by
+        # create_workspace at install time); creates no new commits.
         result = self.prison.query(
             [
                 "git",
@@ -178,7 +191,8 @@ class _AlcatrazSecurityInvariants:
     # --- 5. Filesystem ownership (dev-base) -----------------------------
 
     def test_workspace_directory_owned_by_phantom_uid(self):
-        """Read-only directory-ownership check — no file creation."""
+        """The Alcatraz Repository is owned by the phantom UID, so the agent never sees the host user's ownership."""
+        # Read-only: stat only, no file creation.
         result = self.prison.query(["stat", "-c", "%u", "/workspace"])
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), self.expected["uid"])
@@ -186,10 +200,12 @@ class _AlcatrazSecurityInvariants:
     # --- 6. Attack surface (dev-base) -----------------------------------
 
     def test_docker_socket_not_mounted(self):
+        """No Docker socket is mounted inside the Alcatraz, so the agent can't reach the host Docker daemon to escape."""
         result = self.prison.query(["test", "-e", "/var/run/docker.sock"])
         self.assertNotEqual(result.returncode, 0)
 
     def test_workspace_has_no_git_remotes(self):
+        """The Alcatraz Repository has no git remotes, so the agent can't fetch from or push to any network location."""
         result = self.prison.query(["git", "-C", "/workspace", "remote"])
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
@@ -197,8 +213,7 @@ class _AlcatrazSecurityInvariants:
     # --- 7. Zero "alcatraz" branding inside the Alcatraz ---------------
 
     def test_no_alcatraz_branding_in_environment(self):
-        """Broad sweep across env / git config / hostname for any
-        'alcatraz' string leaking inside the sandbox."""
+        """Nothing in the agent's environment, git config, or hostname contains 'alcatraz' to reveal the sandbox."""
         result = self.prison.query(
             [
                 "bash",
@@ -216,6 +231,7 @@ class _AlcatrazSecurityInvariants:
         "Skipped in CI — the runner's host path contains 'alcatrazer'",
     )
     def test_no_alcatraz_branding_in_mount_points(self):
+        """Nothing in the agent's mount table contains 'alcatraz' — the bind-mount path doesn't betray the sandbox."""
         result = self.prison.query(
             [
                 "bash",

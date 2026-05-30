@@ -1296,6 +1296,21 @@ def _load_coding_environment(project_dir: Path) -> dict:
     return data
 
 
+class _SecurityReportResult(unittest.TextTestResult):
+    """Render each invariant by its one-line docstring alone — the plain
+    sentence the user should read — instead of the dotted test id
+    (`…make_alcatraz_selftest_testcase.<locals>.SelftestAlcatraz.test_…`),
+    which leaks implementation detail and tells an end user nothing.
+
+    Stock verbosity-2 shows BOTH the id and the docstring; overriding
+    getDescription to return only the docstring drops the id line. Falls
+    back to the id if a test ever lacks a docstring (so a new, undocumented
+    invariant still prints something rather than a blank)."""
+
+    def getDescription(self, test):
+        return test.shortDescription() or str(test)
+
+
 def cmd_selftest(project_dir: Path) -> int:
     """Run `--run-selftest`: execute the bundled security invariants against
     the Alcatraz just started at `project_dir`. Returns 0 on success or
@@ -1309,7 +1324,12 @@ def cmd_selftest(project_dir: Path) -> int:
     )
     TestCase = selftest.make_alcatraz_selftest_testcase(project_dir)
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    # verbosity=2 + _SecurityReportResult → one readable sentence per check,
+    # no dotted test id. The report reads as a security checklist, matching
+    # the README "we hand you the test" promise.
+    result = unittest.TextTestRunner(
+        verbosity=2, resultclass=_SecurityReportResult
+    ).run(suite)
     return 0 if result.wasSuccessful() else 1
 
 

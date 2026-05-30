@@ -84,3 +84,9 @@ ignore = [
 # them run past the line-length limit rather than truncate the prose. Scoped
 # to E501 only, so every other rule still applies to these files.
 "src/alcatrazer/integration_tests/**" = ["E501"]
+# selftest invariant docstrings are single-line, full-sentence security-report
+# copy printed verbatim by `alcatrazer start --run-selftest` (who / does-what /
+# what-happens). They must read as one line, not wrap, so the report stays a
+# clean checklist — same rationale as the integration-test names above. E501
+# only; every other rule still applies.
+"src/alcatrazer/selftest.py" = ["E501"]
