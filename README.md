@@ -45,6 +45,19 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 **The threat is concrete.** Two recent supply-chain attacks share the same pattern: a compromised npm package uses the developer's local credentials to create public GitHub repositories *under the developer's own account*. **Nx `s1ngularity`** (August 2025) hijacked the victim's `gh` authentication to upload harvested credentials into ~1,400 new public repos named `s1ngularity-repository-*`, each under a different victim's account — 2,349 credentials from 1,079 developers. **Shai-Hulud** (September & November 2025) used stolen tokens to create public repos under victims' accounts *and* backdoor every package those developers maintained (796 packages, 20M+ weekly downloads in the November wave). Inside Alcatrazer, an agent has no GitHub credentials, no SSH keys, no `gh` authentication, no knowledge of your account, and no path to your real repository. A compromised package can poison the agent's workspace; it cannot create repositories under your name or push to GitHub on your behalf. Every commit crosses the water only after you review it.
 
 ---
+## Using it
+**You have to be in root of your repository** (where .git/ resides), otherwise following commands won't work.
+
+```bash
+alcatrazer test                  # Run bundled tests to verify installation
+alcatrazer init                  # Answer few questions to configure tool
+alcatrazer start --run-selftest  # start Alcatraz for AI agents (with security invariants check)
+alcatrazer visit                 # visit Alcatraz and tell agents what to do
+
+alcatrazer --help                # see all other possibilities
+```
+
+---
 
 ## CAUTION
 
@@ -54,15 +67,13 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 
 ---
 
-## ⚠️ Releases 0.0.4 and 0.1.0 — DO NOT USE FOR REAL WORK
+## Releases 0.1.1 — operable
 
-> **A serious bug in the promotion machinery was uncovered during release-readiness testing for 0.0.4 and is NOT yet fixed.** The default `mirror` mode rewrites your outer branch's history and leaves your working tree out of sync with `HEAD` every time the daemon promotes commits. The bug is carried forward in **0.1.0** — that release was scoped to the licence change (MIT → Apache-2.0) and the documentation written alongside it, with no functional code changes.
->
-> **End users: wait for 0.1.1.** Do not run `alcatrazer start` against any repository whose history you care about with versions 0.0.4 or 0.1.0.
->
-> Full details, root-cause analysis, and the planned fix: see the **0.0.4 entry of [`CHANGELOG.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/CHANGELOG.md)** and the design doc [`docs/features/change_promotion_machinery.md`](https://github.com/greg-latuszek/alcatrazer/blob/main/docs/features/change_promotion_machinery.md). The **0.1.0 entry** of the changelog explains why the licence change shipped as its own dedicated release rather than being bundled with the promotion fix.
->
-> 0.0.4 was published to surface the language-onboarding work for review; 0.1.0 ships the licence change cleanly separated from the (still pending) promotion rewrite landing in 0.1.1.
+- v0.1.1 is first operable release with the promotion machinery bug fixed.
+ 
+The promotion daemon now correctly rewrites history without leaving the working tree out of sync,
+and it handles file-presence collisions gracefully by pausing and waiting for user resolution 
+rather than erroring out.
 
 > **Read the [CHANGELOG](https://github.com/greg-latuszek/alcatrazer/blob/main/CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
 
@@ -82,7 +93,7 @@ These are the design commitments that define Alcatrazer. They are properties of 
 - **Hold rather than overwrite when your in-flight edits would collide with agent work.** Agent work is held until the safe condition returns, then resumes automatically. Your work is never lost to an automated process.
 - **Random fictitious identity for agent commits inside the workspace** — generated fresh per bring-up; never your name or email. The outer repo only sees commits attributed to you, after the rewrite.
 - **The agent inside the workspace cannot detect that Alcatrazer is the surrounding tool.** Mount paths, environment variables, container hostname, file contents, and commit metadata all read as a generic working environment.
-- **A bundled verification suite proves the security model on your own machine.** `alcatrazer test --run-selftest` runs the same assertions the project's CI does. We don't ask you to trust the marketing; we hand you the test.
+- **A bundled verification suite proves the security model on your own machine.** `alcatrazer start --run-selftest` runs the same assertions the project's CI does. We don't ask you to trust the marketing; we hand you the test.
 - **Zero third-party runtime dependencies in the core.** The trust boundary is the language standard library plus our own source — full stop. The audit surface stays small enough to read in an afternoon.
 - **Apache-2.0 licensed, source readable.** See the [License](#license) section below for details and the dependency-graph compatibility analysis.
 
