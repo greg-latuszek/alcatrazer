@@ -1327,9 +1327,7 @@ def cmd_selftest(project_dir: Path) -> int:
     # verbosity=2 + _SecurityReportResult → one readable sentence per check,
     # no dotted test id. The report reads as a security checklist, matching
     # the README "we hand you the test" promise.
-    result = unittest.TextTestRunner(
-        verbosity=2, resultclass=_SecurityReportResult
-    ).run(suite)
+    result = unittest.TextTestRunner(verbosity=2, resultclass=_SecurityReportResult).run(suite)
     return 0 if result.wasSuccessful() else 1
 
 

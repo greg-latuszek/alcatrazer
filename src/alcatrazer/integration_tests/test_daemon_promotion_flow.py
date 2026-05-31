@@ -114,7 +114,9 @@ class TestPromotionIntoGreenfieldOuterRepo(PromotionFlowTest):
         self._assert_daemon_synced_to_outer(agent_subject)
         self._assert_outer_has("app.py")
         self._assert_outer_commit_count_is("main", 1)
-        self._assert_outer_tip_authored_and_committed_by("main", "Outer Developer", "outer.dev@example.com")
+        self._assert_outer_tip_authored_and_committed_by(
+            "main", "Outer Developer", "outer.dev@example.com"
+        )
         self._assert_outer_working_tree_is_clean()
 
 
