@@ -417,9 +417,13 @@ alcatrazer clear    # terminal: stop container + daemon (after draining
 ```
 
 Both are idempotent and both do a final-sync of any pending commits
-before shutting the daemon down. `clear` explicitly **does not**
-delete the inner workspace directory — your agent work survives across
-`clear` / `start` cycles.
+before shutting the daemon down. The difference is what survives:
+`stop` preserves the inner workspace and the pin, so the next `start`
+resumes the same branch. `clear` is terminal — it wipes the inner
+workspace contents (including its `.git`) and drops the pin, so the
+next `start` snapshots fresh from whichever branch you're currently
+on. Promoted commits already live in your outer repo and are
+unaffected either way.
 
 ### Verify the installation
 
@@ -681,10 +685,11 @@ Alcatraz sandboxing port) when it builds and runs the workspace container:
    automatically, working tree and ref updating together. Watch
    activity with `alcatrazer status` (single-line summary) or
    `tail -f .alcatrazer/promotion-daemon.log` for the full event log.
-7. `git push origin feat/X` and open a PR like any other.
-7. You push the promoted commits to GitHub from the outer repo.
-8. `alcatrazer stop` when done for the day — or `alcatrazer clear` to
-   throw away the container entirely (your workspace directory survives).
+7. `git push origin feat/X` if you want to push the promoted commits to GitHub.
+8. `alcatrazer stop` when done for the day (freeze-restart, same
+   branch) — or `alcatrazer clear` to tear the workspace down for good
+   (its contents are wiped and the pin dropped; your already-promoted
+   commits stay safe in the outer repo).
 
 ## Running Tests
 
