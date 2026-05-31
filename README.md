@@ -71,9 +71,10 @@ alcatrazer --help                # see all other possibilities
 
 - v0.1.1 is first operable release with the promotion machinery bug fixed.
  
-The promotion daemon now correctly rewrites history without leaving the working tree out of sync,
-and it handles file-presence collisions gracefully by pausing and waiting for user resolution 
-rather than erroring out.
+The promotion daemon no longer rewrites your branch's history — it appends agent commits as
+fast-forwards, so the working tree never drifts out of sync with `HEAD`, and it handles
+file-presence collisions gracefully by pausing and waiting for user resolution rather than
+erroring out.
 
 > **Read the [CHANGELOG](https://github.com/greg-latuszek/alcatrazer/blob/main/CHANGELOG.md) before installing any release.** Per-release "what's new" / "what's broken" notes live there.
 
@@ -715,10 +716,11 @@ mise run build             # build the wheel into dist/
 The suite covers identity generation (name/email pools, workspace-dir
 naming, collision avoidance), init/start/stop/clear command flows,
 snapshot (branch detection, extraction, `.gitignore` filtering,
-exclusions), promotion (identity rewrite, byte-safe binary blobs,
-incremental, dry-run, topology preservation, namespace mode), daemon
-lifecycle (PID guard, config, signals, conflict detection/resolution,
-branch filtering, final-sync on shutdown), language manifest
+exclusions), promotion (pin-at-start binding, identity rewrite,
+byte-safe binary blobs, incremental replay, held/paused state
+transitions, clean abort on conflict), daemon lifecycle (PID guard,
+config, signals, hold/resume/pause detection, final-sync on
+shutdown), language manifest
 generation, Dockerfile templating, the `Alcatraz` port contract and
 its `DockerPrison` adapter, and the bundled security self-tests
 (phantom UID, credential isolation, no docker socket, workspace
