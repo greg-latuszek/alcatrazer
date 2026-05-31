@@ -8,11 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.1] — 2026-05-13
+## [0.1.1] — 2026-05-31
 
-> ## ⚠️ BREAKING CHANGE
->
+### ⚠️ BREAKING CHANGE
+
 > **0.1.1 reworks the promotion machinery and is not backwards compatible.** Workspaces created by 0.0.x or 0.1.0 are refused at first contact with a transparent upgrade message; the data layout under `.alcatrazer/` and the `.alcatrazer/config.toml` schema have both shifted (see [Migration](#migration-from-0-0-x--0-1-0) below). The git history and the user-facing `coding-environment.toml` are untouched — you only re-init Alcatrazer's own state.
+
+###  ✅ IMPORTANT FIX (♻️ Alcatrazer back operable)
 
 This is **the release that fixes the promotion-machinery bug from 0.0.4 and 0.1.0.** The default sync path no longer rewrites your outer branch's history; the working tree never drifts out of sync with `HEAD`; conflicts have a legible abort path; agent commits land on the branch you started Alcatrazer from, under your identity, with the file appearing under your cursor at the exact moment the commit lands on the branch.
 
@@ -35,6 +37,7 @@ The rewrite is structural — `git fast-export | git fast-import` (whose semanti
 - **Schema-compatibility gate** at every CLI entry point (`start`, `status`, `clear`, daemon startup): refuses workspaces written by an older Alcatrazer with a five-step upgrade procedure. Fires on any of (a) `state.json` `schema_version < 2`, (b) `.alcatrazer/config.toml` missing `schema_version` or carrying obsolete `[promotion-daemon].mode` / `.branches` keys, or (c) presence of 0.0.x side files (`paused-branches.json`, `promoted-tips.json`, `promote-export-marks`, `promote-import-marks`).
 - **Five new fields in `state.json`** (`schema_version` bumped 1 → 2): `inner_root` (workspace's initial-commit SHA, format-patch range boundary), `pinned_branch` (the branch the workspace is bound to), `last_promoted` (SHA of the last successfully applied commit), `last_promotion_time` (ISO 8601 UTC; backs the "Last sync" line in `status`), `paused` (apply-conflict marker; cleared automatically on the next successful cycle).
 - **`schema_version` field in `.alcatrazer/config.toml`** (bumped to 2). 0.0.x had no version field at all; 0.1.1 introduces it alongside the removals listed below.
+- **Greenfield first-run support.** `git init && alcatrazer init && alcatrazer start` now works *before the outer repo has any commit*. Alcatrazer pins to the unborn branch (the name `git symbolic-ref HEAD` reports, e.g. `main`), and the agent's first commit replays onto it via `git am` "applies to an empty history", creating the branch from nothing. Previously this left a dead workspace — `pinned_branch` recorded as `None`, the daemon holding forever on a branch named `None`, and `alcatrazer status` advising the nonsense `git branch None`.
 
 ### Changed
 
@@ -392,6 +395,8 @@ aware they live in Alcatraz) and the documented architecture in
 
 ---
 
+[0.1.1]: https://github.com/greg-latuszek/alcatrazer/releases/tag/v0.1.1
+[0.1.0]: https://github.com/greg-latuszek/alcatrazer/releases/tag/v0.1.0
 [0.0.4]: https://github.com/greg-latuszek/alcatrazer/releases/tag/v0.0.4
 [0.0.3]: https://github.com/greg-latuszek/alcatrazer/releases/tag/v0.0.3
 [0.0.2]: https://github.com/greg-latuszek/alcatrazer/releases/tag/v0.0.2
