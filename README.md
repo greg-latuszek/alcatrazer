@@ -24,7 +24,7 @@
 >
 > *But the water around the island is real. No SSH keys exist inside. No git credentials. No host filesystem. The agents don't even know your name — they commit under a randomly generated ghost identity that maps to nobody real. They run under a phantom UID that doesn't exist on your machine, so even if they tunnel through the walls, they surface as nobody, owning nothing, permitted nowhere.*
 >
-> *When the work is done, you — the warden — inspect it from the mainland. You review the commits, the branches, the merge history. If you approve, you run the transfer: every commit crosses the water with its topology intact, but the ghost identity is replaced with yours. The code enters your real repository, under your real name, ready to push.*
+> *Every commit (and only commits) crosses the water, but the ghost identity is replaced with yours. When the work is done, you — the warden — inspect it from the mainland. You review the commits, the branches. If you approve, you run the transfer:* **you push to GitHub**
 >
 > *Your agents built it. You own it. And your secrets never left the mainland.*
 >
