@@ -114,10 +114,12 @@ your_repo/                              <-- outer repo (your identity, has GitHu
 ├── .env                                <-- gitignored, real secrets
 ├── README.md
 ├── .alcatrazer/                        <-- gitignored via .git/info/exclude; tool state + installed source
-│   ├── src/alcatrazer/                 <-- extracted package source (readable install, bundled tests)
-│   ├── schemas.json                    <-- schema history for state.json + config.toml + coding-environment.toml
+│   ├── src/alcatrazer/                 <-- extracted package source incl. schemas.json (readable install, bundled tests)
+│   ├── Dockerfile                      <-- generated Alcatraz recipe (image build input)
+│   ├── entrypoint.sh                   <-- generated container entrypoint (chown, drop via gosu)
 │   ├── python -> /usr/bin/python3      <-- symlink to the Python that was used to install
 │   ├── config.toml                     <-- per-developer config (schema_version, identity, daemon settings)
+│   ├── coding-environment.toml.last    <-- recipe snapshot at last build (stale-image detection)
 │   ├── uid                             <-- phantom UID
 │   ├── agent-identity                  <-- random agent name + email
 │   ├── workspace-dir                   <-- pointer to the workspace directory name
@@ -141,6 +143,7 @@ alcatrazer/
 ├── docker_prison.py                    <-- Docker adapter of the Alcatraz port
 ├── snapshot.py                         <-- flat snapshot from outer repo into the workspace
 ├── promote.py                          <-- replay agent commits onto your branch via git format-patch | git am
+├── git_runner.py                       <-- central git command runner (safety funnel for all git subprocess calls)
 ├── daemon.py                           <-- sync daemon (polls from the host side)
 ├── daemon_lifecycle.py                 <-- launch / shutdown wiring for start / stop / clear
 ├── identity.py                         <-- random agent identity + workspace dir generation
@@ -148,6 +151,7 @@ alcatrazer/
 ├── selftest.py                         <-- bundled security self-tests (phantom UID, etc.)
 ├── state.py                            <-- .alcatrazer/state.json reader + schema-compatibility gate
 ├── schema.py                           <-- loader for schemas.json (schema history, version constants)
+├── schemas.json                        <-- schema history for state.json + config.toml + coding-environment.toml
 ├── status.py                           <-- cmd_status implementation
 ├── container/entrypoint.sh             <-- container entrypoint (chown, drop via gosu)
 ├── scripts/                            <-- bash bootstrap (runs before Python exists)
