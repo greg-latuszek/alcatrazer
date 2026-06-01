@@ -761,6 +761,43 @@ class DockerPrisonQueryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, "boom")
 
+    def test_query_feeds_input_on_stdin_with_the_interactive_flag_when_given_input(self):
+        """When `input` is given, the secret rides stdin (never argv) and
+        `docker exec` gets `-i` so the container process sees the pipe.
+
+        Used by credential provisioning: a token must reach `cat >file`
+        inside the sandbox without ever appearing in a process listing."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(
+                ["sh", "-c", "cat > /home/agent/.claude/.credentials.json"],
+                input="SECRET-TOKEN",
+            )
+        cmd = mock_run.call_args.args[0]
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn("-i", cmd)
+        # -i is a flag to `docker exec`, so it must precede the container name.
+        self.assertLess(cmd.index("-i"), cmd.index(f"workspace-{ident}"))
+        self.assertEqual(mock_run.call_args.kwargs.get("input"), "SECRET-TOKEN")
+        # Security: the secret must travel on stdin, never as an argv element.
+        self.assertNotIn("SECRET-TOKEN", cmd)
+
+    def test_query_omits_the_interactive_flag_when_given_no_input(self):
+        """Default streaming/capture path stays unchanged — no `-i`, no
+        stdin pipe — so existing callers are unaffected."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(["id"])
+        cmd = mock_run.call_args.args[0]
+        self.assertNotIn("-i", cmd)
+        self.assertIsNone(mock_run.call_args.kwargs.get("input"))
+
 
 class DockerPrisonStartTests(unittest.TestCase):
     """DockerPrison.start runs `docker run -d` with the workspace bind-mount,

@@ -30,7 +30,7 @@ from unittest.mock import Mock, patch
 
 from alcatrazer import __version__, cli, identity, languages, schema, selftest, start, state
 from alcatrazer import status as status_mod
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import ShutdownResult
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
@@ -2701,6 +2701,74 @@ class SubsequentRunTests(unittest.TestCase):
         prison = self._prison(running=True, rebuild=True, exec_rc=7, exists=True)
         self._run(prison)
         self._launch_mock.assert_not_called()
+
+
+class InjectClaudeCredentialsTests(unittest.TestCase):
+    """`inject_claude_credentials` copies the host's Claude Code token into
+    the running Alcatraz over the backend-neutral `query` port.
+
+    Why a copy rather than the old read-only bind mount: the agent runs as a
+    phantom UID that can never equal the host token owner, so a `0600`
+    host-owned file mounted in is unreadable from inside. Injection writes
+    the file AS the agent, so ownership and permissions land correctly — and
+    the host file is read once, never attached to the container."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.creds = Path(self.tmp.name) / ".credentials.json"
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.query.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+
+    def _patch_creds_path(self):
+        return patch.object(start, "_claude_creds_path", return_value=self.creds)
+
+    def test_nothing_is_injected_when_the_host_has_no_credentials(self):
+        # creds file deliberately not created → nothing to inject.
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        self.prison.query.assert_not_called()
+
+    def test_the_host_token_is_written_into_the_sandbox_over_the_query_port(self):
+        self.creds.write_text('{"token": "abc123"}')
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        self.prison.query.assert_called_once()
+        args, kwargs = self.prison.query.call_args
+        command = args[0]
+        # The token rides stdin, and the command lands it at the standard
+        # Claude Code path under the agent's own home.
+        self.assertEqual(kwargs.get("input"), '{"token": "abc123"}')
+        self.assertIn(".claude/.credentials.json", " ".join(command))
+
+    def test_the_token_never_appears_in_the_command_arguments(self):
+        """The token must travel on stdin only — argv is visible via
+        /proc/<pid>/cmdline to any process the agent can observe."""
+        self.creds.write_text("SUPER-SECRET-TOKEN")
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        command = self.prison.query.call_args.args[0]
+        self.assertNotIn("SUPER-SECRET-TOKEN", " ".join(command))
+
+    def test_the_written_credentials_file_is_locked_to_its_owner_via_umask(self):
+        """The write must produce a 0600 file — the command sets umask 077
+        so the token isn't group/other-readable inside the box."""
+        self.creds.write_text("{}")
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        command = " ".join(self.prison.query.call_args.args[0])
+        self.assertIn("077", command)
+
+    def test_a_start_error_is_raised_when_the_sandbox_write_fails(self):
+        self.creds.write_text("{}")
+        self.prison.query.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no such directory"
+        )
+        with self._patch_creds_path(), self.assertRaises(PrisonStartError) as cm:
+            start.inject_claude_credentials(self.prison)
+        self.assertIn("no such directory", cm.exception.stderr)
 
 
 class CmdInitIntegrationTests(unittest.TestCase):
