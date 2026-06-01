@@ -48,7 +48,7 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 ## Using it
 **You have to be in root of your repository** (where .git/ resides), otherwise following commands won't work.
 
-After [installation (or even without permanent installation)](1-set-up-the-cli) you can call:
+After [installation (or even without permanent installation)](#1-set-up-the-cli) you can call:
 ```bash
 alcatrazer test                  # Run bundled tests to verify installation
 alcatrazer init                  # Answer few questions to configure tool
