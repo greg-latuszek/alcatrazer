@@ -799,6 +799,65 @@ class DockerPrisonQueryTests(unittest.TestCase):
         self.assertIsNone(mock_run.call_args.kwargs.get("input"))
 
 
+class DockerPrisonCopyOutTests(unittest.TestCase):
+    """copy_out reads a file OUT of the instance via `docker cp`, which works
+    even when the container is stopped (but still present) — distinct from
+    query/exec, which need a running container. Used by credential copy-back
+    at teardown, where the container is already frozen."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_copy_out_returns_none_when_the_instance_does_not_exist(self):
+        with patch.object(docker_prison.DockerPrison, "exists", return_value=False):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertIsNone(result)
+
+    def test_copy_out_returns_the_file_content_and_its_preserved_mtime(self):
+        """`docker cp` preserves the source file's mtime into the extracted
+        copy, so copy_out reports the in-container mtime — the signal the
+        copy-back guard compares against the host file."""
+
+        def fake_cp(cmd, *args, **kwargs):
+            # docker cp <container>:<path> <dest> — emulate extraction.
+            dest = Path(cmd[-1])
+            dest.write_text("TOKEN-FROM-SANDBOX")
+            os.utime(dest, (1_700_000_000, 1_700_000_000))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            patch.object(docker_prison.DockerPrison, "exists", return_value=True),
+            patch.object(docker_prison.subprocess, "run", side_effect=fake_cp) as mock_run,
+        ):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertEqual(result.content, "TOKEN-FROM-SANDBOX")
+        self.assertEqual(result.mtime, 1_700_000_000)
+        cmd = mock_run.call_args.args[0]
+        container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:2], ["docker", "cp"])
+        self.assertIn(f"{container}:/home/agent/.claude/.credentials.json", cmd)
+
+    def test_copy_out_returns_none_when_the_file_is_absent_in_the_container(self):
+        with (
+            patch.object(docker_prison.DockerPrison, "exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 1, "", "no such file or directory"),
+            ),
+        ):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertIsNone(result)
+
+
 class DockerPrisonStartTests(unittest.TestCase):
     """DockerPrison.start runs `docker run -d` with the workspace bind-mount,
     cache volumes, .env file, and `sleep infinity` as the long-lived CMD."""

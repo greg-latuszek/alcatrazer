@@ -176,5 +176,96 @@ class TestClaudeCredentialReadiness(unittest.TestCase):
         self.assertNotIn(".credentials.json", mountinfo)
 
 
+@unittest.skipUnless(_docker_available(), "Docker not available")
+class TestClaudeCredentialCopyBack(unittest.TestCase):
+    """A real Alcatraz brought up with a host token, used to prove the
+    teardown copy-back: a token refreshed INSIDE the sandbox is offered back
+    as a `~/.claude/.credentials.json.fresh` sidecar (never overwriting the
+    host file), while an unchanged token offers nothing.
+
+    Its own container (own setUpClass) so it never disturbs the readiness
+    scenarios. One stateful two-phase method by design — the phases share
+    the container and must run in order, so splitting them would mean
+    rebuilding the same state twice (mirrors test_smoke's lifecycle test)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.project_dir = Path(cls._tmp.name)
+        _seed_project(cls.project_dir)
+
+        cls._host_home = tempfile.TemporaryDirectory()
+        cls.host_token_path = Path(cls._host_home.name) / ".credentials.json"
+        cls.host_token_path.write_text(HOST_TOKEN)
+        cls.sidecar_path = cls.host_token_path.parent / (cls.host_token_path.name + ".fresh")
+
+        cls.prison = DockerPrison(cls.project_dir)
+        with (
+            patch.object(
+                start_mod,
+                "ask_promotion_identity",
+                return_value=("Outer Developer", "outer.dev@example.com"),
+            ),
+            patch.object(start_mod, "ask_coding_environment", return_value=CODING_ENV),
+        ):
+            rc = start_mod.cmd_init(cls.project_dir)
+            if rc != 0:
+                raise RuntimeError(f"cmd_init failed (rc={rc})")
+            with patch.object(start_mod, "_claude_creds_path", return_value=cls.host_token_path):
+                rc = start_mod.cmd_start(cls.project_dir, prison=cls.prison)
+        if rc != 0:
+            raise RuntimeError(f"cmd_start failed (rc={rc})")
+
+    @classmethod
+    def tearDownClass(cls):
+        with contextlib.suppress(Exception):
+            cls.prison.stop()
+        with contextlib.suppress(Exception):
+            cls.prison.remove()
+        _nuke_phantom_uid_files(cls.project_dir)
+        with contextlib.suppress(Exception):
+            cls._tmp.cleanup()
+        with contextlib.suppress(Exception):
+            cls._host_home.cleanup()
+
+    def _offer_copy_back(self) -> None:
+        with patch.object(start_mod, "_claude_creds_path", return_value=self.host_token_path):
+            start_mod.offer_refreshed_claude_credentials(self.prison, self.project_dir)
+
+    def _simulate_token_refresh_inside_sandbox(self, token: str) -> None:
+        result = self.prison.query(
+            ["sh", "-c", f"umask 077; printf %s {token!r} > {SANDBOX_CREDENTIALS_PATH}"]
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_a_refreshed_sandbox_token_is_offered_as_a_sidecar_while_an_unchanged_one_is_not(self):
+        """Given Alcatraz started with a host token (injected, unchanged
+        inside); When copy-back runs at teardown with no refresh having
+        happened; Then no sidecar is offered (the sandbox token is identical
+        to the host's). When the token is then refreshed inside the sandbox
+        and copy-back runs again; Then the refreshed token is written to
+        `~/.claude/.credentials.json.fresh`, and the real host file is left
+        byte-for-byte untouched — the user applies the sidecar themselves."""
+        # Phase 1 — nothing refreshed inside: the sandbox token equals the
+        # host's, so copy-back offers nothing.
+        self._offer_copy_back()
+        self.assertFalse(
+            self.sidecar_path.exists(),
+            "no sidecar should be offered when the sandbox token matches the host",
+        )
+
+        # Phase 2 — the token is refreshed inside the sandbox (as Claude
+        # would when its access token expires mid-session).
+        refreshed = '{"claudeAiOauth": {"accessToken": "refreshed-inside-sandbox"}}'
+        self._simulate_token_refresh_inside_sandbox(refreshed)
+        self._offer_copy_back()
+
+        # The refreshed token is offered as a sidecar...
+        self.assertEqual(self.sidecar_path.read_text(), refreshed)
+        self.assertEqual(self.sidecar_path.stat().st_mode & 0o777, 0o600)
+        # ...and the user's real host file is never modified.
+        self.assertEqual(self.host_token_path.read_text(), HOST_TOKEN)
+
+
 if __name__ == "__main__":
     unittest.main()

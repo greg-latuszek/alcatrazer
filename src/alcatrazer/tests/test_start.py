@@ -2792,6 +2792,102 @@ class InjectClaudeCredentialsTests(unittest.TestCase):
         self.assertIn("no such directory", cm.exception.stderr)
 
 
+class OfferRefreshedClaudeCredentialsTests(unittest.TestCase):
+    """`offer_refreshed_claude_credentials` reads the (possibly refreshed)
+    token out of the sandbox at teardown and, when it is genuinely newer
+    than the host's, writes it to a `~/.claude/.credentials.json.fresh`
+    sidecar and tells the user — it NEVER overwrites the real credential
+    file. Transparency: alcatrazer doesn't silently mutate user secrets,
+    even to help; the user applies the sidecar themselves."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project_dir = Path(self.tmp.name)
+        self.claude_dir = self.project_dir / ".claude"
+        self.claude_dir.mkdir()
+        self.host = self.claude_dir / ".credentials.json"
+        self.sidecar = self.claude_dir / ".credentials.json.fresh"
+        self.prison = Mock(spec=Alcatraz)
+
+    def _patch_creds_path(self):
+        return patch.object(start, "_claude_creds_path", return_value=self.host)
+
+    def _host_token(self, content: str, mtime: int) -> None:
+        self.host.write_text(content)
+        os.utime(self.host, (mtime, mtime))
+
+    def _sandbox_token(self, content: str, mtime: int):
+        # Duck-typed stand-in for the CopiedFile the real copy_out returns.
+        self.prison.copy_out.return_value = Mock(content=content, mtime=mtime)
+
+    def _run(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            start.offer_refreshed_claude_credentials(self.prison, self.project_dir)
+        return out.getvalue()
+
+    def test_nothing_is_offered_when_the_sandbox_has_no_credentials(self):
+        self.prison.copy_out.return_value = None
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_a_refreshed_sandbox_token_is_saved_to_a_fresh_sidecar(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.read_text(), "NEW-REFRESHED")
+
+    def test_the_real_host_credential_file_is_never_modified(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        # The user's real file is left exactly as it was — only the sidecar
+        # carries the refreshed token.
+        self.assertEqual(self.host.read_text(), "OLD")
+        self.assertEqual(int(self.host.stat().st_mtime), 1000)
+
+    def test_the_fresh_sidecar_is_locked_to_its_owner(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.stat().st_mode & 0o777, 0o600)
+
+    def test_no_sidecar_is_offered_when_the_host_copy_is_newer(self):
+        # The user refreshed on the host (outside Alcatraz) more recently —
+        # offering the staler sandbox token as "fresh" would mislead.
+        self._host_token("HOST-NEWER", mtime=5000)
+        self._sandbox_token("SANDBOX-OLDER", mtime=2000)
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_no_sidecar_is_offered_when_the_sandbox_token_is_byte_identical(self):
+        # Never refreshed inside — the file is just our start-time injection.
+        self._host_token("SAME", mtime=1000)
+        self._sandbox_token("SAME", mtime=2000)
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_a_sidecar_is_offered_when_the_host_has_no_credentials_yet(self):
+        # Host never logged in; the user authenticated inside the sandbox.
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.read_text(), "NEW-REFRESHED")
+
+    def test_the_user_is_told_where_to_find_the_refreshed_credentials(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        output = self._run()
+        self.assertIn(".credentials.json.fresh", output)
+
+    def test_the_offer_is_recorded_in_the_promotion_log(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        log = (self.project_dir / ".alcatrazer" / "promotion-daemon.log").read_text()
+        self.assertIn(".credentials.json.fresh", log)
+
+
 class CmdInitIntegrationTests(unittest.TestCase):
     """End-to-end orchestration of cmd_init (Steps 3b-3h) — wizards + config
     writers + recipe generation run; build / workspace creation / container
