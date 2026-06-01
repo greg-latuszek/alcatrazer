@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------------
 [tools]
 python = "3.12"
-uv = "latest"
+uv = "0.11.14"
 
 # ----------------------------------------------------------------------------
 # ENVIRONMENT
@@ -45,11 +45,16 @@ run = ["python -m unittest discover -s src/alcatrazer/integration_tests -v"]
 
 [tasks.lint]
 description = "Run linter"
-run = ["ruff check"]
+# Scope ruff to our code (src/ — which holds both the package and its
+# tests at src/alcatrazer/tests/, since tests ship with the wheel as
+# `alcatrazer test` validation for end users). Anything outside src/
+# (build artifacts, AI-tool scaffolding installed in the tree, etc.)
+# isn't ours to lint.
+run = ["ruff check src"]
 
 [tasks.format]
 description = "Format code"
-run = ["ruff format", "ruff check --fix"]
+run = ["ruff format src", "ruff check --fix src"]
 
 [tasks.build]
 description = "Build PyPI package"

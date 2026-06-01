@@ -25,6 +25,22 @@ jobs:
       - name: Check linting
         run: ruff check
 
+      - name: Check README.md links are absolute (PyPI compatibility)
+        run: |
+          # PyPI's README renderer does not resolve relative links, so any
+          # link in README.md to a repo file must be an absolute GitHub URL
+          # (or a same-document anchor). See CLAUDE.md → "README.md links".
+          # Match all `](...)` patterns; filter out absolute (http/https) and
+          # anchor (#) targets. Anything left is a relative link → fail red.
+          if relative=$(grep -nE '\]\(' README.md | grep -vE '\]\((https?:|#)') ; then
+            echo "::error file=README.md::README.md contains relative links that will not render on PyPI. Use absolute https://github.com/greg-latuszek/alcatrazer/blob/main/<path> URLs. See CLAUDE.md → 'README.md links' for the rule."
+            echo ""
+            echo "Offending lines:"
+            echo "$relative"
+            exit 1
+          fi
+          echo "All README.md links are absolute or same-document anchors."
+
   test:
     needs: lint
     runs-on: ubuntu-latest

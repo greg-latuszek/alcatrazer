@@ -56,18 +56,18 @@ class AlcatrazSecurityInvariantsSurfaceTests(unittest.TestCase):
             "test_alcatraz_runs_as_phantom_uid",
             "test_alcatraz_user_is_agent",
             # 2. Host credential isolation
+            # (.ssh + .gnupg absence are both asserted here)
             "test_no_ssh_directory",
-            "test_no_gnupg_directory",
-            "test_global_git_config_no_alcatraz_branding",
             "test_no_host_signing_key_paths_in_global_git_config",
             "test_global_signing_key_empty_or_unset",
             "test_global_commit_signing_disabled",
             # 3. Environment discipline
             "test_no_leaked_secret_env_vars",
             # 4. Workspace git identity is the agent (anti-leak)
-            "test_workspace_git_user_name_is_agent",
-            "test_workspace_git_user_email_is_agent",
-            "test_workspace_git_config_no_alcatraz_branding",
+            # (user.name + user.email are both asserted here)
+            "test_workspace_git_user_is_agent",
+            # (global + workspace git config branding are both asserted here)
+            "test_git_config_doesnt_reveal_alcatraz_branding",
             "test_workspace_initial_commit_authored_by_agent",
             # 5. Filesystem ownership
             "test_workspace_directory_owned_by_phantom_uid",

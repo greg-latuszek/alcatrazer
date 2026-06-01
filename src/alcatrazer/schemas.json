@@ -1,0 +1,92 @@
+{
+  "$comment": "Schema history for Alcatrazer's three declared schemas. Single source of truth, consumed by src/alcatrazer/schema.py at runtime and (planned) by CI checks that diff this file between tags to enforce CHANGELOG mention. Editing rule: docs/coding_conventions.md 'Schema changes must land in schemas.json + CHANGELOG before release'.",
+  "schemas": {
+    "state": {
+      "file": ".alcatrazer/state.json",
+      "role": "running state of Alcatrazer — written by daemon + CLI during the workspace's lifetime. Created by the snapshot step during the first `alcatrazer start` (which stamps inner_root + pinned_branch); does NOT exist after `alcatrazer init` alone. Absence is a valid state.",
+      "history": [
+        {
+          "version": 1,
+          "release": "v0.1.0",
+          "summary": "Initial state.json — CLI/daemon shutdown-intent cooperation. File is lazily created on first 'alcatrazer stop'/'clear'; absent after a plain 'init' or 'start'.",
+          "fields_added": [
+            "schema_version",
+            "daemon_shutdown"
+          ],
+          "fields_removed": [],
+          "fields_changed": []
+        },
+        {
+          "version": 2,
+          "release": "v0.1.1",
+          "summary": "Promotion rework: unified pin + replay + paused fields directly in state.json, retiring the side files promoted-tips.json and paused-branches.json.",
+          "fields_added": [
+            "inner_root",
+            "pinned_branch",
+            "last_promoted",
+            "last_promotion_time",
+            "paused"
+          ],
+          "fields_removed": [],
+          "fields_changed": []
+        }
+      ]
+    },
+    "alcatrazer_config": {
+      "file": ".alcatrazer/config.toml",
+      "role": "static — Alcatrazer's per-developer tool configuration; not under user-repo version control (gitignored)",
+      "history": [
+        {
+          "version": 1,
+          "release": "v0.1.0",
+          "summary": "Initial .alcatrazer/config.toml — promotion identity + sync-daemon knobs. File carries no schema_version field at this version; the version label is applied externally for tracking history.",
+          "fields_added": [
+            "coding_environment_file",
+            "[promotion].name",
+            "[promotion].email",
+            "[promotion-daemon].interval",
+            "[promotion-daemon].branches",
+            "[promotion-daemon].mode",
+            "[promotion-daemon].verbosity",
+            "[promotion-daemon].max_log_size"
+          ],
+          "fields_removed": [],
+          "fields_changed": []
+        },
+        {
+          "version": 2,
+          "release": "v0.1.1",
+          "summary": "Adds the schema_version field (v0.1.0 had none) and removes [promotion-daemon].mode and [promotion-daemon].branches — promotion is now bound to the branch alcatrazer started from, no per-branch routing config.",
+          "fields_added": [
+            "schema_version"
+          ],
+          "fields_removed": [
+            "[promotion-daemon].mode",
+            "[promotion-daemon].branches"
+          ],
+          "fields_changed": []
+        }
+      ]
+    },
+    "coding_env": {
+      "file": "coding-environment.toml",
+      "role": "user-facing — declares the OS packages, language runtimes, and post-start commands the agent's workspace will be built with; lives in the user's repo, under version control",
+      "history": [
+        {
+          "version": 1,
+          "release": "v0.1.0",
+          "summary": "Initial coding-environment.toml — declares OS packages, language runtimes + managers, and post-start commands.",
+          "fields_added": [
+            "schema_version",
+            "[os].packages",
+            "[languages.<name>].version",
+            "[languages.<name>].manager",
+            "[startup].commands"
+          ],
+          "fields_removed": [],
+          "fields_changed": []
+        }
+      ]
+    }
+  }
+}

@@ -73,8 +73,6 @@ class AlcatrazerConfigTemplateTests(unittest.TestCase):
             data = tomllib.load(f)
         daemon = data.get("promotion-daemon", {})
         self.assertEqual(daemon.get("interval"), 5)
-        self.assertEqual(daemon.get("branches"), "all")
-        self.assertEqual(daemon.get("mode"), "mirror")
         self.assertEqual(daemon.get("verbosity"), "normal")
         self.assertEqual(daemon.get("max_log_size"), 512)
 

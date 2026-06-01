@@ -33,15 +33,13 @@ import tomllib
 from pathlib import Path
 
 # Import sibling modules
-from alcatrazer import identity, state
+from alcatrazer import identity, snapshot, state
 from alcatrazer import promote as promote_mod
 
 # --- Default config ---
 
 DEFAULTS = {
     "interval": 5,
-    "branches": "all",
-    "mode": "mirror",
     "verbosity": "normal",
     "max_log_size": 512,
 }
@@ -117,6 +115,110 @@ def remove_pid(pid_file: Path) -> None:
     pid_file.unlink(missing_ok=True)
 
 
+def _run_cycle_mirror(
+    source: Path,
+    target: Path,
+    alcatraz_dir: Path,
+    name: str,
+    email: str,
+    log: logging.Logger,
+    last_logged_status,
+):
+    """Run one mirror-mode promotion cycle and emit transition-only
+    log entries. Returns the full `PromotionResult` so callers can read
+    both `.outcome` (for `last_logged_status` tracking on the next call)
+    and `.commit_count` (for the shutdown handler's final-sync line).
+
+    Log messages use git's vocabulary and the actual branch names —
+    see docs/coding_conventions.md "User-facing strings speak the
+    user's language". Sample lines as the user sees them in
+    `.alcatrazer/promotion-daemon.log`:
+
+      - PROMOTED with N > 0 and no transition:
+            "Applied 3 agent commit(s) to branch 'feat/X'."
+      - HELD -> PROMOTED transition:
+            "Resumed: back on branch 'feat/X'. Applying 3 agent commit(s)."
+      - PAUSED -> PROMOTED transition:
+            "Resumed: conflict on branch 'feat/X' resolved."
+      - entering HELD (OFF_PIN — most common):
+            "Held: your repository is on branch 'main' but Alcatrazer
+            was started on 'feat/X'. Switch back to 'feat/X' to resume."
+      - entering HELD (DETACHED):
+            "Held: your repository has a detached HEAD. Check out
+            branch 'feat/X' to resume."
+      - entering HELD (PIN_DELETED):
+            "Held: branch 'feat/X' no longer exists in your
+            repository. Recreate it (e.g. `git branch feat/X`)
+            to resume."
+      - entering PAUSED:
+            "Paused: your working tree on branch 'feat/X' overlaps
+            with an agent commit. Find conflicting file, remove it or rename
+            and Alcatrazer will resume."
+      - HELD -> HELD / PAUSED -> PAUSED / steady-state PROMOTED with
+        N == 0: silent (transition-only).
+
+    Per change_promotion_machinery.md Phase 4 Step 4.4 (L915-919).
+    """
+    state_data = state.load_state(alcatraz_dir)
+    pinned_branch = state_data.get("pinned_branch", "<unknown>")
+
+    result = promote_mod.promote_once(source, target, alcatraz_dir, name, email)
+    outcome = result.outcome
+    PO = promote_mod.PromotionOutcome
+
+    if outcome is PO.PROMOTED:
+        if last_logged_status is PO.HELD:
+            log.info(
+                "Resumed: back on branch %r. Applying %d agent commit(s).",
+                pinned_branch,
+                result.commit_count,
+            )
+        elif last_logged_status is PO.PAUSED:
+            log.info(
+                "Resumed: conflict on branch %r resolved.",
+                pinned_branch,
+            )
+        elif result.commit_count > 0:
+            log.info(
+                "Applied %d agent commit(s) to branch %r.",
+                result.commit_count,
+                pinned_branch,
+            )
+        # else: PROMOTED with no transition + no work — silent steady-state poll
+    elif outcome is PO.HELD:
+        if last_logged_status is not PO.HELD:
+            pin = result.pin_status
+            if pin is promote_mod.PinStatus.DETACHED:
+                log.info(
+                    "Held: your repository has a detached HEAD. Check out branch %r to resume.",
+                    pinned_branch,
+                )
+            elif pin is promote_mod.PinStatus.PIN_DELETED:
+                log.info(
+                    "Held: branch %r no longer exists in your repository. "
+                    "Recreate it (e.g. `git branch %s`) to resume.",
+                    pinned_branch,
+                    pinned_branch,
+                )
+            else:  # OFF_PIN — most common held case
+                current = snapshot.current_branch(str(target)) or "<unknown>"
+                log.info(
+                    "Held: your repository is on branch %r but Alcatrazer "
+                    "was started on %r. Switch back to %r to resume.",
+                    current,
+                    pinned_branch,
+                    pinned_branch,
+                )
+    elif outcome is PO.PAUSED and last_logged_status is not PO.PAUSED:
+        log.warning(
+            f"Paused: your working tree on branch '{pinned_branch}' overlaps with an "
+            "agent commit. Find conflicting file, remove it or rename "
+            "and Alcatrazer will resume."
+        )
+
+    return result
+
+
 def _default_project_dir() -> Path:
     """Best-effort default for `--project-dir` when nothing is passed.
 
@@ -157,24 +259,23 @@ def main():
     toml_file = alcatraz_dir / "config.toml"
 
     # --- Startup checks ---
+    # Refuse pre-v0.1.1 workspaces before allocating any further state.
+    # See docs/features/change_promotion_machinery.md "Breaking-change
+    # posture". Failure message is the user-actionable upgrade procedure.
+    try:
+        state.require_compatible_workspace(alcatraz_dir)
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     workspace_path = resolve_workspace(project_dir, alcatraz_dir)
     check_pid(pid_file)
     write_pid(pid_file)
 
-    # Tell git the inner-repo path is safe to operate on despite
-    # ownership mismatch. The Alcatraz's entrypoint chowns /workspace
-    # to the phantom UID so the agent user inside the container can
-    # write to the bind-mounted workspace; that chown propagates to
-    # the host, leaving the inner repo owned by a UID the host user
-    # doesn't recognize. Git 2.35+ refuses to operate on such repos
-    # by default ("dubious ownership"). Setting safe.directory for
-    # this specific path via env-var config (additive to the user's
-    # normal gitconfig — no persistent side-effect on ~/.gitconfig)
-    # unblocks promote's fast-export without opening the gate for any
-    # other path.
-    os.environ["GIT_CONFIG_COUNT"] = "1"
-    os.environ["GIT_CONFIG_KEY_0"] = "safe.directory"
-    os.environ["GIT_CONFIG_VALUE_0"] = str(workspace_path)
+    # No safe.directory env setup here: every git call against the inner
+    # workspace below goes through `git_runner.run_git_command`, which
+    # auto-detects the workspace path and prepends `-c safe.directory=`
+    # per call. Centralising it in the funnel keeps the dubious-ownership
+    # bypass in one place instead of two.
 
     # --- Signal handling for clean shutdown ---
     shutdown_event = threading.Event()
@@ -207,67 +308,39 @@ def main():
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     log.addHandler(handler)
-    branches = config["branches"]
-    mode = config["mode"]
-    paused_branches = promote_mod.load_paused_branches(marks_dir)
     log.info(
-        "Daemon started (PID %d, interval=%ds, branches=%s, mode=%s)",
+        "Daemon started (PID %d, interval=%ds)",
         os.getpid(),
         interval,
-        branches,
-        mode,
     )
 
-    # Shared between main-loop polls and the final-sync on shutdown —
-    # extracted so the shutdown path doesn't duplicate branch-paused /
-    # conflict-handling / marks-update logic.
-    def run_cycle() -> list[str]:
-        """Run one promote cycle. Returns the list of newly-promoted
-        branch names (empty on alcatraz-tree mode or no-op poll). Logs
-        conflicts as WARNING. Errors bubble up for the caller to log."""
-        if mode == "mirror":
-            if paused_branches:
-                resolved = promote_mod.check_resolved_conflicts(
-                    target_repo,
-                    marks_dir,
-                    paused_branches,
-                )
-                for branch in resolved:
-                    paused_branches.discard(branch)
-                    log.info("Conflict resolved on branch %s — resuming promotion", branch)
-                if resolved:
-                    promote_mod.save_paused_branches(marks_dir, paused_branches)
+    # Track the previous outcome to enable transition-only logging
+    # via _run_cycle_mirror (only logs on state changes, not every poll).
+    last_logged_status = None
+    # Tracks the most-recent cycle's promoted-commit count so the
+    # shutdown handler's final-sync line can report `N commit(s) synced`
+    # (the count that `daemon_lifecycle._parse_shutdown_log` parses for
+    # `cmd_stop`/`cmd_clear`'s user-facing "N synced" line).
+    last_cycle_commit_count = 0
 
-            results = promote_mod.promote_with_conflict_handling(
-                source_repo,
-                target_repo,
-                marks_dir,
-                name,
-                email,
-                branches=branches,
-                paused_branches=paused_branches,
-            )
-            for branch, status in results.items():
-                if status == "conflict":
-                    log.warning(
-                        "CONFLICT on branch %s — promoted state "
-                        "saved to conflict/resolve-* branch. "
-                        "Resolve manually.",
-                        branch,
-                    )
-            return [b for b, s in results.items() if s == "promoted"]
-        if mode == "alcatraz-tree":
-            promote_mod.promote(
-                source_repo,
-                target_repo,
-                marks_dir,
-                name,
-                email,
-                branches=branches,
-                namespace="alcatraz",
-            )
-            return []
-        return []
+    # Shared between main-loop polls and the final-sync on shutdown —
+    # extracted so the shutdown path doesn't duplicate logging.
+    def run_cycle() -> None:
+        """Run one promote cycle. All logging happens inside
+        _run_cycle_mirror; this function returns silently. Errors
+        bubble up for the caller to log."""
+        nonlocal last_logged_status, last_cycle_commit_count
+        result = _run_cycle_mirror(
+            source=source_repo,
+            target=target_repo,
+            alcatraz_dir=marks_dir,
+            name=name,
+            email=email,
+            log=log,
+            last_logged_status=last_logged_status,
+        )
+        last_logged_status = result.outcome
+        last_cycle_commit_count = result.commit_count
 
     # --- Main polling loop ---
     try:
@@ -275,11 +348,7 @@ def main():
             if shutdown_event.wait(timeout=interval):
                 break
             try:
-                promoted = run_cycle()
-                if mode == "mirror" and promoted:
-                    log.info("Promotion cycle complete: %s", ", ".join(promoted))
-                elif mode == "alcatraz-tree":
-                    log.info("Promotion cycle complete (alcatraz-tree)")
+                run_cycle()
             except Exception as exc:
                 log.error("Promotion failed: %s", exc)
     finally:
@@ -287,17 +356,14 @@ def main():
         # between the last poll and SIGTERM. Docker is down by contract
         # (alcatrazer stop/clear order: docker first, then daemon
         # signal) so this is safe in the graceful case; in the
-        # unexpected case it's best-effort and the marks-file eventual-
-        # consistency guarantee catches any miss on the next start.
+        # unexpected case it's best-effort and the next start picks up
+        # from `last_promoted` in state.json.
         # Only the log prefix branches on intent — behavior does not.
         shutdown_intent = state.load_state(alcatraz_dir).get("daemon_shutdown")
         prefix = "graceful shutdown" if shutdown_intent == "requested" else "unexpected shutdown"
         try:
-            promoted = run_cycle()
-            if mode == "mirror":
-                log.info("Final sync (%s): %d commit(s) synced", prefix, len(promoted))
-            else:
-                log.info("Final sync (%s): alcatraz-tree cycle complete", prefix)
+            run_cycle()
+            log.info("Final sync (%s): %d commit(s) synced", prefix, last_cycle_commit_count)
         except Exception as exc:
             log.error("Final sync (%s) failed: %s", prefix, exc)
 

@@ -140,6 +140,34 @@ class Alcatraz(ABC):
         """Remove the workspace container (stop first if running). No-op if absent."""
 
     @abstractmethod
+    def wipe_workspace_contents(self) -> None:
+        """Remove every file inside the workspace bind-mount, leaving
+        the mount-point directory itself in place so the next
+        ``start`` can re-snapshot into the same target.
+
+        Caller contract: the original container is **stopped** when
+        this is called (``cmd_clear``'s race-safety dance — stop
+        agents, drain via daemon final-sync, then wipe). The backend
+        is free to choose how to perform the removal — via a one-shot
+        side container, via the host with appropriate privileges,
+        whatever — so long as it preserves Principle 2: no agent
+        process must observe foreign UIDs, foreign processes, or any
+        signal that betrays the Alcatrazer machinery from inside an
+        active sandbox.
+
+        Used by ``alcatrazer clear`` to make the teardown terminal:
+        the next ``start`` becomes a fresh first-run with a new pin
+        to the user's currently-checked-out branch, rather than
+        reusing the old workspace + old pin.
+
+        Backend-agnostic.
+
+        Raises ``PrisonError`` if the removal fails so ``cmd_clear``
+        can abort cleanly rather than discard the container with stale
+        files on disk.
+        """
+
+    @abstractmethod
     def shell(self) -> None:
         """Open an interactive shell as agent inside the running sandbox.
 

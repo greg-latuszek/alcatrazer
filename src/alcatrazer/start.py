@@ -22,30 +22,46 @@ MVP) — this module stays backend-agnostic.
 import hashlib
 import secrets
 import shutil
-import subprocess
 import sys
+import textwrap
 import tomllib
 import unittest
 from pathlib import Path
 
-from alcatrazer import identity, snapshot
+from alcatrazer import identity, promote, schema, selftest, snapshot, state
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import (
     launch_daemon_and_print,
     print_shutdown_result,
     shutdown_sync_daemon,
 )
+from alcatrazer.docker_prison import DockerPrison
+from alcatrazer.git_runner import run_git_command
 from alcatrazer.languages import SUPPORTED_LANGUAGES
+from alcatrazer.status import count_pending_commits
 
 # --- Coding-environment schema version --------------------------------------
 #
-# Bumped when the structure of `coding-environment.toml` changes in an
-# incompatible way. Files written before this field existed are treated as
-# version 1 (backwards compat). An older alcatrazer encountering a newer
-# schema raises UnsupportedSchemaVersionError rather than silently
-# misreading.
+# Derived from schemas.json (single source of truth — see
+# docs/coding_conventions.md "Schema changes must land in
+# schemas.json + CHANGELOG before release"). Bumped by appending a new
+# entry to `coding_env.history` in schemas.json; files written before
+# this field existed are treated as version 1 (backwards compat); an
+# older alcatrazer encountering a newer schema raises
+# UnsupportedSchemaVersionError rather than silently misreading.
 
-CODING_ENV_SCHEMA_VERSION = 1
+CODING_ENV_SCHEMA_VERSION = schema.CODING_ENV.current_version
+
+# --- .alcatrazer/config.toml schema version (Phase 7 Step 7.5) ---------------
+#
+# v0.1.0's config.toml had no schema_version field at all; v0.1.1
+# introduces it AND removes [promotion-daemon].mode + .branches. Bumped
+# by appending a new entry to `alcatrazer_config.history` in
+# schemas.json; write_alcatrazer_config stamps this value into freshly
+# written files, and state.require_compatible_workspace refuses any
+# config.toml that doesn't match.
+
+ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version
 
 
 def _workspace_ready(project_dir: Path, workspace_name: str | None) -> bool:
@@ -188,9 +204,34 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         )
         return 1
 
-    if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
+    # Phase 7 (change_promotion_machinery.md, Step 7.3): refuse
+    # pre-v0.1.1 workspaces with the upgrade message before any state
+    # read happens. The gate fires on state.json schema_version<2 OR
+    # presence of legacy v0.1.0 side files (paused-branches.json,
+    # promoted-tips.json, marks files) — multi-signal because v0.1.0's
+    # state.json was lazily created and may not exist at all.
+    try:
+        state.require_compatible_workspace(project_dir / ".alcatrazer")
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
+    # Phase 1 (change_promotion_machinery.md, Step 1.8): promotion is
+    # bound to a starting branch (pinned_branch in state.json). Reject
+    # upfront when the outer repo is on detached HEAD — snapshot would
+    # otherwise silently produce a workspace with no branch to pin to.
+    # Non-git directories and greenfield (no-commits) repos are NOT
+    # detached and are handled by their own downstream paths.
+    if snapshot.is_detached_head(str(project_dir)):
+        print(
+            "alcatrazer start: the outer repository is on a detached HEAD.\n"
+            "Promotion is bound to a starting branch — please check out a\n"
+            "branch (e.g. `git checkout main`) before running alcatrazer start.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if prison is None:
         prison = DockerPrison(project_dir)
 
     alcatraz_dir = project_dir / ".alcatrazer"
@@ -208,8 +249,9 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
         coding_env = _load_coding_environment(project_dir)
         current_hash = prison.recipe_hash(coding_env)
         if not prison.image_matches(current_hash) or not workspace_ready:
-            return _first_run_after_init(project_dir, prison=prison)
-        return _subsequent_run(project_dir, prison=prison)
+            rc = _first_run_after_init(project_dir, prison=prison)
+        else:
+            rc = _subsequent_run(project_dir, prison=prison)
     except UnsupportedSchemaVersionError as e:
         # Both routing branches load coding-environment.toml as their first
         # real step; either can raise this. We print the validator's own
@@ -228,6 +270,45 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # Phase 5 Step 5.6: post-success user-facing message. Names the
+    # branch the workspace is bound to (read from state.json, set by
+    # snapshot.py during workspace bring-up) and explains the
+    # hold-on-switch contract so the user isn't surprised when
+    # syncing pauses after `git checkout otherbranch`. Vocabulary
+    # follows docs/coding_conventions.md "User-facing strings".
+    #
+    # Scenario-aware branch: on a `stop` → `git checkout other` →
+    # `start` sequence the pin stays the original branch (subsequent-run
+    # never re-pins) and the daemon comes up already HELD. The user
+    # has ALREADY switched, so the generic "if you switch ..." line is
+    # wrong — they need state-NOW info plus the re-pin recovery path,
+    # not a future warning. Locked by
+    # TestRestartKeepsPinWhenBranchSwitchedWhileStopped.
+    if rc == 0:
+        pinned = state.load_state(alcatraz_dir).get("pinned_branch")
+        if pinned:
+            print()
+            print(f"Alcatrazer is running, started on branch '{pinned}'.")
+            current = snapshot.current_branch(str(project_dir))
+            if current and current != pinned:
+                # Off-pin restart — daemon will hold on its first poll.
+                print(
+                    f"Agents are starting in HOLD mode — no commits will be promoted "
+                    f"because you switched from '{pinned}' to '{current}' while "
+                    f"Alcatraz was frozen (after stop)."
+                )
+                print(
+                    f"To instead collaborate with agents on '{current}', re-pin: "
+                    f"git checkout {pinned} && alcatrazer clear && "
+                    f"git checkout {current} && alcatrazer start."
+                )
+            else:
+                # Initial start or on-pin restart — forward-looking warning.
+                print(f"Agent commits will be applied to '{pinned}' as the agent works.")
+                print("If you switch to a different branch, syncing pauses until you return.")
+
+    return rc
 
 
 def _host_has_claude_creds() -> bool:
@@ -267,8 +348,6 @@ def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     # `.alcatrazer/` is cmd_init's own directory — create it explicitly
@@ -370,8 +449,6 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     "Build & Startup Error Handling" contract, and returned as non-zero.
     """
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     alcatrazer_dir = project_dir / ".alcatrazer"
@@ -458,11 +535,12 @@ def read_git_identity(project_dir: Path) -> tuple[str | None, str | None]:
     """Return (name, email) from git config — local first, global fallback, per field."""
 
     def get(scope: str, key: str) -> str | None:
-        result = subprocess.run(
-            ["git", "config", f"--{scope}", "--get", key],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
+        # `-C project_dir` sets the cwd so `--local` finds project_dir/.git/config;
+        # `--global` still reads ~/.gitconfig regardless of cwd. Either way the
+        # funnel routes this as ordinary-host-repo (project_dir is the outer
+        # repo, not the inner workspace).
+        result = run_git_command(
+            ["-C", str(project_dir), "config", f"--{scope}", "--get", key],
         )
         value = result.stdout.strip()
         return value if result.returncode == 0 and value else None
@@ -523,8 +601,6 @@ def _ask_version(language: str) -> str:
         # Blank line goes BEFORE the tip (Phase 1.2.3): visually groups
         # the tip with the upcoming `Version for X:` prompt rather than
         # orphaning it to the previous prompt's answer.
-        import textwrap
-
         print()
         print(
             textwrap.fill(
@@ -568,8 +644,6 @@ def _ask_manager(language: str) -> str:
 
     tip = lang.get("manager_tip")
     if tip:
-        import textwrap
-
         print()
         print(
             textwrap.fill(
@@ -795,8 +869,6 @@ def _render_coding_environment(data: dict) -> str:
         # gave them.
         version_tip = lang_meta.get("version_tip")
         if version_tip:
-            import textwrap
-
             lines += textwrap.wrap(
                 version_tip,
                 width=76,
@@ -812,8 +884,6 @@ def _render_coding_environment(data: dict) -> str:
         # longer gated on whether the user overrode the default.
         manager_tip = lang_meta.get("manager_tip")
         if manager_tip:
-            import textwrap
-
             lines += textwrap.wrap(
                 manager_tip,
                 width=76,
@@ -880,7 +950,11 @@ def write_alcatrazer_config(
     template_path = Path(__file__).parent / "templates" / "alcatrazer-config.toml"
     out_lines: list[str] = []
     for line in template_path.read_text().splitlines():
-        if line.startswith("coding_environment_file = "):
+        if line.startswith("schema_version = "):
+            # Stamp the current version from schemas.json (single source
+            # of truth) rather than trusting the template literal.
+            out_lines.append(f"schema_version = {ALCATRAZER_CONFIG_SCHEMA_VERSION}")
+        elif line.startswith("coding_environment_file = "):
             out_lines.append(f"coding_environment_file = {_format_toml_string(coding_env_file)}")
         elif line.startswith("name = "):
             out_lines.append(f"name = {_format_toml_string(name)}")
@@ -1025,30 +1099,28 @@ def create_workspace(project_dir: Path, workspace_name: str) -> Path:
     alcatrazer_dir.mkdir(parents=True, exist_ok=True)
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
-        ["git", "init", str(workspace_dir)],
-        capture_output=True,
-        check=True,
-    )
+    run_git_command(["init", str(workspace_dir)], check=True)
 
     name, email = identity.ensure_identity(str(alcatrazer_dir))
 
-    def _wgit(*args: str) -> None:
-        subprocess.run(
-            ["git", "-C", str(workspace_dir), *args],
-            capture_output=True,
-            check=True,
-        )
-
-    _wgit("config", "--local", "user.name", name)
-    _wgit("config", "--local", "user.email", email)
-    _wgit("config", "--local", "commit.gpgsign", "false")
+    run_git_command(["-C", str(workspace_dir), "config", "--local", "user.name", name], check=True)
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "user.email", email], check=True
+    )
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "commit.gpgsign", "false"], check=True
+    )
     # Defensive: clear any host signing-key references so they cannot leak
     # into the inner repo's config.
-    _wgit("config", "--local", "user.signingkey", "")
-    _wgit("config", "--local", "gpg.ssh.allowedSignersFile", "")
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "user.signingkey", ""], check=True
+    )
+    run_git_command(
+        ["-C", str(workspace_dir), "config", "--local", "gpg.ssh.allowedSignersFile", ""],
+        check=True,
+    )
 
-    snapshot.snapshot_workspace(str(project_dir), str(workspace_dir))
+    snapshot.snapshot_workspace(str(project_dir), str(workspace_dir), str(alcatrazer_dir))
 
     return workspace_dir
 
@@ -1224,15 +1296,38 @@ def _load_coding_environment(project_dir: Path) -> dict:
     return data
 
 
+class _SecurityReportResult(unittest.TextTestResult):
+    """Render each invariant by its one-line docstring alone — the plain
+    sentence the user should read — instead of the dotted test id
+    (`…make_alcatraz_selftest_testcase.<locals>.SelftestAlcatraz.test_…`),
+    which leaks implementation detail and tells an end user nothing.
+
+    Stock verbosity-2 shows BOTH the id and the docstring; overriding
+    getDescription to return only the docstring drops the id line. Falls
+    back to the id if a test ever lacks a docstring (so a new, undocumented
+    invariant still prints something rather than a blank)."""
+
+    def getDescription(self, test):
+        return test.shortDescription() or str(test)
+
+
 def cmd_selftest(project_dir: Path) -> int:
     """Run `--run-selftest`: execute the bundled security invariants against
     the Alcatraz just started at `project_dir`. Returns 0 on success or
     non-zero on failure (count of failures is shown by the test runner)."""
-    from alcatrazer import selftest
-
+    # Header on stderr (the same stream TextTestRunner writes to) so it sits
+    # directly above the test lines, visibly separating the security check
+    # from cmd_start's post-start message printed just before it.
+    print(
+        "\nChecking security of started Alcatraz (due to --run-selftest):\n",
+        file=sys.stderr,
+    )
     TestCase = selftest.make_alcatraz_selftest_testcase(project_dir)
     suite = unittest.TestLoader().loadTestsFromTestCase(TestCase)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    # verbosity=2 + _SecurityReportResult → one readable sentence per check,
+    # no dotted test id. The report reads as a security checklist, matching
+    # the README "we hand you the test" promise.
+    result = unittest.TextTestRunner(verbosity=2, resultclass=_SecurityReportResult).run(suite)
     return 0 if result.wasSuccessful() else 1
 
 
@@ -1262,8 +1357,6 @@ def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
         )
         return 1
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
     if not prison.is_running():
         print(
@@ -1275,8 +1368,12 @@ def cmd_visit(project_dir: Path, prison: Alcatraz | None = None) -> int:
     return 0
 
 
-def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
-    """`alcatrazer clear` — throw away the Alcatraz runtime, preserve
+def cmd_clear(
+    project_dir: Path,
+    prison: Alcatraz | None = None,
+    discard_pending: bool = False,
+) -> int:
+    """`alcatrazer clear` — throw away the Alcatraz runtime, wipe
     the workspace.
 
     Removes the container so its writable overlay layer and any caches
@@ -1284,36 +1381,91 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
     - the image (so `alcatrazer start` doesn't need to rebuild),
     - `.alcatrazer/` config,
     - the Alcatraz workspace (`project_dir/<workspace-name>/`) on the
-      host filesystem — this is where agent work lives, and it's safe
-      to keep because commits that synced already live in your
-      repository too, and any unsynced commits are preserved here for
-      next-start recovery,
+      host filesystem — but only mounting point. Content is wiped out.
+      It's safe because commits are synced already into your
+      repository, or "clear" will wait till unsynced commits land there,
     - user repo-root files (`coding-environment.toml`, `.env`,
       `.env.example`).
 
-    Ordering (Step 5.7 non-negotiable rule, same as cmd_stop):
+    Four-case pre-check decision table:
+
+    | Pending | Outer state | Paused | Behavior                                |
+    | ------- | ----------- | ------ | --------------------------------------- |
+    |  0      |             |        | proceed silently                        |
+    |  >0     | on pin      |  no    | acknowledge → drain via final sync      |
+    |  >0     | on pin      |  yes   | BLOCK unless --discard-pending          |
+    |  >0     | off pin     |        | BLOCK unless --discard-pending          |
+
+    Default-deny on the last row prevents `git checkout main → clear`
+    muscle-memory from silently dropping N hours of agent work. The
+    --discard-pending flag is the explicit opt-in (e.g. abandoning a
+    failed experiment).
+    Same for pre-last row: still at correct branch but we have files conflict
+    that blocks commits syncing.
+
+    Tear-down ordering when proceeding (same as cmd_stop — race-free):
     1. `docker stop` — agents frozen.
     2. `shutdown_sync_daemon` — daemon runs final sync against the
-       frozen inner repo, exits. Any commits it can't sync stay in
-       the workspace via the paused-branches machinery.
+       frozen inner repo, exits.
     3. `docker rm` — container gone.
+    4. wipe workspace and chown it to outer UID:GID.
+    5. rm state.json (daemon work state) - drops the pin,
+       so next `alcatrazer start` is ready for a fresh snapshot
 
     Idempotent: missing Alcatraz is reported as "nothing to clear" and
-    returns 0. Final sync conflict / failure / timeout still proceeds
-    with docker rm (unsynced commits live in the preserved workspace)
-    but returns non-zero so the user is aware.
+    returns 0. Final sync conflict / failure / timeout breaks "clear"
+    and returns non-zero so the user is informed instead of silently
+    losing pending commits.
+    User can resolve problem or resign via --discard-pending.
     """
-    if not (project_dir / ".alcatrazer").exists():
+    alcatraz_dir = project_dir / ".alcatrazer"
+    workspace_name = identity.load_workspace_dir(str(alcatraz_dir))
+    if (not alcatraz_dir.exists()) or (not workspace_name):
         print(
             "No alcatrazer setup in this repository — run `alcatrazer init` first.",
             file=sys.stderr,
         )
         return 1
 
-    if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
+    # refuse pre-v0.1.1 workspaces before touching docker or daemon. The user
+    # needs the upgrade message, not a half-completed teardown.
+    try:
+        state.require_compatible_workspace(alcatraz_dir)
+    except state.UnsupportedStateSchemaVersionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
+    if prison is None:
         prison = DockerPrison(project_dir)
+
+    # Pre-check: read state, classify pin status, count pending. This
+    # decides whether we block or proceed BEFORE touching docker.
+    state_data = state.load_state(alcatraz_dir)
+    pending = count_pending_commits(project_dir / workspace_name, state_data)
+    anything_to_promote = pending > 0
+
+    pinned_branch = state_data.get("pinned_branch")
+    is_paused = state_data.get("paused")
+    is_at_pin_branch = is_outer_at_pinned_branch(project_dir, state_data)
+    promotion_blocked = is_paused or (not is_at_pin_branch)
+
+    # Off-pin/paused + pending + no override → block.
+    if anything_to_promote and (not discard_pending) and promotion_blocked:
+        explain_action_abandon(
+            action_name="clear",
+            project_dir=project_dir,
+            promotion_state=state_data,
+            pending=pending,
+            is_at_pin_branch=is_at_pin_branch,
+        )
+        return 1
+    elif anything_to_promote and (not discard_pending) and (not promotion_blocked):
+        # On-pin + pending → acknowledge so the user sees the drain.
+        plural = "" if pending == 1 else "s"
+        print(
+            f"Syncing {pending} pending agent commit{plural} to "
+            f"branch '{pinned_branch}' before clearing…"
+        )
 
     # Step 1 — docker down first.
     if prison.is_running():
@@ -1326,16 +1478,98 @@ def cmd_clear(project_dir: Path, prison: Alcatraz | None = None) -> int:
     result = shutdown_sync_daemon(project_dir)
     print_shutdown_result(result)
 
-    # Step 3 — discard the container.
+    # Step 3 — Phase 9: wipe the inner workspace via a one-shot side
+    # container (built from this Alcatraz's own image, runs as
+    # `agent`, bind-mounts the host workspace at /workspace, runs
+    # `find /workspace -mindepth 1 -delete`). The original container
+    # is stopped at this point and stays stopped — the side container
+    # is a separate disposable process. See
+    # docs/features/change_promotion_machinery.md Phase 9
+    # "wipe-from-inside vs side container" for the rationale.
     if prison.exists():
+        prison.wipe_workspace_contents()
         prison.remove()
-        print("Alcatraz cleared — Alcatraz workspace preserved on the host.")
+        print("Alcatraz cleared.")
     else:
         print("Nothing to clear — Alcatraz not present.")
+
+    # Step 4 — Phase 9: drop the pin. Without this, the next
+    # `alcatrazer start` would route to subsequent-run, reusing the
+    # old pinned_branch even though the inner workspace is gone.
+    # Unlinking state.json makes the next start a fresh first-run on
+    # whichever branch the user is currently on. `.alcatrazer/
+    # config.toml` is deliberately preserved so identity + daemon
+    # settings carry over — no `alcatrazer init` needed between clear
+    # and start.
+    (alcatraz_dir / "state.json").unlink(missing_ok=True)
 
     if result.outcome in ("conflict", "failed", "timeout"):
         return 1
     return 0
+
+
+def is_outer_at_pinned_branch(
+    project_dir: Path,
+    promotion_state: dict,
+) -> bool:
+    pinned_branch = promotion_state.get("pinned_branch")
+    if not pinned_branch:  # TODO: shouldn't it be set after alcatrazer start?
+        return False
+    pin_status = promote.check_pin(project_dir, pinned_branch)
+    is_at_pin_branch = pin_status is promote.PinStatus.OK
+    return is_at_pin_branch
+
+
+def explain_action_abandon(
+    action_name: str,
+    project_dir: Path,
+    promotion_state: dict,
+    pending: int,
+    is_at_pin_branch: bool,
+) -> None:
+    is_paused = promotion_state.get("paused")
+    current = snapshot.current_branch(str(project_dir)) or "<unknown>"
+    pinned_branch = promotion_state.get("pinned_branch")
+    plural = "" if pending == 1 else "s"
+    if is_paused:
+        print(
+            f"alcatrazer: cannot {action_name} — your working tree on branch '{pinned_branch}' "
+            f"overlaps with an agent commit{plural}. Find conflicting file, remove it or rename "
+            "and Alcatrazer will resume syncing commits back to that branch.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            "  To keep the agent work:   resolve files conflict && alcatrazer clear",
+            file=sys.stderr,
+        )
+    elif not is_at_pin_branch:
+        print(
+            f"alcatrazer: cannot {action_name} — {pending} agent commit{plural} "
+            f"haven't been synced to branch '{pinned_branch}' yet, "
+            f"but your repository is on '{current}'.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            f"Alcatrazer was started on branch '{pinned_branch}' and "
+            f"can only sync commits back to that branch.",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print(
+            f"  To keep the agent work:   git checkout {pinned_branch} && alcatrazer clear",
+            file=sys.stderr,
+        )
+    if is_paused or (not is_at_pin_branch):
+        print(
+            "  To discard pending work:   alcatrazer clear --discard-pending",
+            file=sys.stderr,
+        )
+        print(
+            "  To check pending work:     alcatrazer status",
+            file=sys.stderr,
+        )
 
 
 def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
@@ -1364,8 +1598,6 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
         return 1
 
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     # Step 1 — docker down first (agents frozen).
@@ -1413,8 +1645,6 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
     success so a retry sees the same drift signals.
     """
     if prison is None:
-        from alcatrazer.docker_prison import DockerPrison
-
         prison = DockerPrison(project_dir)
 
     coding_env = _load_coding_environment(project_dir)

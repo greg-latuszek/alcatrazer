@@ -10,18 +10,20 @@ short interval) so each test takes ~1s.
 
 import os
 import signal
-import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from alcatrazer import daemon_lifecycle, state
+from alcatrazer import daemon_lifecycle, schema, state
+from alcatrazer.daemon import DEFAULTS
 from alcatrazer.daemon_lifecycle import launch_sync_daemon, shutdown_sync_daemon
+from alcatrazer.git_runner import run_git_command
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True)
+    # Thin local shim; the funnel still owns every git execution.
+    run_git_command(["-C", str(repo), *args], check=True)
 
 
 class LaunchSyncDaemonTests(unittest.TestCase):
@@ -38,12 +40,12 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         (self.alcatraz_dir / "workspace-dir").write_text(workspace_name + "\n")
         self.workspace = self.project_dir / workspace_name
         self.workspace.mkdir()
-        subprocess.run(["git", "init", str(self.workspace)], capture_output=True, check=True)
+        run_git_command(["init", str(self.workspace)], check=True)
         _git(self.workspace, "config", "user.name", "Alcatraz Agent")
         _git(self.workspace, "config", "user.email", "alcatraz@localhost")
         _git(self.workspace, "config", "commit.gpgsign", "false")
         # Outer repo so promote() has a target.
-        subprocess.run(["git", "init", str(self.project_dir)], capture_output=True, check=True)
+        run_git_command(["init", str(self.project_dir)], check=True)
         _git(self.project_dir, "config", "user.name", "Test User")
         _git(self.project_dir, "config", "user.email", "test@example.com")
         _git(self.project_dir, "config", "commit.gpgsign", "false")
@@ -53,6 +55,7 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         # Config with promotion identity (so daemon's resolve_identity works)
         # and a short interval to keep tests fast.
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             '[promotion]\nname = "Test User"\nemail = "test@example.com"\n'
             "[promotion-daemon]\ninterval = 1\n"
         )
@@ -121,8 +124,6 @@ class LaunchSyncDaemonTests(unittest.TestCase):
         (self.alcatraz_dir / "config.toml").unlink()
         info = launch_sync_daemon(self.project_dir)
         # Daemon's default from DEFAULTS dict.
-        from alcatrazer.daemon import DEFAULTS
-
         self.assertEqual(info.interval, DEFAULTS["interval"])
 
     def test_launch_info_paths_point_into_alcatraz_dir(self):
@@ -209,11 +210,11 @@ class ShutdownSyncDaemonTests(unittest.TestCase):
         (self.alcatraz_dir / "workspace-dir").write_text(workspace_name + "\n")
         self.workspace = self.project_dir / workspace_name
         self.workspace.mkdir()
-        subprocess.run(["git", "init", str(self.workspace)], capture_output=True, check=True)
+        run_git_command(["init", str(self.workspace)], check=True)
         _git(self.workspace, "config", "user.name", "Alcatraz Agent")
         _git(self.workspace, "config", "user.email", "alcatraz@localhost")
         _git(self.workspace, "config", "commit.gpgsign", "false")
-        subprocess.run(["git", "init", str(self.project_dir)], capture_output=True, check=True)
+        run_git_command(["init", str(self.project_dir)], check=True)
         _git(self.project_dir, "config", "user.name", "Test User")
         _git(self.project_dir, "config", "user.email", "test@example.com")
         _git(self.project_dir, "config", "commit.gpgsign", "false")
@@ -221,6 +222,7 @@ class ShutdownSyncDaemonTests(unittest.TestCase):
         _git(self.project_dir, "add", "seed.txt")
         _git(self.project_dir, "commit", "-m", "init outer")
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             '[promotion]\nname = "Test User"\nemail = "test@example.com"\n'
             "[promotion-daemon]\ninterval = 1\n"
         )

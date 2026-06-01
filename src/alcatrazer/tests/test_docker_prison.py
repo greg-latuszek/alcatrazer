@@ -17,6 +17,7 @@
 
 import hashlib
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from alcatrazer import docker_prison
-from alcatrazer.alcatraz import PrisonBuildError, PrisonStartError
+from alcatrazer.alcatraz import PrisonBuildError, PrisonError, PrisonStartError
 from alcatrazer.docker_prison import DockerPrison
 
 
@@ -1060,8 +1061,6 @@ class DockerPrisonResumeTests(unittest.TestCase):
         self.assertEqual(mock_run.call_args.args[0], ["docker", "start", expected_container])
 
     def test_raises_prison_start_error_on_failure(self):
-        from alcatrazer.alcatraz import PrisonStartError
-
         with (
             patch.object(
                 docker_prison.subprocess,
@@ -1252,8 +1251,6 @@ class DockerfileConfigHashLabelTests(unittest.TestCase):
     def _extract_label(self, content: str) -> str:
         """Return the value of the alcatrazer.config_hash LABEL, or '' if
         the LABEL is absent."""
-        import re
-
         m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', content)
         return m.group(1) if m else ""
 
@@ -1336,8 +1333,6 @@ class DockerPrisonRecipeHashTests(unittest.TestCase):
         data = {"languages": {"python": {"version": "3.12", "manager": "pip"}}}
         prison.generate_prison(data)
         dockerfile = (self.project_dir / ".alcatrazer" / "Dockerfile").read_text()
-        import re
-
         m = re.search(r'LABEL alcatrazer\.config_hash="([0-9a-f]{16})"', dockerfile)
         self.assertIsNotNone(m)
         self.assertEqual(prison.recipe_hash(data), m.group(1))
@@ -1424,6 +1419,146 @@ class DockerPrisonImageMatchesTests(unittest.TestCase):
         self.assertIn("--format", cmd)
         format_idx = cmd.index("--format")
         self.assertIn("alcatrazer.config_hash", cmd[format_idx + 1])
+
+
+class DockerPrisonWipeWorkspaceContentsTests(unittest.TestCase):
+    """Phase 9 Step 9.1 — DockerPrison.wipe_workspace_contents removes
+    every file inside the workspace bind-mount using a one-shot side
+    container built from this Alcatraz's own image, with
+    ``--entrypoint find`` bypassing the chown-and-drop entrypoint and
+    ``-u agent`` matching the file ownership.
+
+    Why a side container (not ``self.exec`` on the original
+    container): ``cmd_clear`` stops the original container before the
+    wipe — ``docker exec`` requires a running container, so an exec-
+    based wipe would have to resume the original purely to wipe. A
+    fresh side container is conceptually one-shot disposal and avoids
+    the "does resume re-run startup commands" mental tax.
+
+    Why our image (not alpine): no extra image pull, and the ``agent``
+    user is already defined in /etc/passwd of our image so ``-u agent``
+    resolves consistently.
+
+    Stealth: no agent process is involved (original container stopped,
+    side container has no entrypoint/agentic CMD). Principle 2
+    trivially holds.
+
+    See docs/features/change_promotion_machinery.md Phase 9 for the
+    full design rationale."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        # workspace-dir pointer — the implementation reads it to know
+        # which host path to bind-mount into the side container.
+        (self.project_dir / ".alcatrazer").mkdir()
+        (self.project_dir / ".alcatrazer" / "workspace-dir").write_text(".devspace-test\n")
+        self.addCleanup(self.tmp.cleanup)
+
+    def _ok(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    def test_invokes_two_side_containers_find_then_chown(self):
+        """Lock the two-step sequence: (1) wipe contents as agent via
+        `find /workspace -mindepth 1 -delete`, then (2) chown the
+        now-empty dir to host UID:GID as root so the next `alcatrazer
+        start` can `git init` into it. Both steps live inside
+        wipe_workspace_contents so the caller (cmd_clear) sees a
+        single port-method call."""
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
+            prison = DockerPrison(self.project_dir)
+            prison.wipe_workspace_contents()
+        self.assertEqual(
+            mock_run.call_count,
+            2,
+            "wipe_workspace_contents must invoke exactly two side containers: "
+            "find (as agent) then chown (as root)",
+        )
+
+        expected_mount = f"{self.project_dir / '.devspace-test'}:/workspace"
+
+        # Step 1: find as agent.
+        find_cmd = mock_run.call_args_list[0].args[0]
+        self.assertEqual(find_cmd[:4], ["docker", "run", "--rm", "-u"])
+        self.assertEqual(find_cmd[4], "agent")
+        ep_idx = find_cmd.index("--entrypoint")
+        self.assertEqual(find_cmd[ep_idx + 1], "find")
+        v_idx = find_cmd.index("-v")
+        self.assertEqual(find_cmd[v_idx + 1], expected_mount)
+        self.assertEqual(
+            find_cmd[-5:],
+            [prison.image_tag, "/workspace", "-mindepth", "1", "-delete"],
+        )
+
+        # Step 2: chown as root (-u 0:0), retags /workspace to host
+        # UID:GID. Side container has no agent process, so Principle
+        # 2 still holds (no host-fingerprint exposure to an agent).
+        chown_cmd = mock_run.call_args_list[1].args[0]
+        self.assertEqual(chown_cmd[:4], ["docker", "run", "--rm", "-u"])
+        self.assertEqual(chown_cmd[4], "0:0")
+        ep_idx = chown_cmd.index("--entrypoint")
+        self.assertEqual(chown_cmd[ep_idx + 1], "chown")
+        v_idx = chown_cmd.index("-v")
+        self.assertEqual(chown_cmd[v_idx + 1], expected_mount)
+        # Last two args: <host_uid>:<host_gid> /workspace
+        self.assertEqual(chown_cmd[-2], f"{os.getuid()}:{os.getgid()}")
+        self.assertEqual(chown_cmd[-1], "/workspace")
+        self.assertIn(prison.image_tag, chown_cmd)
+
+    def test_returns_none_on_success(self):
+        """Matches the contract on ``start()`` / ``stop()`` /
+        ``remove()`` — state-mutating ops return None and raise on
+        failure. Caller doesn't have to branch on a return value."""
+        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()):
+            result = DockerPrison(self.project_dir).wipe_workspace_contents()
+        self.assertIsNone(result)
+
+    def test_raises_prison_error_when_find_step_returns_non_zero(self):
+        """If Step 1 fails (image missing, bind-mount unmountable,
+        find errored), raise so cmd_clear's teardown surfaces the
+        error rather than silently proceeding to `docker rm` a
+        container whose bind-mount still has stale files on disk.
+        The chown step is skipped — no point in chowning a not-yet-
+        wiped dir."""
+        fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="find: error\n")
+        with (
+            patch.object(docker_prison.subprocess, "run", return_value=fail) as mock_run,
+            self.assertRaises(PrisonError),
+        ):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
+        # find failed → chown never runs.
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_raises_prison_error_when_chown_step_returns_non_zero(self):
+        """If Step 2 (chown) fails after Step 1 (find) succeeded,
+        raise — the dir is empty but still phantom-owned, which would
+        block the next `git init`. Don't pretend the wipe succeeded."""
+        calls: list[int] = []
+
+        def _run(*args, **kwargs):
+            calls.append(0)
+            if len(calls) == 1:
+                return self._ok()
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="chown: error\n"
+            )
+
+        with (
+            patch.object(docker_prison.subprocess, "run", side_effect=_run),
+            self.assertRaises(PrisonError) as cm,
+        ):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
+        self.assertIn("chown", str(cm.exception))
+        self.assertEqual(len(calls), 2)
+
+    def test_raises_prison_error_when_workspace_pointer_missing(self):
+        """Pre-init / corrupt state: no .alcatrazer/workspace-dir
+        pointer to identify which host path to mount. Raise rather
+        than guess — calling wipe on something that doesn't exist
+        is a bug in the caller (cmd_clear gates on prison.exists())."""
+        (self.project_dir / ".alcatrazer" / "workspace-dir").unlink()
+        with self.assertRaises(PrisonError):
+            DockerPrison(self.project_dir).wipe_workspace_contents()
 
 
 if __name__ == "__main__":

@@ -17,17 +17,21 @@ import contextlib
 import hashlib
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from alcatrazer import __version__, cli, identity, languages, selftest, start
+from alcatrazer import __version__, cli, identity, languages, schema, selftest, start, state
+from alcatrazer import status as status_mod
 from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
+from alcatrazer.daemon_lifecycle import ShutdownResult
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
 
@@ -76,6 +80,7 @@ class CmdStartRoutingTests(unittest.TestCase):
         # Phase 1.2.6: cmd_start now loads coding-environment.toml to
         # compute the recipe hash. Provide minimal valid contents.
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.project_dir / "coding-environment.toml").write_text(
@@ -178,6 +183,66 @@ class CmdStartRoutingTests(unittest.TestCase):
         ):
             start.cmd_start(self.project_dir, prison=prison)
         prison.image_matches.assert_called_once_with("specifichash00ab")
+
+
+class CmdStartDetachedHeadTests(unittest.TestCase):
+    """Step 1.7 (change_promotion_machinery.md L797-798):
+    `alcatrazer start` must refuse to run when the outer repository
+    is on a detached HEAD. Promotion is bound to a starting branch
+    (Phase 1 introduces pinned_branch as state.json's anchor for
+    every later cycle); without a branched HEAD there is no anchor
+    to record.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        # Minimal .alcatrazer/ so cmd_start passes its first guard
+        # ("run alcatrazer init first"). The detached-HEAD check is
+        # expected to fire before any further setup is required.
+        (self.project_dir / ".alcatrazer").mkdir()
+
+    def _detach_outer(self) -> None:
+        """Initialize outer on `main` with one commit, then detach HEAD."""
+        cwd = str(self.project_dir)
+        subprocess.run(
+            ["git", "init", "-b", "main", cwd],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (("user.name", "T"), ("user.email", "t@test")):
+            subprocess.run(
+                ["git", "-C", cwd, "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", cwd, "commit", "--allow-empty", "-m", "first"],
+            capture_output=True,
+            check=True,
+        )
+        sha = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", cwd, "checkout", "--detach", sha],
+            capture_output=True,
+            check=True,
+        )
+
+    def test_refuses_with_explanatory_message_on_detached_head(self):
+        self._detach_outer()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_start(self.project_dir)
+        self.assertNotEqual(rc, 0)
+        # Error message must mention the constraint: outer must be on a branch.
+        err = stderr.getvalue().lower()
+        self.assertIn("branch", err)
 
 
 class CliVersionFlagTests(unittest.TestCase):
@@ -1130,8 +1195,6 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         """When the user doesn't pick [os] or [startup] at init time, the
         generated file carries commented-out example blocks (so they can
         edit and run `alcatrazer start` later) but NOT an active header."""
-        import re
-
         data = {"languages": {"python": {"version": "3.12"}}}
         content = start.write_coding_environment_toml(self.project_dir, data).read_text()
 
@@ -1143,8 +1206,6 @@ class WriteCodingEnvironmentTomlTests(unittest.TestCase):
         self.assertRegex(content, r"(?m)^# \[startup\]")
         # And parses cleanly as TOML (commented blocks don't break it).
         tomllib.loads(content)
-        # Keep the `re` import from being flagged as unused if the assertRegex
-        # implementation is reshuffled later.
         self.assertTrue(re.compile(r"^# \[os\]", re.MULTILINE).search(content))
 
     def test_shows_commented_example_for_a_language_user_didnt_pick(self):
@@ -1369,6 +1430,7 @@ class CodingEnvironmentSchemaVersionTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         self.coding_env_path = self.project_dir / "coding-environment.toml"
@@ -1482,6 +1544,7 @@ class CmdStartHandlesUnsupportedSchemaVersionTests(unittest.TestCase):
         self.alcatraz_dir.mkdir()
         (self.project_dir / ".git").mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
@@ -1547,6 +1610,7 @@ class CmdStartHandlesMalformedTomlTests(unittest.TestCase):
         self.alcatraz_dir.mkdir()
         (self.project_dir / ".git").mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
         )
         (self.alcatraz_dir / "workspace-dir").write_text(".devspace-aaaa\n")
@@ -1637,8 +1701,6 @@ class WriteAlcatrazerConfigTests(unittest.TestCase):
         path = start.write_alcatrazer_config(self.project_dir, "A", "a@e")
         daemon = self._parse(path)["promotion-daemon"]
         self.assertEqual(daemon["interval"], 5)
-        self.assertEqual(daemon["branches"], "all")
-        self.assertEqual(daemon["mode"], "mirror")
         self.assertEqual(daemon["verbosity"], "normal")
         self.assertEqual(daemon["max_log_size"], 512)
 
@@ -1825,8 +1887,6 @@ class WriteGitExcludeTests(unittest.TestCase):
 
     def test_creates_info_dir_when_missing(self):
         # .git exists but .git/info does not — must create it.
-        import shutil
-
         shutil.rmtree(self.project_dir / ".git" / "info")
         start.write_git_exclude(self.project_dir, ".devspace-abcd")
         self.assertTrue((self.project_dir / ".git" / "info" / "exclude").is_file())
@@ -2157,6 +2217,7 @@ class SaveCodingEnvironmentSnapshotTests(unittest.TestCase):
 
     def _write_config(self, filename: str) -> None:
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
         )
 
@@ -2197,6 +2258,7 @@ class CodingEnvironmentChangedTests(unittest.TestCase):
 
     def _write_config(self, filename: str) -> None:
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             f'coding_environment_file = "{filename}"\n[promotion]\nname = "x"\nemail = "y"\n'
         )
 
@@ -2413,6 +2475,7 @@ class SubsequentRunTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
             '[promotion]\nname = "x"\nemail = "y"\n'
         )
@@ -2584,9 +2647,7 @@ class SubsequentRunTests(unittest.TestCase):
         self._run(prison, env_changed=True)  # force recreate so we exercise save path
         last_path = self.alcatraz_dir / "env.hash.last"
         self.assertTrue(last_path.exists())
-        import hashlib as _h
-
-        expected = _h.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
+        expected = hashlib.sha256(start._normalize_env_content("FOO=1\n")).hexdigest()
         self.assertEqual(last_path.read_text().strip(), expected)
 
     def test_startup_failure_skips_both_snapshot_saves(self):
@@ -2874,6 +2935,7 @@ class FirstRunAfterInitTests(unittest.TestCase):
         self.alcatraz_dir = self.project_dir / ".alcatrazer"
         self.alcatraz_dir.mkdir()
         (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
             'coding_environment_file = "coding-environment.toml"\n'
             '[promotion]\nname = "x"\nemail = "y"\n'
         )
@@ -3480,8 +3542,6 @@ class CmdStopTests(unittest.TestCase):
 
         # Patch daemon-lifecycle helpers — cmd_stop always calls them;
         # tests control the outcome via the return value.
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -3615,8 +3675,6 @@ class CmdClearTests(unittest.TestCase):
 
         # Patch daemon-lifecycle helpers — cmd_clear always calls them;
         # tests control the outcome via the return value.
-        from alcatrazer.daemon_lifecycle import ShutdownResult
-
         self.ShutdownResult = ShutdownResult
         shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
         self.mock_shutdown = shutdown_patcher.start()
@@ -3628,6 +3686,16 @@ class CmdClearTests(unittest.TestCase):
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
+
+    def _setup_workspace(self):
+        """A real post-`start` workspace always has a `workspace-dir`
+        marker; cmd_clear treats its absence as "not set up" and refuses
+        before any teardown. These tests exercise teardown, so they must
+        write it. No inner `.git` is created, so count_pending_commits
+        returns 0 and the pin/pending block never fires."""
+        alcatraz_dir = self.project_dir / ".alcatrazer"
+        alcatraz_dir.mkdir()
+        identity.store_workspace_dir(str(alcatraz_dir), ".ws-test")
 
     def _run(self, prison=None):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -3644,7 +3712,7 @@ class CmdClearTests(unittest.TestCase):
     def test_noop_when_alcatraz_absent_still_reaps_daemon(self):
         """No container to remove, but a lingering daemon might still
         exist (user did `docker rm` manually) — shut it down regardless."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = False
         prison.is_running.return_value = False
@@ -3656,16 +3724,19 @@ class CmdClearTests(unittest.TestCase):
         self.assertIn("nothing to clear", out.lower())
 
     def test_removes_running_alcatraz(self):
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
         rc, out, _ = self._run(prison=prison)
         self.assertEqual(rc, 0)
         prison.stop.assert_called_once()
+        prison.wipe_workspace_contents.assert_called_once()
         prison.remove.assert_called_once()
         self.assertIn("cleared", out.lower())
-        self.assertIn("workspace preserved", out.lower())
+        # Phase 9: workspace is no longer preserved — the old promise
+        # contradicted the new terminal-teardown semantics.
+        self.assertNotIn("workspace preserved", out.lower())
         # Abstract-layer naming rule (feedback_alcatraz_naming.md):
         # CLI-visible output must not leak Docker-specific vocabulary.
         self.assertNotIn("container", out.lower())
@@ -3673,7 +3744,7 @@ class CmdClearTests(unittest.TestCase):
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
         to discard — remove, but don't bother calling stop on it."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = False
@@ -3685,7 +3756,7 @@ class CmdClearTests(unittest.TestCase):
     def test_does_not_touch_image_or_config(self):
         """Clear is strictly the container — image survives, no
         rebuild / recipe regeneration."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3696,7 +3767,7 @@ class CmdClearTests(unittest.TestCase):
     def test_ordering_docker_stop_then_daemon_then_docker_rm(self):
         """The three-step dance: docker down first, daemon finalizes,
         then discard container."""
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3719,7 +3790,7 @@ class CmdClearTests(unittest.TestCase):
         self.mock_shutdown.return_value = self.ShutdownResult(
             outcome="conflict", synced_count=1, conflict_branches=["feat/x"]
         )
-        (self.project_dir / ".alcatrazer").mkdir()
+        self._setup_workspace()
         prison = Mock(spec=Alcatraz)
         prison.exists.return_value = True
         prison.is_running.return_value = True
@@ -3873,6 +3944,761 @@ class CliRunSelftestFlagTests(unittest.TestCase):
         ):
             cli.main()
         mock_selftest.assert_not_called()
+
+
+class CmdStartPostSuccessMessageTests(unittest.TestCase):
+    """Phase 5 Step 5.5 (change_promotion_machinery.md L937-939):
+    On successful cmd_start, a user-facing message must:
+    - confirm Alcatrazer started
+    - name the branch the workspace is bound to
+    - explain that switching branches puts syncing on hold
+
+    Per docs/coding_conventions.md "User-facing strings speak the
+    user's language" — uses git vocabulary, no tool jargon.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.addCleanup(self.tmp.cleanup)
+
+        # Initialise project_dir as a real git repo on feat/X so
+        # cmd_start's detached-HEAD precondition (Phase 1) passes.
+        subprocess.run(
+            ["git", "init", "-b", "feat/X", str(self.project_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Outer User"),
+            ("user.email", "user@outer.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.project_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "commit", "--allow-empty", "-m", "initial"],
+            capture_output=True,
+            check=True,
+        )
+
+        # Minimal configs cmd_start expects.
+        (self.alcatraz_dir / "config.toml").write_text(
+            f"schema_version = {schema.ALCATRAZER_CONFIG.current_version}\n"
+            'coding_environment_file = "coding-environment.toml"\n'
+        )
+        (self.project_dir / "coding-environment.toml").write_text(
+            '[languages.python]\nversion = "3.12"\nmanager = "pip"\n'
+        )
+        # Workspace pointer (workspace dir itself doesn't need to
+        # exist; we mock the success routes below).
+        (self.alcatraz_dir / "workspace-dir").write_text(".devspace-test\n")
+
+        # State: pinned_branch is what the post-success message
+        # references. snapshot.py sets this on real first run; for
+        # the test we pre-populate it.
+        state.update_state(self.alcatraz_dir, pinned_branch="feat/X")
+
+    def _prison_ok(self) -> Mock:
+        p = Mock(spec=Alcatraz)
+        p.recipe_hash.return_value = "h"
+        p.image_matches.return_value = True
+        return p
+
+    def test_post_success_message_names_branch_and_explains_hold(self):
+        """Run cmd_start with both routes mocked to return 0 (success).
+        Expected stdout (or stderr):
+        - some confirmation Alcatrazer started
+        - the branch name 'feat/X'
+        - guidance about switching branches putting things on hold
+        - no project jargon (pinned / promotion / outer / inner)
+        """
+        prison = self._prison_ok()
+        # Force first-run path so workspace setup isn't checked at all.
+        with (
+            patch.object(start, "_first_run_after_init", return_value=0),
+            patch.object(start, "_subsequent_run", return_value=0),
+        ):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = start.cmd_start(self.project_dir, prison=prison)
+
+        self.assertEqual(rc, 0)
+        out = stdout.getvalue() + stderr.getvalue()
+        # Branch name appears verbatim (with quotes per house style).
+        self.assertIn("'feat/X'", out)
+        # Confirmation language present (started or running).
+        self.assertRegex(out, r"\b(started|running)\b")
+        # The hold-on-switch guidance: must mention switching branches
+        # AND the "hold"/"pause" concept.
+        lower = out.lower()
+        self.assertIn("switch", lower)
+        self.assertTrue(
+            "hold" in lower or "pause" in lower,
+            f"expected 'hold' or 'pause' in post-success message, got: {out!r}",
+        )
+        # User-language: no project jargon.
+        for jargon in ("pinned", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
+class _CmdStatusTestBase(unittest.TestCase):
+    """Shared fixtures for cmd_status tests (Phase 5 Steps 5.1-5.3).
+
+    Each test bootstraps:
+    - project_dir as outer git repo on a named branch
+    - workspace_dir (sibling .devspace-test) as inner repo with
+      'Initial commit' inner_root
+    - .alcatrazer/ with workspace-dir pointer + state.json
+    - .alcatrazer/promotion-daemon.pid pointing at current process
+      (so cmd_status's daemon-alive check passes)
+    """
+
+    WORKSPACE_NAME = ".devspace-test"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.alcatraz_dir = self.project_dir / ".alcatrazer"
+        self.alcatraz_dir.mkdir()
+        self.workspace_dir = self.project_dir / self.WORKSPACE_NAME
+        self.addCleanup(self.tmp.cleanup)
+
+    def _outer_on(self, branch: str) -> None:
+        subprocess.run(
+            ["git", "init", "-b", branch, str(self.project_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Outer User"),
+            ("user.email", "user@outer.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.project_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "commit", "--allow-empty", "-m", "initial outer"],
+            capture_output=True,
+            check=True,
+        )
+
+    def _workspace_with_initial(self) -> str:
+        """Initialise inner repo + one empty Initial commit. Return inner_root SHA."""
+        self.workspace_dir.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main", str(self.workspace_dir)],
+            capture_output=True,
+            check=True,
+        )
+        for k, v in (
+            ("user.name", "Patricia Garcia"),
+            ("user.email", "patricia@inner.example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "config", k, v],
+                capture_output=True,
+                check=True,
+            )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.workspace_dir),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return subprocess.run(
+            ["git", "-C", str(self.workspace_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _add_agent_commits(self, n: int) -> None:
+        for i in range(n):
+            Path(self.workspace_dir, f"agent{i}.py").write_text(f"# agent {i}\n")
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "add", "."],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.workspace_dir), "commit", "-m", f"agent: {i}"],
+                capture_output=True,
+                check=True,
+            )
+
+    def _write_workspace_pointer(self) -> None:
+        Path(self.alcatraz_dir, "workspace-dir").write_text(self.WORKSPACE_NAME + "\n")
+
+    def _write_daemon_pid(self) -> None:
+        """Write current process PID so cmd_status's `os.kill(pid, 0)`
+        liveness check passes."""
+        Path(self.alcatraz_dir, "promotion-daemon.pid").write_text(f"{os.getpid()}\n")
+
+    def _assert_no_jargon(self, out: str) -> None:
+        """Per docs/coding_conventions.md "User-facing strings speak the
+        user's language" — forbidden tool-internal vocabulary must not
+        appear in cmd_status output. The literal log-file path
+        (`.alcatrazer/promotion-daemon.log`) is the one exception: it's a
+        path reference, not jargon, and the user needs the exact filename
+        to actually run `tail -f`. Filter that line before checking."""
+        filtered = "\n".join(line for line in out.splitlines() if "tail -f" not in line).lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, filtered)
+
+    def _run_status(self) -> tuple[int, str, str]:
+        """Run cmd_status and return (rc, stdout, stderr)."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = status_mod.cmd_status(self.project_dir)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+
+class CmdStatusPausedStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.3 (change_promotion_machinery.md L931-932):
+    cmd_status paused-state output when state.paused is non-null
+    (working-tree conflict). The block must:
+
+    - say the state is "paused"
+    - name the pinned branch
+    - emit the working-tree-conflict explanation with the
+      Commit-or-stash actionable next step
+    - render "Last sync: never" when last_promotion_time absent
+    """
+
+    def test_paused_state_renders_conflict_message_and_never_last_sync(self):
+        # Outer on the pinned branch (so the held state isn't OFF_PIN —
+        # the conflict is at the apply layer, not the pin layer).
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(1)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+            # last_promotion_time deliberately absent — paused before
+            # ever applying anything successfully.
+            paused={"reason": "git am failed (exit 128): patch does not apply"},
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Paused marker.
+        self.assertIn("paused", out.lower())
+        # Started-from line names the branch.
+        self.assertIn("Started from", out)
+        self.assertIn("'feat/X'", out)
+        # Working-tree conflict explanation + actionable next step.
+        # Conflict resolution is git-rm/rename of the conflicting file,
+        # not "stash" — see project_promotion_conflict_semantics.
+        self.assertIn("working tree", out.lower())
+        self.assertRegex(out, r"remove it or rename")
+        # Pending commits = 1 (the agent commit waiting to apply).
+        self.assertRegex(out, r"Pending commits:\s*1\b")
+        # Last sync: never (last_promotion_time absent).
+        self.assertIn("never", out.lower())
+        # User-language: forbidden jargon absent (helper filters the
+        # tail-hint line whose literal `promotion-daemon.log` path is
+        # not jargon).
+        self._assert_no_jargon(out)
+
+
+class CmdStatusHeldStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.2 (change_promotion_machinery.md L927-929):
+    cmd_status held-state output when outer is off-pin (most common
+    held case). The block must:
+
+    - say the state is "on hold"
+    - name BOTH branches (current + started-on) in the explanation
+    - count pending commits accurately
+    - render last sync time
+    - give an actionable next step (the `git checkout <branch>` hint)
+    """
+
+    def test_off_pin_held_state_names_both_branches_and_pending_count(self):
+        # Outer initialised on 'main'; feat/X also exists (so the
+        # state is OFF_PIN, not PIN_DELETED).
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        # 3 agent commits piled in workspace — pending count == 3.
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        old = (datetime.now(UTC) - timedelta(minutes=23)).isoformat()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,  # nothing promoted yet; 3 pending
+            last_promotion_time=old,
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Held marker.
+        self.assertIn("on hold", out.lower())
+        # Both branch names named (current AND started-on).
+        self.assertIn("'main'", out)
+        self.assertIn("'feat/X'", out)
+        # Started-from line.
+        self.assertIn("Started from", out)
+        # Pending commit count = 3.
+        self.assertRegex(out, r"Pending commits:\s*3\b")
+        # Last sync uses minute-based relative time (23 minutes ago).
+        self.assertRegex(out, r"\d+\s*minute")
+        # Actionable hint: the `git checkout <branch>` command appears
+        # somewhere in the output. textwrap may split it across line
+        # boundaries (e.g. "...(`git\n  checkout feat/X`)..."), so we
+        # normalize whitespace before searching for the command.
+        normalized = " ".join(out.split())
+        self.assertIn("git checkout feat/X", normalized)
+        # User-language: forbidden jargon absent (helper filters the
+        # tail-hint line whose literal `promotion-daemon.log` path is
+        # not jargon).
+        self._assert_no_jargon(out)
+
+
+class CmdStatusActiveStateTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.1 (change_promotion_machinery.md L923-925):
+    cmd_status active-state output.
+
+    Expected (spec L286-291, revised per user-language rule):
+      Sync daemon running (PID <pid>)
+        Started from:     '<branch>'  active
+        Pending commits:  0
+        Last sync:        <relative time, e.g. "2 minutes ago">
+    """
+
+    def test_active_state_renders_pid_branch_pending_zero_and_recent_sync(self):
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._write_workspace_pointer()
+        recent = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            # No pending: last_promoted == workspace tip (= inner_root since
+            # no agent commits yet).
+            last_promoted=inner_root,
+            last_promotion_time=recent,
+        )
+        self._write_daemon_pid()
+
+        rc, out, _ = self._run_status()
+
+        self.assertEqual(rc, 0)
+        # Daemon line names the PID.
+        self.assertIn(str(os.getpid()), out)
+        # Active state marker.
+        self.assertIn("active", out)
+        # Started-from line names the branch.
+        self.assertIn("Started from", out)
+        self.assertIn("feat/X", out)
+        # Pending commits = 0.
+        self.assertRegex(out, r"Pending commits:\s*0\b")
+        # Last sync line carries a relative time including "minute".
+        self.assertIn("Last sync", out)
+        self.assertRegex(out, r"\d+\s*minute")
+        # User-language: forbidden jargon does not appear (case-insensitive).
+        # Helper filters the tail-hint line whose literal
+        # `promotion-daemon.log` path is not jargon.
+        self._assert_no_jargon(out)
+
+
+class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.7 (change_promotion_machinery.md L957-958):
+    `alcatrazer clear` MUST block — with a user-friendly error and
+    a non-zero exit — when the outer repo is off the start branch
+    (or detached / start branch deleted) AND the workspace has
+    pending agent commits not yet synced.
+
+    Why default-deny: losing N hours of agent work because the user
+    did `git checkout main` to inspect something and then ran
+    `alcatrazer clear` from muscle memory is a real failure mode
+    (spec L339-342). The explicit override is `--discard-pending`,
+    tested separately in Step 5.8.
+
+    Required behavior:
+      - rc != 0
+      - prison.stop / prison.remove NOT called (no docker damage)
+      - shutdown_sync_daemon NOT called (no daemon reap)
+      - error message names the pending count, BOTH branches
+        (started-on + current), and BOTH recovery paths
+        (`git checkout <branch>` and `--discard-pending`)
+      - vocabulary follows the user-language rule (docs/
+        coding_conventions.md): branch / commit / repository,
+        no `pin` / `promotion` / `outer` / `inner` jargon.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # cmd_clear today calls these unconditionally. The new
+        # pre-check logic in Step 5.10 must short-circuit BEFORE
+        # either is invoked — so we mock them out and assert "not
+        # called" below.
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    def _run_clear(self, prison):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_blocks_when_off_pin_with_pending_commits(self):
+        # Outer on 'main' but pin is 'feat/X' (which also exists) —
+        # this is the OFF_PIN case, the common "user wandered" scenario.
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        # 3 agent commits in workspace past last_promoted = inner_root.
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        rc, out, err = self._run_clear(prison=prison)
+
+        # Non-zero exit; no destructive action taken.
+        self.assertNotEqual(rc, 0)
+        prison.stop.assert_not_called()
+        prison.remove.assert_not_called()
+        self.mock_shutdown.assert_not_called()
+
+        # Block message — accept either stream so we don't bind the
+        # GREEN impl to a specific stream.
+        message = out + err
+        # Names the pending count (3 commits at stake).
+        self.assertRegex(message, r"\b3\b")
+        # Names BOTH branches (started-on + current).
+        self.assertIn("'feat/X'", message)
+        self.assertIn("'main'", message)
+        # Names BOTH recovery paths. `git checkout <branch>` may be
+        # broken across lines by wrap; normalize whitespace first.
+        normalized = " ".join(message.split())
+        self.assertIn("git checkout feat/X", normalized)
+        self.assertIn("--discard-pending", message)
+        # User-language: forbidden jargon absent.
+        lower = message.lower()
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
+
+
+class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
+    """`alcatrazer clear` MUST also block on a working-tree conflict
+    (state.paused set) — even when the outer repo is ON the pinned
+    branch. The original clear-abandon logic only blocked off-pin; the
+    refactor added the paused check, and this test pins that down.
+
+    Discriminating from CmdClearBlocksOffPinPendingTests: here outer is
+    on `feat/X` (== pinned), so check_pin is OK. The ONLY reason to
+    block is the unresolved conflict. Without the `is_paused` branch in
+    cmd_clear this proceeds to teardown and silently drops the conflict.
+
+    Required behavior:
+      - rc != 0
+      - prison.stop / prison.remove NOT called (no docker damage)
+      - shutdown_sync_daemon NOT called (no daemon reap)
+      - message explains the conflict in git-rm/rename terms (the
+        resolution is removing/renaming the conflicting file, not
+        stashing — see project_promotion_conflict_semantics) and offers
+        the `--discard-pending` override
+      - user-language vocabulary only.
+    """
+
+    PINNED_BRANCH = "feat/X"
+
+    def setUp(self):
+        super().setUp()
+        self._stub_daemon_lifecycle()
+
+    def test_blocks_when_paused_even_though_on_pinned_branch(self):
+        self._given_paused_conflict_while_on_pinned_branch(pending_commits=2)
+        running_alcatraz = self._a_running_alcatraz()
+
+        exit_code, message = self._run_clear(running_alcatraz)
+
+        self._assert_clear_was_refused(exit_code)
+        self._assert_no_teardown_happened(running_alcatraz)
+        self._assert_message_guides_conflict_resolution(message)
+
+    # --- Arrange ------------------------------------------------------
+
+    def _given_paused_conflict_while_on_pinned_branch(self, pending_commits: int) -> None:
+        """The one scenario this class exists for: the outer repo sits ON
+        its pinned branch (so check_pin is OK — off-pin is NOT a reason to
+        block), the workspace holds `pending_commits` unsynced agent
+        commits, and promotion is paused on a working-tree conflict. That
+        conflict is therefore the only thing that can stop `clear`."""
+        self._outer_on(self.PINNED_BRANCH)
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(pending_commits)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch=self.PINNED_BRANCH,
+            inner_root=inner_root,
+            last_promoted=inner_root,  # nothing synced yet → all commits pending
+            paused={"reason": "git am failed (exit 128): patch does not apply"},
+        )
+
+    def _a_running_alcatraz(self) -> Mock:
+        alcatraz = Mock(spec=Alcatraz)
+        alcatraz.exists.return_value = True
+        alcatraz.is_running.return_value = True
+        return alcatraz
+
+    def _stub_daemon_lifecycle(self) -> None:
+        """cmd_clear calls these unconditionally; a refused clear must
+        reach neither, so we stub them and assert "not called" later."""
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    # --- Act ----------------------------------------------------------
+
+    def _run_clear(self, alcatraz: Mock) -> tuple[int, str]:
+        """Run `alcatrazer clear`; return its exit code and everything it
+        told the user. stdout and stderr are merged because the test
+        asserts on what the user sees, not which stream carried it."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = start.cmd_clear(self.project_dir, prison=alcatraz)
+        return exit_code, stdout.getvalue() + stderr.getvalue()
+
+    # --- Assert -------------------------------------------------------
+
+    def _assert_clear_was_refused(self, exit_code: int) -> None:
+        self.assertNotEqual(exit_code, 0)
+
+    def _assert_no_teardown_happened(self, alcatraz: Mock) -> None:
+        """A refused clear leaves the running workspace untouched — no
+        docker damage, no daemon reap."""
+        alcatraz.stop.assert_not_called()
+        alcatraz.remove.assert_not_called()
+        self.mock_shutdown.assert_not_called()
+
+    def _assert_message_guides_conflict_resolution(self, message: str) -> None:
+        """The user learns it's a working-tree conflict, how to resolve it
+        (remove/rename the file — not stash, see
+        project_promotion_conflict_semantics), which branch the work
+        belongs to, and that --discard-pending is the escape hatch.
+        Because the repo is ON the pin, the off-pin "git checkout" advice
+        must be absent — the paused message takes precedence."""
+        self.assertIn("working tree", message.lower())
+        self.assertRegex(message, r"remove it or rename")
+        self.assertIn(f"'{self.PINNED_BRANCH}'", message)
+        self.assertIn("--discard-pending", message)
+        single_spaced = " ".join(message.split())
+        self.assertNotIn(f"git checkout {self.PINNED_BRANCH}", single_spaced)
+        self._assert_no_jargon(message)
+
+
+class CmdClearDiscardPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.8 (change_promotion_machinery.md L960-961):
+    `alcatrazer clear --discard-pending` is the explicit override
+    of the Step 5.7 block — when the user knowingly wants to throw
+    away unsynced agent commits (e.g. an experiment that turned
+    out worse than `main`), the flag MUST let cmd_clear proceed
+    with the normal tear-down sequence.
+
+    Same setup as Step 5.7 (off-pin + pending — the case that
+    would otherwise block), but with the flag set:
+      - rc == 0
+      - prison.stop / prison.remove called as usual
+      - shutdown_sync_daemon called (final reap of the daemon)
+      - the block-message vocabulary ("cannot clear", recovery
+        hints) does NOT appear — the user got what they asked for
+        without lecture.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="no_daemon", synced_count=0, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        print_patcher = patch.object(start, "print_shutdown_result")
+        self.mock_print_shutdown = print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+    def test_discard_pending_flag_proceeds_through_teardown(self):
+        self._outer_on("main")
+        subprocess.run(
+            ["git", "-C", str(self.project_dir), "branch", "feat/X"],
+            capture_output=True,
+            check=True,
+        )
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison, discard_pending=True)
+        out = stdout.getvalue()
+        err = stderr.getvalue()
+
+        # Override succeeded; full tear-down ran.
+        self.assertEqual(rc, 0)
+        prison.stop.assert_called_once()
+        prison.remove.assert_called_once()
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
+
+        # No block-message content (the user explicitly opted in;
+        # don't lecture them on the way out).
+        message = out + err
+        self.assertNotIn("cannot clear", message.lower())
+
+
+class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
+    """Phase 5 Step 5.9 (change_promotion_machinery.md L963-965):
+    `alcatrazer clear` on-pin with pending commits — the case the
+    block in Step 5.7 is NOT supposed to catch. The user is on the
+    branch their agent has been syncing to; their pending commits
+    are safe by definition (they're already destined for the branch
+    the user is on). cmd_clear MUST proceed normally:
+
+      - rc == 0
+      - prison.stop / shutdown / prison.remove all called in order
+      - shutdown_sync_daemon does the final sync drain onto the
+        pinned branch (here mocked to return synced_count=3 so we
+        can assert the count flows through to the user)
+      - NO block-message ("cannot clear", "--discard-pending")
+      - cmd_clear emits a user-facing acknowledgment naming the
+        pending count AND the pinned branch — so the user sees
+        what's being synced before the workspace is torn down.
+
+    The acknowledgment is the new content GREEN 5.10 must add. It
+    makes this test cleanly RED today (today's cmd_clear stdout
+    is silent about pending count / branch when proceeding).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ShutdownResult = ShutdownResult
+        shutdown_patcher = patch.object(start, "shutdown_sync_daemon")
+        self.mock_shutdown = shutdown_patcher.start()
+        # Pretend the daemon drained 3 commits during its final sync.
+        self.mock_shutdown.return_value = ShutdownResult(
+            outcome="synced", synced_count=3, conflict_branches=[]
+        )
+        self.addCleanup(shutdown_patcher.stop)
+        # Real print_shutdown_result so the user-facing message
+        # composition (which IS the contract) is exercised.
+
+    def test_on_pin_with_pending_proceeds_and_acknowledges_drain(self):
+        # Outer ON the pin (feat/X). 3 pending agent commits in the
+        # workspace — the drain target.
+        self._outer_on("feat/X")
+        inner_root = self._workspace_with_initial()
+        self._add_agent_commits(3)
+        self._write_workspace_pointer()
+        state.update_state(
+            self.alcatraz_dir,
+            pinned_branch="feat/X",
+            inner_root=inner_root,
+            last_promoted=inner_root,
+        )
+
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = start.cmd_clear(self.project_dir, prison=prison)
+        out = stdout.getvalue()
+        err = stderr.getvalue()
+        message = out + err
+
+        # Proceeds — full tear-down ran.
+        self.assertEqual(rc, 0)
+        prison.stop.assert_called_once()
+        self.mock_shutdown.assert_called_once_with(self.project_dir)
+        prison.remove.assert_called_once()
+
+        # No block content — this path is the safe one.
+        lower = message.lower()
+        self.assertNotIn("cannot clear", lower)
+        self.assertNotIn("--discard-pending", message)
+
+        # New GREEN 5.10 content: cmd_clear acknowledges what it's
+        # about to do, naming the pending count + pinned branch so
+        # the user sees the drain happen, not silence.
+        self.assertRegex(message, r"\b3\b")
+        self.assertIn("'feat/X'", message)
+
+        # User-language: forbidden jargon absent.
+        for jargon in ("pinned", "promoted", "promotion", "outer ", "inner "):
+            self.assertNotIn(jargon, lower)
 
 
 if __name__ == "__main__":

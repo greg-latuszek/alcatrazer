@@ -14,6 +14,7 @@ write access to host files.
 
 import random
 import subprocess
+import sys
 from pathlib import Path
 
 FIRST_NAMES = [
@@ -322,8 +323,6 @@ def ensure_phantom_uid(alcatraz_dir: str | Path) -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <alcatrazer-dir>", file=sys.stderr)
         sys.exit(1)

@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-Promote commits from a source (alcatraz) git repo to a target (outer) git repo.
-Rewrites author/committer identity while preserving full branch and merge topology.
+Promote commits from a source (alcatraz workspace) git repo to a target
+(outer) git repo, rewriting author/committer identity to the outer user.
 
-Uses git fast-export / fast-import with incremental mark files so only new
-commits are transferred on subsequent runs.
+Pipeline (per change_promotion_machinery.md):
+
+    git -C source format-patch --stdout --binary --keep-subject \\
+        <since>..refs/heads/main
+      | rewrite_from_header(name, email)            # author rewrite
+      | git -C target am --committer-date-is-author-date \\
+            --keep-non-patch --whitespace=nowarn --empty=drop
+                                                    # committer rewrite via env
+
+`git am` appends patches to outer's current branch and updates the
+working tree atomically. The pin check (`check_pin`) gates the cycle
+on outer being on the workspace's start branch; non-OK pins result in
+HELD (no apply, no state change) until the user restores the branch.
 
 Author identity priority (lowest to highest):
   1. git config (local first, then global — same as git does)
   2. .alcatrazer/config.toml [promotion] section
-  3. --author-name / --author-email CLI flags
-
-Usage:
-    .alcatrazer/python -m alcatrazer.promote \\
-        --source <path-to-source-repo> \\
-        --target <path-to-target-repo> \\
-        [--author-name "Your Name"] \\
-        [--author-email "your@email.com"] \\
-        [--marks-dir <dir>] \\
-        [--dry-run]
+  3. CLI flags (still accepted by `resolve_identity` callers)
 
 Requires Python 3.11+ (for tomllib).
 """
@@ -33,56 +35,16 @@ if sys.version_info < (3, 11):
     )
     sys.exit(1)
 
-import argparse
-import fnmatch
-import json
+import os
 import re
-import subprocess
 import tomllib
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 
-
-def resolve_branches(source: Path, branches_config) -> list[str]:
-    """Resolve branches config to a list of git refs for fast-export.
-
-    branches_config can be:
-      - "all"         → returns ["--all"]
-      - "main"        → returns ["refs/heads/main"]
-      - ["main", "feature/*"] → glob-matched against actual branches
-    """
-    if branches_config == "all":
-        return ["--all"]
-
-    # Get all branch names from the source repo
-    result = subprocess.run(
-        ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
-        capture_output=True,
-        text=True,
-    )
-    all_branches = result.stdout.strip().splitlines() if result.stdout.strip() else []
-
-    # Normalize to list of patterns
-    patterns = [branches_config] if isinstance(branches_config, str) else list(branches_config)
-
-    # Match patterns against actual branches
-    matched = set()
-    for pattern in patterns:
-        for branch in all_branches:
-            if fnmatch.fnmatch(branch, pattern):
-                matched.add(branch)
-
-    return [f"refs/heads/{b}" for b in sorted(matched)]
-
-
-def git(repo: Path, *args: str) -> str:
-    """Run a git command in the given repo, return stdout."""
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+from alcatrazer import snapshot, state
+from alcatrazer.git_runner import run_git_command
 
 
 def resolve_identity(
@@ -90,8 +52,8 @@ def resolve_identity(
 ) -> tuple[str, str]:
     """Resolve author identity via the three-layer priority chain."""
     # Layer 1: git config (local > global, same as git does)
-    name = git(target_repo, "config", "user.name")
-    email = git(target_repo, "config", "user.email")
+    name = run_git_command(["-C", str(target_repo), "config", "user.name"]).stdout.strip()
+    email = run_git_command(["-C", str(target_repo), "config", "user.email"]).stdout.strip()
 
     # Layer 2: .alcatrazer/config.toml [promotion] section
     if toml_file.exists():
@@ -121,386 +83,365 @@ def resolve_identity(
     return name, email
 
 
-def rewrite_identity(stream: bytes, name: str, email: str) -> bytes:
-    """Rewrite author/committer lines in a fast-export stream.
+def rewrite_from_header(stream: bytes, name: str, email: str) -> bytes:
+    """Substitute the author `From: ` header line in an mbox-format
+    patch stream with `From: <name> <<email>>`.
 
-    Operates on raw bytes because fast-export embeds blob content
-    inline and git histories can contain non-UTF-8 bytes (images,
-    archives, etc.). Anchoring on the trailing `<timestamp> <tz>` shape
-    keeps the regex from matching text that merely starts with
-    "author " or "committer " inside a data section.
+    Operates on raw bytes — `git format-patch --binary` emits binary
+    file diffs that must pass through untouched.
+
+    Per change_promotion_machinery.md Phase 2 (Step 2.2). Used by
+    `apply_patch_stream` to rewrite each patch's author before piping
+    into `git am`; committer is rewritten separately via env-vars
+    because `format-patch` carries no committer field.
     """
-    repl = b"\\1 " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b"> \\2"
-    stream = re.sub(
-        rb"^(author) .+ <.+> (.+)$",
-        repl,
-        stream,
-        flags=re.MULTILINE,
+    # Input (one mbox message from `git format-patch --stdout` —
+    # docs/git_patch_example.log has 3 real captured samples):
+    #   From <40hex commit-sha> Mon Sep 17 00:00:00 2001
+    #                           ^^^^^^^^^^^^^^^^^^^^^^^^^
+    #                           git mbox-format SENTINEL — emitted
+    #                           verbatim for every patch regardless
+    #                           of the commit's real date.
+    #                           Documented as a "fixed" datestamp in
+    #                           git-format-patch(1)'s DESCRIPTION
+    #                           section, used as a marker so file(1)
+    #                           and similar tools can recognize a
+    #                           git-format-patch byte stream. See
+    #                           https://git-scm.com/docs/git-format-patch.
+    #                           The real commit date lives in the
+    #                           `Date:` header below.
+    #   From: <author name> <<author email>>            <- TARGET
+    #   Date: <real commit date — RFC 2822 format>
+    #   Subject: [PATCH] <subject>
+    #
+    #   <commit body, free-form text — may legitimately contain lines
+    #    starting with "From: ", e.g. an email quoted in the body or
+    #    a config-file example. Those MUST NOT match this regex.>
+    #   ---
+    #   <diff/patch content, possibly binary>
+    #
+    # Boundary: the legitimate target is the `From: ` line that
+    # appears IMMEDIATELY AFTER the `From <40hex> Mon Sep 17 ...`
+    # mbox separator line. A naive `^From: ` anchor (with colon) is
+    # not strict enough — it matches body lines and any other
+    # `From: ` text. So we capture the separator in group 1 and
+    # replace only the line that directly follows it, preserving the
+    # separator unchanged via the \1 backref.
+    #
+    # The 40-hex + literal `Mon Sep 17 00:00:00 2001` anchor makes
+    # this resilient: the only realistic way to mis-match would be
+    # if a commit body contained a forged line of that exact shape
+    # AND the *next* line started with `From: ` — a degree of
+    # attacker control outside our threat model.
+    pattern = re.compile(
+        rb"^(From [0-9a-f]{40} Mon Sep 17 00:00:00 2001\n)From: [^\n]*",
+        re.MULTILINE,
     )
-    stream = re.sub(
-        rb"^(committer) .+ <.+> (.+)$",
-        repl,
-        stream,
-        flags=re.MULTILINE,
-    )
-    return stream
+    replacement = b"\\1From: " + name.encode("utf-8") + b" <" + email.encode("utf-8") + b">"
+    return pattern.sub(replacement, stream)
 
 
-def dry_run(
-    source: Path, marks_dir: Path, name: str, email: str, branches: str | list = "all"
-) -> None:
-    """Show what would be promoted without modifying anything."""
-    export_marks = marks_dir / "promote-export-marks"
-    refs = resolve_branches(source, branches)
+def format_patch_stream(source: Path, since_sha: str) -> bytes:
+    """Return an mbox-format patch stream for the non-merge commits
+    in `<since_sha>..refs/heads/main` of the `source` workspace.
 
-    cmd = ["git", "-C", str(source), "fast-export", *refs]
-    if export_marks.exists():
-        cmd.append(f"--import-marks={export_marks}")
+    Wraps `git format-patch --stdout --binary --keep-subject
+    <since>..refs/heads/main`:
 
-    result = subprocess.run(cmd, capture_output=True)
-    stream = result.stdout
+    - `--stdout` — emit a single mbox stream
+    - `--binary` — include GIT binary patch sections for binary files
+      (otherwise they're silently skipped)
+    - `--keep-subject` — don't prepend "[PATCH]" to Subject
 
-    commits = re.findall(rb"^commit (.+)$", stream, re.MULTILINE)
-    commit_count = len(commits)
+    The `since_sha` boundary is exclusive — when the caller passes
+    the workspace's `inner_root` (the Initial commit, recorded by
+    Phase 1 in state.json), `inner_root` itself does not appear in
+    the stream; only its descendants do.
 
-    if commit_count == 0:
-        print("Nothing to promote — target is up to date.")
-        return
-    branches = sorted({c.decode("utf-8", errors="replace") for c in commits})
+    **Merge handling:** `git format-patch` is fundamentally designed
+    for non-merge commits — under any flag combination tested
+    (`--first-parent`, `-m`, `--merges`, `--diff-merges=first-parent`,
+    `--cc`, `-c`), it will NOT emit a patch for a merge commit. So
+    when inner has merges (e.g. parallel-agent workflows where each
+    agent commits on a side branch then merges to main), the merge
+    commit itself isn't represented in the outer; its constituent
+    side-branch commits ARE, as individual patches. This is the
+    revised behavior per change_promotion_machinery.md Phase 3
+    Step 3.6 (originally written with an `--first-parent` flag that
+    didn't do what the spec assumed; revised to use default
+    walking). The design is also product-better: individual atomic
+    commits are reviewable by the developer before push (the core
+    "review before push" promise of Alcatrazer); a single giant
+    squash-per-merge would defeat it.
 
-    print(f"Dry run: {commit_count} commit(s) would be promoted")
-    print("Branches affected:")
-    for branch in branches:
-        print(f"  {branch}")
-    print()
-    print(f"Author/committer will be rewritten to: {name} <{email}>")
-
-
-def rewrite_refs(stream: bytes, namespace: str) -> bytes:
-    """Rewrite ref names in a fast-export stream to add a namespace prefix.
-
-    refs/heads/main -> refs/heads/<namespace>/main
+    Per change_promotion_machinery.md Phase 2 Step 2.4 (revised in
+    Phase 3 Step 3.6 — dropped `--first-parent`).
     """
-    repl = b"\\1 refs/heads/" + namespace.encode("utf-8") + b"/\\2"
-    return re.sub(
-        rb"^(commit|reset) refs/heads/(.+)$",
-        repl,
-        stream,
-        flags=re.MULTILINE,
-    )
-
-
-def promote(
-    source: Path,
-    target: Path,
-    marks_dir: Path,
-    name: str,
-    email: str,
-    branches: str | list = "all",
-    namespace: str = "",
-) -> None:
-    """Run fast-export | rewrite identity | fast-import pipeline.
-
-    If namespace is set, branch names are prefixed: main -> <namespace>/main.
-    """
-    marks_dir.mkdir(parents=True, exist_ok=True)
-    export_marks = marks_dir / "promote-export-marks"
-    import_marks = marks_dir / "promote-import-marks"
-    refs = resolve_branches(source, branches)
-
-    # Build fast-export command
-    export_cmd = ["git", "-C", str(source), "fast-export", *refs]
-    if export_marks.exists():
-        export_cmd.append(f"--import-marks={export_marks}")
-    export_cmd.append(f"--export-marks={export_marks}")
-
-    # Build fast-import command
-    import_cmd = ["git", "-C", str(target), "fast-import", "--force", "--quiet"]
-    if import_marks.exists():
-        import_cmd.append(f"--import-marks={import_marks}")
-    import_cmd.append(f"--export-marks={import_marks}")
-
-    # Run pipeline: fast-export | rewrite identity (+ namespace) | fast-import.
-    # Must stay in bytes mode — fast-export embeds blob content inline and
-    # git histories routinely contain non-UTF-8 bytes (images, archives).
-    export_proc = subprocess.run(export_cmd, capture_output=True, check=True)
-    stream = rewrite_identity(export_proc.stdout, name, email)
-    if namespace:
-        stream = rewrite_refs(stream, namespace)
-    subprocess.run(import_cmd, input=stream, check=True)
-
-    print(f"Promotion complete: {source} -> {target}")
-
-
-# --- Conflict detection for mirror mode ---
-
-
-def load_promoted_tips(marks_dir: Path) -> dict[str, str]:
-    """Load last-promoted branch tips from JSON file."""
-    tips_file = marks_dir / "promoted-tips.json"
-    if tips_file.exists():
-        return json.loads(tips_file.read_text())
-    return {}
-
-
-def save_promoted_tips(marks_dir: Path, tips: dict[str, str]) -> None:
-    """Save branch tips after successful promotion."""
-    tips_file = marks_dir / "promoted-tips.json"
-    tips_file.write_text(json.dumps(tips, indent=2) + "\n")
-
-
-def load_paused_branches(marks_dir: Path) -> set[str]:
-    """Load paused branches from disk (persists across daemon restarts)."""
-    paused_file = marks_dir / "paused-branches.json"
-    if paused_file.exists():
-        return set(json.loads(paused_file.read_text()))
-    return set()
-
-
-def save_paused_branches(marks_dir: Path, paused: set[str]) -> None:
-    """Save paused branches to disk."""
-    paused_file = marks_dir / "paused-branches.json"
-    paused_file.write_text(json.dumps(sorted(paused), indent=2) + "\n")
-
-
-def get_branch_tips(repo: Path, branches: list[str]) -> dict[str, str]:
-    """Get current commit hashes for the given branches in a repo."""
-    tips = {}
-    for branch in branches:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--verify", f"refs/heads/{branch}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            tips[branch] = result.stdout.strip()
-    return tips
-
-
-def find_conflict_branches(target: Path, branch: str) -> list[str]:
-    """Find conflict/resolve-<branch>-* branches in the target repo."""
-    result = subprocess.run(
+    result = run_git_command(
         [
-            "git",
+            "-C",
+            str(source),
+            "format-patch",
+            "--stdout",
+            "--binary",
+            "--keep-subject",
+            f"{since_sha}..refs/heads/main",
+        ],
+        check=True,
+        text=False,
+    )
+    return result.stdout
+
+
+class PinStatus(Enum):
+    """Classification of outer's current HEAD against the workspace's
+    recorded `pinned_branch`. Drives promote_once's decision to apply
+    patches (OK) or hold (OFF_PIN / DETACHED / PIN_DELETED).
+    """
+
+    OK = "ok"
+    OFF_PIN = "off_pin"
+    DETACHED = "detached"
+    PIN_DELETED = "pin_deleted"
+
+
+def check_pin(target: Path, pinned_branch: str) -> PinStatus:
+    """Classify outer's HEAD against the recorded pin.
+
+    Precedence (most-specific first):
+    1. `pinned_branch` no longer exists in target → `PIN_DELETED`,
+       UNLESS it is the current unborn branch (HEAD is on it, no commit
+       yet — greenfield first run) → `OK`, since the first `git am` will
+       create the ref.
+    2. HEAD is detached (independent of whether `pinned_branch`
+       exists) → `DETACHED`
+    3. Current branch equals `pinned_branch` → `OK`
+    4. Current branch is something else → `OFF_PIN`
+
+    Step (1) wins over (2) when both apply because PIN_DELETED is
+    the more actionable diagnosis: the user can recover from
+    detached HEAD by checking out the pin; if the pin itself is
+    gone, there's nothing to check out and the workspace needs
+    different remediation.
+
+    Per change_promotion_machinery.md Phase 3 Step 3.2 (L854-855).
+    """
+    # 1. Does the pinned branch still exist?
+    pin_exists = (
+        run_git_command(
+            [
+                "-C",
+                str(target),
+                "rev-parse",
+                "--verify",
+                f"refs/heads/{pinned_branch}",
+            ],
+        ).returncode
+        == 0
+    )
+    if not pin_exists:
+        # A missing ref has two very different causes:
+        #   - the user deleted the pinned branch (genuinely gone), or
+        #   - the pinned branch is unborn — HEAD is on it, but no commit
+        #     exists yet (greenfield first run). The first `git am` will
+        #     create the ref, so this is OK, not a deleted pin.
+        if snapshot.current_branch(str(target)) == pinned_branch:
+            return PinStatus.OK
+        return PinStatus.PIN_DELETED
+
+    # 2. Detached HEAD? (reuses snapshot's narrow detector)
+    if snapshot.is_detached_head(str(target)):
+        return PinStatus.DETACHED
+
+    # 3 / 4. On a branch — which one?
+    current = snapshot.current_branch(str(target))
+    if current == pinned_branch:
+        return PinStatus.OK
+    return PinStatus.OFF_PIN
+
+
+class PromotionConflictError(Exception):
+    """Raised by apply_patch_stream when `git am` fails to apply the
+    stream (typically a working-tree / history divergence between
+    outer and the patch's expected base). The aborted patch series
+    is rolled back via `git am --abort` before this is raised, so
+    outer's HEAD and working tree are byte-identical to the pre-call
+    state.
+    """
+
+
+def apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> None:
+    """Apply an mbox-format patch stream to `target` via `git am`,
+    rewriting both author and committer identity to (name, email).
+
+    - Author is rewritten via `rewrite_from_header` on the input stream
+      (substitutes the `From: ` line).
+    - Committer is rewritten via `GIT_COMMITTER_NAME` /
+      `GIT_COMMITTER_EMAIL` env vars passed to `git am`.
+
+    The asymmetric channels reflect git's design: `git format-patch`
+    carries author in the `From:` header but emits NO committer
+    info — committer is dropped at the patch boundary — and
+    `git am` has no flag to override the patch's author. So author
+    rewrite must happen on the stream, and committer rewrite at
+    apply-time via env. Even when the agent commits with SPLIT
+    author/committer inside the workspace (via GIT_AUTHOR_*/
+    GIT_COMMITTER_* env vars), only the author survives
+    format-patch, and our env override sets committer correctly.
+    See `test_inner_split_author_committer_collapsed_to_outer_identity`.
+
+    `git am` flags:
+    - `--committer-date-is-author-date` — committer timestamp equals
+      author timestamp (no time drift across promotion)
+    - `--keep-non-patch` — keep Subject content even if not patch-shaped
+    - `--whitespace=nowarn` — don't reject patches with whitespace
+      issues; we control both sides of the pipeline
+    - `--empty=drop` — silently skip e-mails with no diff (empty
+      commits) rather than failing or pausing
+
+    On non-zero exit, runs `git am --abort` to clean up the partial
+    apply, then raises PromotionConflictError with captured stderr.
+
+    Per change_promotion_machinery.md Phase 2 Step 2.10.
+    """
+    rewritten = rewrite_from_header(stream, name, email)
+
+    env = os.environ.copy()
+    env["GIT_COMMITTER_NAME"] = name
+    env["GIT_COMMITTER_EMAIL"] = email
+
+    result = run_git_command(
+        [
             "-C",
             str(target),
-            "branch",
-            "--format=%(refname:short)",
-            "--list",
-            f"conflict/resolve-{branch}-*",
+            "am",
+            "--committer-date-is-author-date",
+            "--keep-non-patch",
+            "--whitespace=nowarn",
+            "--empty=drop",
         ],
-        capture_output=True,
-        text=True,
+        input=rewritten,
+        text=False,
+        env=env,
     )
-    return [b.strip() for b in result.stdout.splitlines() if b.strip()]
-
-
-def check_resolved_conflicts(target: Path, marks_dir: Path, paused_branches: set) -> set:
-    """Check if any paused branch's conflict branch has been deleted/merged.
-
-    Returns the set of branches that should be unpaused.
-    """
-    resolved = set()
-    for branch in list(paused_branches):
-        conflict_refs = find_conflict_branches(target, branch)
-        if not conflict_refs:
-            # Conflict branch is gone — user resolved it
-            resolved.add(branch)
-            # Update promoted-tips to current outer tip so we don't
-            # re-detect divergence on the next cycle
-            tips = load_promoted_tips(marks_dir)
-            current = get_branch_tips(target, [branch])
-            tips.update(current)
-            save_promoted_tips(marks_dir, tips)
-    return resolved
-
-
-def detect_diverged_branches(target: Path, marks_dir: Path, branch_names: list[str]) -> set[str]:
-    """Detect branches where the outer repo has diverged from last promotion.
-
-    A branch has diverged if its current tip in the target repo differs from
-    what we recorded after the last promotion.
-    """
-    promoted_tips = load_promoted_tips(marks_dir)
-    current_tips = get_branch_tips(target, branch_names)
-    diverged = set()
-    for branch, current_tip in current_tips.items():
-        last_tip = promoted_tips.get(branch)
-        if last_tip is not None and current_tip != last_tip:
-            diverged.add(branch)
-    return diverged
-
-
-def promote_with_conflict_handling(
-    source: Path,
-    target: Path,
-    marks_dir: Path,
-    name: str,
-    email: str,
-    branches: str | list = "all",
-    paused_branches: set | None = None,
-) -> dict[str, str]:
-    """Promote branches, handling conflicts in mirror mode.
-
-    Returns a dict of {branch: status} where status is:
-      "promoted" — branch promoted successfully
-      "conflict" — branch diverged, conflict branch created
-      "paused"   — branch was already paused from a previous conflict
-      "skipped"  — nothing new to promote on this branch
-
-    Also updates promoted-tips.json for successfully promoted branches.
-    """
-    if paused_branches is None:
-        paused_branches = set()
-
-    marks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Resolve which branches to promote
-    refs = resolve_branches(source, branches)
-    if refs == ["--all"]:
-        # Get actual branch names from source
-        result = subprocess.run(
-            ["git", "-C", str(source), "branch", "--format=%(refname:short)"],
-            capture_output=True,
-            text=True,
-        )
-        branch_names = result.stdout.strip().splitlines() if result.stdout.strip() else []
-    else:
-        branch_names = [r.removeprefix("refs/heads/") for r in refs]
-
-    # Detect diverged branches
-    diverged = detect_diverged_branches(target, marks_dir, branch_names)
-
-    # Separate into promotable and conflicting
-    to_promote = [b for b in branch_names if b not in diverged and b not in paused_branches]
-    results = {}
-
-    # Mark paused branches
-    for b in branch_names:
-        if b in paused_branches:
-            results[b] = "paused"
-
-    # Handle diverged branches — create conflict branches
-    for b in diverged:
-        if b in paused_branches:
-            continue
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        conflict_ref = f"conflict/resolve-{b}-{timestamp}"
-        try:
-            _promote_single_branch(
-                source, target, marks_dir, name, email, b, target_ref=conflict_ref
-            )
-            results[b] = "conflict"
-            paused_branches.add(b)
-        except Exception:
-            results[b] = "conflict"
-            paused_branches.add(b)
-
-    # Promote non-conflicting branches
-    if to_promote:
-        promote(source, target, marks_dir, name, email, branches=to_promote)
-        # Update tips for successfully promoted branches
-        new_tips = get_branch_tips(target, to_promote)
-        old_tips = load_promoted_tips(marks_dir)
-        old_tips.update(new_tips)
-        save_promoted_tips(marks_dir, old_tips)
-        for b in to_promote:
-            results[b] = "promoted"
-
-    # Persist paused state across daemon restarts
-    save_paused_branches(marks_dir, paused_branches)
-
-    return results
-
-
-def _promote_single_branch(
-    source: Path,
-    target: Path,
-    marks_dir: Path,
-    name: str,
-    email: str,
-    branch: str,
-    target_ref: str | None = None,
-) -> None:
-    """Promote a single branch, optionally to a different ref name."""
-    marks_dir.mkdir(parents=True, exist_ok=True)
-    export_marks = marks_dir / "promote-export-marks"
-    import_marks = marks_dir / "promote-import-marks"
-
-    export_cmd = ["git", "-C", str(source), "fast-export", f"refs/heads/{branch}"]
-    if export_marks.exists():
-        export_cmd.append(f"--import-marks={export_marks}")
-    export_cmd.append(f"--export-marks={export_marks}")
-
-    import_cmd = ["git", "-C", str(target), "fast-import", "--force", "--quiet"]
-    if import_marks.exists():
-        import_cmd.append(f"--import-marks={import_marks}")
-    import_cmd.append(f"--export-marks={import_marks}")
-
-    export_proc = subprocess.run(export_cmd, capture_output=True, check=True)
-    stream = rewrite_identity(export_proc.stdout, name, email)
-
-    # Rewrite the ref name if promoting to a different target (e.g. conflict branch)
-    if target_ref:
-        stream = re.sub(
-            rb"^commit refs/heads/" + re.escape(branch.encode("utf-8")) + rb"$",
-            b"commit refs/heads/" + target_ref.encode("utf-8"),
-            stream,
-            flags=re.MULTILINE,
+    if result.returncode != 0:
+        # Roll back the partial `am` so outer's HEAD + tree return to
+        # the pre-call state. `--abort` is itself best-effort: failure
+        # to abort is rare but if it happens we still raise the
+        # original conflict so the caller knows the operation failed.
+        run_git_command(["-C", str(target), "am", "--abort"])
+        raise PromotionConflictError(
+            f"git am failed (exit {result.returncode}): "
+            + result.stderr.decode("utf-8", errors="replace")
         )
 
-    subprocess.run(import_cmd, input=stream, check=True)
+
+class PromotionOutcome(Enum):
+    """Outcome of a single promote_once cycle. Drives daemon logging
+    and `alcatrazer status` rendering (Phase 5)."""
+
+    PROMOTED = "promoted"  # patches applied (commit_count may be 0 = no-op)
+    HELD = "held"  # pin check failed; no apply attempted, no state change
+    PAUSED = "paused"  # apply raised PromotionConflictError; paused state recorded
 
 
-def _default_project_dir() -> Path:
-    """Same rationale as `daemon._default_project_dir` — detect whether
-    we're running from the installed layout (under `.alcatrazer/src/`)
-    or a dev checkout (under `src/`), and walk up accordingly.
+@dataclass(frozen=True)
+class PromotionResult:
+    """Structured result of a promote_once cycle. Fields are
+    populated based on the outcome:
+
+    - outcome=PROMOTED: commit_count = N patches applied (0 = no-op)
+    - outcome=HELD:     pin_status = why (OFF_PIN / DETACHED / PIN_DELETED)
+    - outcome=PAUSED:   conflict_message = stderr from `git am`
     """
-    script_dir = Path(__file__).resolve().parent
-    parts = script_dir.parts
-    if ".alcatrazer" in parts:
-        idx = len(parts) - 1 - parts[::-1].index(".alcatrazer")
-        return Path(*parts[:idx])
-    return script_dir.parent.parent
+
+    outcome: PromotionOutcome
+    commit_count: int = 0
+    pin_status: PinStatus | None = None
+    conflict_message: str = ""
 
 
-def main():
-    project_dir = _default_project_dir()
-    # Per-developer config lives under .alcatrazer/ (install_method.md config
-    # split). The public coding-environment.toml at the repo root has a
-    # different schema.
-    toml_file = project_dir / ".alcatrazer" / "config.toml"
-
-    parser = argparse.ArgumentParser(description="Promote alcatraz commits to outer repo")
-    parser.add_argument("--source", required=True, type=Path)
-    parser.add_argument("--target", required=True, type=Path)
-    parser.add_argument("--author-name", default="")
-    parser.add_argument("--author-email", default="")
-    parser.add_argument("--marks-dir", type=Path, default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-
-    source = args.source.resolve()
-    target = args.target.resolve()
-    marks_dir = (args.marks_dir or project_dir / ".alcatrazer").resolve()
-    marks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Validate repos
-    if not (source / ".git").is_dir():
-        print(f"ERROR: {source} is not a git repository", file=sys.stderr)
-        sys.exit(1)
-    if not (target / ".git").is_dir():
-        print(f"ERROR: {target} is not a git repository", file=sys.stderr)
-        sys.exit(1)
-
-    name, email = resolve_identity(target, toml_file, args.author_name, args.author_email)
-
-    if args.dry_run:
-        dry_run(source, marks_dir, name, email)
-    else:
-        promote(source, target, marks_dir, name, email)
+# Re-used in promote_once for counting patches in a format-patch stream.
+# Input shape is the same as rewrite_from_header's — see that function's
+# input-example comment. Anchored on the mbox-format constant separator.
+_MBOX_SEPARATOR_PATTERN = re.compile(
+    rb"^From [0-9a-f]{40} Mon Sep 17 00:00:00 2001",
+    re.MULTILINE,
+)
 
 
-if __name__ == "__main__":
-    main()
+def promote_once(
+    source: Path,
+    target: Path,
+    alcatraz_dir: Path,
+    name: str,
+    email: str,
+) -> PromotionResult:
+    """Run one promotion cycle against an Alcatrazer workspace.
+
+    Reads state (`pinned_branch`, `inner_root`, `last_promoted`) from
+    `alcatraz_dir/state.json`, checks the outer's pin, and either:
+
+    - **OK pin** — format-patches the range `<since>..refs/heads/main`
+      (where `since = last_promoted or inner_root`), applies via
+      apply_patch_stream, advances state (`last_promoted`,
+      `last_promotion_time`, `paused=None`), returns PROMOTED.
+    - **Non-OK pin** — returns HELD with the specific PinStatus.
+      No `git am`, no state mutation. The agent keeps committing
+      inside while we wait for the user to fix the outer state.
+    - **Apply conflict** — catches PromotionConflictError, writes
+      `paused={"reason": ...}`, leaves `last_promoted` /
+      `last_promotion_time` untouched (they only reflect SUCCESSFUL
+      promotions), returns PAUSED.
+
+    No-op steady state (no new agent commits since last_promoted) is
+    PROMOTED with commit_count=0. State is not advanced because
+    `last_promoted` is already at inner's tip.
+
+    Per change_promotion_machinery.md Phase 3 Step 3.8 (L875-876).
+    """
+    state_data = state.load_state(alcatraz_dir)
+    pinned_branch = state_data.get("pinned_branch")
+    inner_root = state_data.get("inner_root")
+    last_promoted = state_data.get("last_promoted") or inner_root
+
+    # 1. Pin check — anything but OK puts us on hold (no work, no state change).
+    pin = check_pin(target, pinned_branch)
+    if pin is not PinStatus.OK:
+        return PromotionResult(outcome=PromotionOutcome.HELD, pin_status=pin)
+
+    # 2. Format patches for inner's main since last_promoted (or inner_root).
+    stream = format_patch_stream(source, last_promoted)
+    commit_count = len(_MBOX_SEPARATOR_PATTERN.findall(stream))
+
+    # 3. Steady state — nothing new to promote.
+    if commit_count == 0:
+        return PromotionResult(outcome=PromotionOutcome.PROMOTED, commit_count=0)
+
+    # 4. Apply. On conflict, record paused state and return early.
+    try:
+        apply_patch_stream(target, stream, name, email)
+    except PromotionConflictError as exc:
+        state.update_state(alcatraz_dir, paused={"reason": str(exc)})
+        return PromotionResult(
+            outcome=PromotionOutcome.PAUSED,
+            conflict_message=str(exc),
+        )
+
+    # 5. Success — advance state. last_promoted moves to inner's tip;
+    # last_promotion_time stamped UTC ISO 8601; paused cleared.
+    inner_tip = run_git_command(
+        ["-C", str(source), "rev-parse", "refs/heads/main"],
+        check=True,
+    ).stdout.strip()
+    state.update_state(
+        alcatraz_dir,
+        last_promoted=inner_tip,
+        last_promotion_time=datetime.now(UTC).isoformat(),
+        paused=None,
+    )
+
+    return PromotionResult(
+        outcome=PromotionOutcome.PROMOTED,
+        commit_count=commit_count,
+    )

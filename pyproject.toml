@@ -53,6 +53,14 @@ dev = [
 
 # --- Tool configuration ---
 
+[tool.uv]
+required-version = ">=0.11.5"
+# "exclude-newer" sets a dependency cooldown for packages to mitigate potential supply-chain attacks. #
+# The setting can be overridden for a package on a one-off basis by running the following command:    #
+#   uv lock --upgrade-package $PACKAGE --exclude-newer-package $PACKAGE="0 days"                      #
+# see: https://blog.yossarian.net/2025/11/21/We-should-all-be-using-dependency-cooldowns
+exclude-newer = "7 days"
+
 [tool.ruff]
 line-length = 100
 
@@ -70,5 +78,15 @@ ignore = [
     "UP036",  # version guard blocks — we keep these for friendly errors when run directly with old Python
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["src/alcatrazer/tests", "src/alcatrazer/integration_tests"]
+[tool.ruff.lint.per-file-ignores]
+# Integration-test method names are full-sentence specs (who / does-what /
+# what-happens / under-what-conditions) — the name IS the documentation. Let
+# them run past the line-length limit rather than truncate the prose. Scoped
+# to E501 only, so every other rule still applies to these files.
+"src/alcatrazer/integration_tests/**" = ["E501"]
+# selftest invariant docstrings are single-line, full-sentence security-report
+# copy printed verbatim by `alcatrazer start --run-selftest` (who / does-what /
+# what-happens). They must read as one line, not wrap, so the report stays a
+# clean checklist — same rationale as the integration-test names above. E501
+# only; every other rule still applies.
+"src/alcatrazer/selftest.py" = ["E501"]

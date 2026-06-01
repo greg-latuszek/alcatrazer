@@ -1,6 +1,6 @@
 # Re-implementing promotion: replay agent commits onto your working branch
 
-## Status: Design — not implemented yet. Surfaced from manual testing of Phase 1 (more_languages_support) before merging the branch.
+## Status: Complete — shipped in v0.1.1 (2026-05-14). All nine phases landed. Implementation Notes at the bottom record the in-flight discoveries that diverged from the original design (Phase 7 retarget, Phase 9 chown-back-via-side-container).
 
 ## Origin
 
@@ -164,7 +164,7 @@ inner_root := <recorded once at workspace creation, persisted in
 
 # Each cycle (single source ref → outer's pinned branch):
 git -C $inner format-patch                                    \
-    --stdout --binary --keep-subject --first-parent           \
+    --stdout --binary --keep-subject                          \
     ${last_promoted_or_inner_root}..refs/heads/main           \
   | rewrite_from_header(name, email)                          \
   | git -C $outer am                                          \
@@ -177,8 +177,10 @@ git -C $inner format-patch                                    \
 - `${last_promoted_or_inner_root}..refs/heads/main` excludes the
   workspace root (and any already-promoted commits) from the stream,
   so outer's existing history stays intact.
-- `--first-parent` walks inner-`main`'s mainline only, ignoring
-  agent-private side-branch topology. See "Inner-main linearity".
+- Default history walking (no `--first-parent`). `format-patch`
+  never emits a patch for a merge commit under *any* flag, so the
+  merge itself is dropped while its constituent side-branch commits
+  surface as individual patches. See "Inner-main linearity".
 - `--binary` keeps non-text content applicable.
 - `--keep-subject` prevents `format-patch` from re-prefixing
   subjects with `[PATCH]`.
@@ -344,14 +346,28 @@ intent explicit.
 ### Daemon log
 
 Adds these per-event entries (transitions only, never per-poll).
-Diagnostic logs are still readable to humans, so they avoid the
-"pinned" jargon too:
+Messages use git's vocabulary and name the actual branches — per
+`docs/coding_conventions.md` "User-facing strings speak the user's
+language", they avoid project jargon (`pin`, `pinned`, `promotion`,
+`outer`, `inner`):
 
-- `Held: outer on <current>, alcatraz started from <start>`
-- `Resumed: outer back on <start>, replaying N commits`
-- `Promoted N commit(s) to <start>`
-- `Paused: working-tree conflict on <start>`
-- `Resumed: working-tree conflict resolved`
+- `Held: your repository is on branch '<current>' but Alcatrazer was
+  started on '<start>'. Switch back to '<start>' to resume.`
+- `Held: your repository has a detached HEAD. Check out branch
+  '<start>' to resume.` *(DETACHED variant)*
+- `Held: branch '<start>' no longer exists in your repository.
+  Recreate it (e.g. `` `git branch <start>` ``) to resume.`
+  *(PIN_DELETED variant)*
+- `Resumed: back on branch '<start>'. Applying N agent commit(s).`
+- `Resumed: conflict on branch '<start>' resolved.`
+- `Applied N agent commit(s) to branch '<start>'.`
+- `Paused: your working tree on branch '<start>' overlaps with an
+  agent commit. Commit or stash your changes and Alcatrazer will
+  resume.`
+
+The earlier draft of this section used `outer`, `pinned`, `Promoted`,
+and `alcatraz started from` — internal jargon the end user doesn't
+speak. Revised in Phase 4 BLUE to match the rule and improve clarity.
 
 ## Conflict semantics
 
@@ -379,26 +395,41 @@ above them.
 
 ## Inner-main linearity
 
-`format-patch --first-parent` follows inner-`main`'s mainline only.
-If agents create internal branches and merge them in:
+`format-patch` walks inner-`main` with default history traversal and
+emits one patch per **non-merge** commit in range. Merge commits are
+never turned into patches — `format-patch` declines to represent a
+merge under any flag combination tested (`--first-parent`, `-m`,
+`--merges`, `--diff-merges=first-parent`, `--cc`, `-c`). If agents
+create internal branches and merge them in:
 
 - **Fast-forward merge:** trivially linear, every commit appears in
   the stream.
 - **Squash merge:** appears as a single commit on inner-`main`, gets
   one patch.
-- **Real merge commit:** `--first-parent` follows the mainline
-  parent; the side-branch commits don't appear individually. Outer
-  sees the merge commit's tree as a single patch.
+- **Real merge commit:** the merge commit itself produces no patch;
+  its constituent side-branch commits each surface as an individual
+  patch, landing in outer as separate, atomic, reviewable entries.
+
+> **Implementation note (revised in Phase 3, Step 3.6).** The original
+> design assumed `format-patch --first-parent` would collapse a real
+> merge into a single squashed patch on the mainline. Empirically it
+> does no such thing: `format-patch` never emits a patch for a merge,
+> and `--first-parent` would have *suppressed* the side commits
+> entirely (zero patches for the merge's payload). The flag was
+> dropped in favor of default walking, which surfaces each side commit
+> as its own patch. This is also product-better — atomic per-commit
+> review before push is exactly the promise Alcatrazer makes, and a
+> single giant merge-shaped patch would defeat it.
 
 **Agents are not informed of this.** A core principle is that agents
 inside the workspace must believe they're in a vanilla repo — they
 don't know outer exists, don't know about promotion, don't know
-about this constraint. So we don't add a CLAUDE.md instruction
-saying "keep inner-`main` linear". `--first-parent` accepts whatever
+about this behavior. So we don't add a CLAUDE.md instruction
+saying "keep inner-`main` linear". Default walking accepts whatever
 topology agents produce on inner-`main` and surfaces it to outer as
-a sequence of patches. If a future-merge produces an undesirable
-patch (e.g. a giant merge-of-many-files), that's a workspace-level
-conversation about how agents coordinate, not a promotion concern.
+a sequence of non-merge patches. If a future merge produces an
+undesirable patch sequence, that's a workspace-level conversation
+about how agents coordinate, not a promotion concern.
 
 ## Recording state
 
@@ -435,36 +466,73 @@ Fields added:
 
 ## Breaking-change posture
 
-v0.1.1 changes both the `coding-environment.toml` schema (removes
-`[promotion-daemon].mode` and `[promotion-daemon].branches`) and the
-`.alcatrazer/state.json` layout. A clean automatic migration would
-require: detecting old layouts, asking permission, possibly draining
-an old daemon — too much code for a feature that has zero external
-users today (pre-1.0.0).
+v0.1.1 changes the layouts of two of Alcatrazer's three declared
+schemas (single source of truth: `src/alcatrazer/schemas.json`,
+governed by `docs/coding_conventions.md` "Schema changes must land in
+schemas.json + CHANGELOG before release"):
+
+- **`.alcatrazer/state.json`** — adds `inner_root`, `pinned_branch`,
+  `last_promoted`, `last_promotion_time`, `paused` fields (folding in
+  what v0.1.0 split across the side files `promoted-tips.json` and
+  `paused-branches.json`). Bumps `schema_version: 1 → 2`.
+- **`.alcatrazer/config.toml`** — removes `[promotion-daemon].mode` and
+  `[promotion-daemon].branches`; adds a `schema_version` field (v0.1.0
+  didn't have one). The unversioned v0.1.0 shape is recorded as v=1;
+  v0.1.1 stamps `schema_version = 2`.
+- **`coding-environment.toml`** — unchanged. Existing files keep
+  `schema_version = 1` and are accepted by v0.1.1 verbatim.
+
+A clean automatic migration would require: detecting old layouts,
+asking permission, possibly draining an old daemon — too much code
+for a feature that has zero external users today (pre-1.0.0).
 
 Decision: **no automatic migration.** Instead:
 
-- Bump `coding-environment.toml`'s `schema_version` field to `2`.
-- Bump `state.SCHEMA_VERSION` to `2`.
-- `alcatrazer init` / `start` / `status` detect a `schema_version`
-  mismatch (or absent field, or legacy `[promotion-daemon].mode`
-  key) and refuse with a transparent message:
+- Append v=2 revision entries to `state` and `alcatrazer_config` in
+  `schemas.json` (this is the bump — `state.SCHEMA_VERSION` and the
+  new `start.ALCATRAZER_CONFIG_SCHEMA_VERSION` derive from these).
+- `alcatrazer init` / `start` / `status` / `clear` invoke a single
+  `state.require_compatible_workspace(alcatraz_dir)` gate that refuses
+  on **any** of these signals (multi-signal because v0.1.0's
+  `state.json` was lazily created — `init`+`start` alone never wrote
+  it, so the schema-version check alone misses those workspaces):
+
+  - `state.json` exists with `schema_version < 2`.
+  - `.alcatrazer/config.toml` exists but lacks `schema_version`, OR
+    has it `< 2`, OR still contains `[promotion-daemon].mode` /
+    `[promotion-daemon].branches`.
+  - Any legacy artifact present: `paused-branches.json`,
+    `promoted-tips.json`, `promote-export-marks`,
+    `promote-import-marks`.
+
+  Refusal renders this transparent message:
 
   ```
   alcatrazer: this directory was set up by an older version (schema 1).
   v0.1.1 reworks promotion and is not backwards compatible.
 
-  To upgrade:
+  To upgrade from pre-v0.1.1:
     1. If a daemon is running: alcatrazer stop      (using your previous version)
-    2. rm -rf .alcatrazer/ coding-environment.toml
-    3. alcatrazer init                              (using v0.1.1)
-    4. alcatrazer start
+    2. sudo rm -rf `cat .alcatrazer/workspace-dir`  (inner git repo for agents coding)
+    3. rm -rf .alcatrazer/                          (your coding-environment.toml is preserved)
+    4. alcatrazer init                              (using v0.1.1)
+    5. alcatrazer start
+
+  Step 2 needs `sudo` because pre-v0.1.1's `alcatrazer clear` left
+  the container-owned inner workspace files on the host filesystem.
+  From v0.1.1 onwards, `alcatrazer clear` wipes the inner workspace
+  itself — this manual step is a one-time upgrade procedure, not a
+  general fresh-start workflow.
 
   See CHANGELOG for what changed and why.
   ```
 
 - CHANGELOG entry calls out the breaking change explicitly and
-  re-states the four steps.
+  re-states the upgrade steps. The `sudo` on step 2 is needed because
+  pre-v0.1.1's `clear` didn't wipe the inner workspace — the
+  container-owned files (agent UID inside, phantom UID on host)
+  survived to be cleaned up manually by the host user. v0.1.1's
+  `clear` handles the wipe automatically.
 
 Pre-1.0.0, this is the right tradeoff: explicit user action over
 silent migration code that nobody benefits from.
@@ -529,8 +597,9 @@ silent migration code that nobody benefits from.
     Substitutes the `From:` line in each mbox entry. Bytes-only.
   - New `format_patch_stream(source: Path, since_sha: str) -> bytes`.
     Wraps `git format-patch --stdout --binary --keep-subject
-    --first-parent <since>..refs/heads/main`. Empty bytes when
-    nothing to promote.
+    <since>..refs/heads/main` (default walking, no `--first-parent`
+    — see "Inner-main linearity"). Empty bytes when nothing to
+    promote.
   - New `apply_patch_stream(target: Path, stream: bytes, name: str, email: str) -> None`.
     Runs `git -C target am --committer-date-is-author-date
     --keep-non-patch --whitespace=nowarn --empty=drop` with stream on
@@ -578,22 +647,39 @@ silent migration code that nobody benefits from.
   - `cmd_clear`: implements the four-case logic above, including
     `--discard-pending` flag.
 
-- `src/alcatrazer/config.py` (or wherever the schema lives)
-  - Removes `[promotion-daemon].mode` and `[promotion-daemon].branches`
-    from the schema definition.
-  - Bumps `coding-environment.toml`'s `schema_version` to `2`.
-  - `init` / `start` / `status` refuse on `schema_version < 2` (or
-    absent, or with legacy keys present) with the upgrade message
-    described in "Breaking-change posture".
+- `src/alcatrazer/templates/alcatrazer-config.toml` +
+  `src/alcatrazer/start.py` (config writer + reader)
+  - Adds a `schema_version = 2` top-level line to the template.
+    v0.1.0's `.alcatrazer/config.toml` had no `schema_version` field;
+    v0.1.1 introduces it alongside the removals.
+  - Defines `start.ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version`
+    (derived from `schemas.json` per the source-of-truth convention).
+  - `init` / `start` / `status` / `clear` refuse on legacy config
+    signals (no `schema_version`, OR `< 2`, OR legacy
+    `[promotion-daemon].mode` / `.branches` keys still present) with
+    the upgrade message described in "Breaking-change posture".
+
+- `src/alcatrazer/schemas.json`
+  - Appends v=2 entries to `state` and `alcatrazer_config` histories.
+    No edits to `coding_env` (no field changes in v0.1.1).
 
 - `src/alcatrazer/state.py`
-  - Bumps `SCHEMA_VERSION` to `2`.
-  - No API changes. The new fields (`inner_root`, `pinned_branch`,
-    `last_promoted`, `paused`) merge in via the existing
-    `update_state()` semantics.
+  - `SCHEMA_VERSION` is already derived from
+    `schema.STATE.current_version`; appending the v=2 entry to
+    `schemas.json` is the bump.
+  - No `update_state()` API changes. The new fields (`inner_root`,
+    `pinned_branch`, `last_promoted`, `last_promotion_time`, `paused`)
+    merge in via the existing semantics.
+  - Adds `validate_schema_version(data: dict) -> None` (pure
+    schema-version validator on a state.json dict) and
+    `require_compatible_workspace(alcatraz_dir: Path) -> None`
+    (workspace-level gate composing the validator, the config-schema
+    check, and the legacy-artifact check). Both raise typed
+    `UnsupportedStateSchemaVersionError` with the upgrade message
+    sourced from `schemas.json` (release + summary fields).
   - `load_state()` callers (in `start.py`, `daemon.py`,
-    `cmd_status`, `cmd_clear`) refuse on `schema_version < 2` the
-    same way `coding-environment.toml` does.
+    `cmd_status`, `cmd_clear`) call `require_compatible_workspace`
+    once at entry before reading state.
 
 - Tests
   - `tests/test_promote.py`
@@ -624,9 +710,12 @@ silent migration code that nobody benefits from.
     - `test_promote_once_resumes_after_recheckout` — held state
       accumulates, recheckout pinned → next call promotes all piled
       commits in one `am`.
-    - `test_promote_once_first_parent_flattens_inner_merges` —
-      inner has a merge commit on `main`; stream contains one patch
-      for it, side-branch commits absent.
+    - `test_inner_merge_appears_as_individual_side_commits` —
+      inner has a merge commit on `main`; the merge produces no
+      patch, but each side-branch commit lands as an individual
+      patch in outer. (Revised from the original
+      `..._first_parent_flattens_inner_merges` — see "Inner-main
+      linearity".)
   - `tests/test_snapshot.py`
     - `test_snapshot_records_inner_root` — `.alcatrazer/inner-root`
       equals `git rev-parse HEAD` of the workspace's Initial commit.
@@ -637,19 +726,33 @@ silent migration code that nobody benefits from.
       matches `feat/X`'s tree, not `main`'s.
     - `test_snapshot_refuses_detached_outer` — outer in detached
       HEAD → start fails with explanatory message.
-  - `tests/test_daemon.py`
-    - End-to-end: outer on `feat/X`, agent commits, daemon promotes
-      onto `feat/X`, working tree clean, original outer commit still
-      ancestor. **Closes the manual-test bug under automation.**
-    - Held-state: outer switches to `main` mid-cycle, daemon holds,
-      switches back, daemon replays piled commits.
-    - Conflict: pre-seed overlap, daemon pauses, user resolves,
-      daemon resumes.
-  - `tests/test_clear.py`
-    - `test_clear_blocks_with_pending_off_pin`
-    - `test_clear_discards_with_flag`
-    - `test_clear_proceeds_on_pin_with_pending` — final sync drains
-      onto pinned branch.
+  - `integration_tests/test_daemon_promotion_flow.py` (real
+    Docker-backed daemon; the planned `tests/test_daemon.py` unit
+    suite was superseded by these end-to-end scenarios)
+    - `TestBaselinePromotion` — outer on `feat/X`, agent commits,
+      daemon promotes onto `feat/X`, working tree clean, original
+      outer commit still ancestor. **Closes the manual-test bug
+      under automation.**
+    - `TestHeldOffPinAutoResume` — outer switches off-pin mid-cycle,
+      daemon holds, switches back, daemon replays piled commits.
+    - `TestHeldOnDeletedPin` / `TestHeldOnDetachedHead` — the other
+      two hold triggers, each resuming on recovery.
+    - `TestPausedFileCollisionAutoResume` /
+      `TestNonOverlappingEditsCoexist` /
+      `TestAgentCommitsStackOnUserCommits` — the conflict-and-coexist
+      matrix: pause-on-collision + resume, edits beside a promoted
+      commit, agent commits stacking on user commits.
+  - clear-flow tests (the planned `tests/test_clear.py` split between
+    unit and integration):
+    - `tests/test_start.py` (unit) —
+      `test_blocks_when_off_pin_with_pending_commits`,
+      `test_blocks_when_paused_even_though_on_pinned_branch`,
+      `test_discard_pending_flag_proceeds_through_teardown`,
+      `test_on_pin_with_pending_proceeds_and_acknowledges_drain`.
+    - `integration_tests/test_switch_branch_flow.py` (real backend) —
+      `TestClearBlockedOffPin`, `TestClearBlockedWhilePaused`,
+      `TestClearDiscardsPending`, `TestFinalSyncDrainOnClear`
+      (final sync drains onto the pinned branch).
   - **Deleted entirely:** all existing tests for alcatraz-tree mode,
     marks-file behavior, multi-branch promotion, `conflict/resolve-*`
     branches. The mode and its tests retire together.
@@ -687,8 +790,10 @@ silent migration code that nobody benefits from.
   be added later if there's reason to make this not-`main`. Out of
   scope.)
 - **Does not preserve inner side-branch topology in outer.**
-  `--first-parent` flattens. If a future feature needs the full
-  topology, that's a separate design.
+  Merge commits are dropped (`format-patch` emits no patch for them);
+  their side-branch commits land as a flat sequence of individual
+  patches. If a future feature needs the full topology, that's a
+  separate design.
 - **Does not auto-stash outer's uncommitted changes on conflict.**
   Pause + surface; don't silently mutate the user's working tree.
 - **Does not change the `[promotion]` identity config schema.**
@@ -815,7 +920,9 @@ has exactly N patches.
 
 **Step 2.4** `[GREEN]` — Implement `format_patch_stream(source,
 since_sha) -> bytes` wrapping `git format-patch --stdout --binary
---keep-subject --first-parent <since>..refs/heads/main`.
+--keep-subject --first-parent <since>..refs/heads/main`. *(The
+`--first-parent` flag was later dropped in Step 3.6 — see the
+revision note there; the shipped wrapper uses default walking.)*
 
 **Step 2.5** `[RED]` — Test `apply_patch_stream` advances target
 branch and updates working tree. Outer with one commit, apply
@@ -865,9 +972,27 @@ clears `paused`.
 held state accumulates inner commits; recheckout pin → next call
 applies all piled commits in one `am`.
 
-**Step 3.6** `[RED]` — Test `promote_once` `--first-parent` flattens
-inner merges: inner has merge commit on `main`; stream contains one
-patch for it, side-branch commits absent.
+**Step 3.6** `[RED]` — Test `promote_once` handles inner merge
+commits cleanly: inner has a merge commit on `main` that brings in
+2 side-branch commits. Stream contains exactly **2 patches** (one
+per non-merge side commit); the merge commit itself does not
+become a patch.
+
+> **Revised from the original spec.** The original draft said
+> "`--first-parent` flattens inner merges: stream contains one
+> patch for it." Empirically that's not what `git format-patch`
+> does — it does NOT emit merge commits as patches under any flag
+> combination tested (`--first-parent`, `-m`, `--merges`,
+> `--diff-merges=first-parent`, `--cc`, `-c`). format-patch is
+> fundamentally designed for non-merge commits.
+>
+> The revised design (drop `--first-parent` entirely; let side
+> commits flow through as individual patches) is also product-
+> better: parallel-agent workflows (e.g. 10 agents on separate
+> branches that later merge to `main`) would otherwise produce
+> one giant squashed patch per merge — unreviewable. Alcatrazer's
+> "developer reviews before push" promise depends on the patches
+> being atomic and readable.
 
 **Step 3.7** `[RED]` — Test `promote_once` writes `paused` on
 conflict; leaves `last_promoted` and `last_promotion_time` untouched.
@@ -963,31 +1088,73 @@ branches. Verify the full test suite still green.
 
 ### Phase 7: Schema bump and refusal
 
-**Step 7.1** `[RED]` — Test `state.load_state()` callers refuse when
-`schema_version < 2` is detected (or absent). Expected: clear error
-message naming the four cleanup steps.
+Phase 7 refuses v0.1.0 workspaces via a single
+`state.require_compatible_workspace(alcatraz_dir)` gate that fires on
+any of three signal classes (`state.json` schema, `.alcatrazer/config.toml`
+schema or legacy keys, legacy artifact files). The multi-signal approach
+catches workspaces that v0.1.0 never wrote `state.json` for. Each refusal
+caller (`daemon._run_cycle_mirror`, `cmd_start`, `cmd_status`, `cmd_clear`)
+invokes the gate once before reading state.
 
-**Step 7.2** `[GREEN]` — Bump `state.SCHEMA_VERSION` to `2`. Add
-helper that checks loaded state's version and raises with the
-upgrade message. Wire into `daemon.py`, `cmd_start`, `cmd_status`,
-`cmd_clear` startup paths.
+The phase also lands the infrastructure that makes future schema bumps
+trivial — `src/alcatrazer/schemas.json` (single source of truth),
+`src/alcatrazer/schema.py` (loader), and the
+`docs/coding_conventions.md` rule that ties schema edits to CHANGELOG
+mentions. That infrastructure is landed in pre-7.1 commits
+(`c0acf58`, `3c2ce09`, `8985dfa`).
 
-**Step 7.3** `[RED]` — Test `coding-environment.toml`
-`schema_version = 2` detection: parser refuses on `< 2` (or absent)
-with the full upgrade message.
+**Step 7.1** `[RED]` (committed as `f5c8001`) — Unit tests for
+`state.validate_schema_version(data: dict)`, the pure schema-version
+validator: silent on empty / current; raises
+`UnsupportedStateSchemaVersionError` on old / future / stamp-absent
+with the four-step upgrade message.
 
-**Step 7.4** `[GREEN]` — Bump config `schema_version` to `2`. Add
-refusal at `init` / `start` / `status` entry points reading the
-config.
+**Step 7.2** `[RED]` — Tests for
+`state.require_compatible_workspace(alcatraz_dir)`, the workspace-level
+gate. One test per signal so failure attribution stays clean:
+- `state.json` with `schema_version < 2` → raise.
+- `state.json` missing → silent (fresh workspace).
+- legacy artifact present (`paused-branches.json`,
+  `promoted-tips.json`, `promote-export-marks`,
+  `promote-import-marks`) → raise, message names which artifact tripped.
+
+**Step 7.3** `[GREEN]` — Implement `UnsupportedStateSchemaVersionError`
++ `validate_schema_version` + `require_compatible_workspace`. Append v=2
+entry to `state` history in `schemas.json` (the bump —
+`state.SCHEMA_VERSION` follows via derivation). Wire
+`require_compatible_workspace` into `daemon._run_cycle_mirror`,
+`cmd_start`, `cmd_status`, `cmd_clear`.
+
+**Step 7.4** `[RED]` — Tests for `.alcatrazer/config.toml` legacy
+refusal as a new signal in `require_compatible_workspace`:
+- Config file lacks `schema_version` → raise (any v0.1.0 config trips this).
+- `schema_version < 2` → raise.
+- `[promotion-daemon].mode` or `[promotion-daemon].branches` key still
+  present → raise (defence-in-depth: catches a hand-edited config that
+  was bumped to v=2 but kept the obsolete keys).
+
+**Step 7.5** `[GREEN]` — Add `schema_version = 2` line to
+`templates/alcatrazer-config.toml`. Append v=2 entry to
+`alcatrazer_config` history in `schemas.json`. Define
+`start.ALCATRAZER_CONFIG_SCHEMA_VERSION = schema.ALCATRAZER_CONFIG.current_version`
+(derived). Extend `require_compatible_workspace` with the config-side
+checks.
 
 ### Phase 8: Documentation
+
+> Step 8.2 (README rewrite) depends on Phase 9 having landed first —
+> the "switch branch via `clear + start`" flow that the new README
+> describes only becomes true behavior after Phase 9 extends
+> `cmd_clear` to wipe the inner workspace and unpin. Phases 8.1, 8.3,
+> 8.4 don't depend on Phase 9 and can land in either order.
 
 **Step 8.1** `[BLUE]` — Update `docs/design_principles.md` Promotion
 section's "Daemon Watches from Outside" with the new one-liner.
 
 **Step 8.2** `[BLUE]` — Rewrite README's "Promotion" subsection for
 the new flow (branch off main → alcatrazer start → agents commit →
-your branch grows → push for PR).
+your branch grows → push for PR). Includes the
+`clear + start` switch-branch description that Phase 9 makes accurate.
 
 **Step 8.3** `[BLUE]` — Add CHANGELOG entry with the breaking-change
 notice and the four cleanup steps.
@@ -997,7 +1164,351 @@ backfill any "Implementation Notes" subsection with decisions
 resolved during implementation (mirroring the
 `start_from_existing_repo.md` pattern).
 
+### Phase 9: `clear` is terminal — wipe inner workspace + unpin
+
+Phase 9 makes `alcatrazer clear` match its intent: a terminal teardown
+that leaves the project in a state where the next `alcatrazer start`
+is a fresh first-run on whatever branch the user is currently on.
+Today's clear stops + removes the container and prints "workspace
+preserved on the host"; the workspace dir + `state.json`'s
+`pinned_branch` persist, so a subsequent `start` reuses the old pin
+instead of re-snapshotting. That gap was caught by a manual test
+during Phase 8 (see Implementation Notes).
+
+The intended user-facing flow Phase 9 enables:
+
+- `alcatrazer stop` + `alcatrazer start` — freeze-restart loop, **same
+  pin**. For pausing the workspace temporarily.
+- `alcatrazer clear` + `alcatrazer start` — terminal teardown +
+  fresh start, **new pin to current branch**. The "switch branch"
+  workflow.
+
+Both paths already wait for the daemon to drain pending commits before
+the daemon exits, so the commits are durably in outer before Phase 9
+removes the inner workspace.
+
+#### Removal mechanism: two one-shot side containers
+
+Three candidate approaches considered for clearing the agent-UID-
+owned workspace bind-mount:
+
+- **chown-back from the original container** — original container
+  chowns `/workspace` back to host's UID/GID before stop; host's
+  plain `rm -rf` then works. Rejected: the agent observes its
+  workspace ownership shift to a foreign UID before the chown
+  completes — a fingerprint of the user the host runs as. Violates
+  Principle 2.
+- **`docker exec` on the original container** — would need
+  `prison.resume()` first because `docker exec` requires a running
+  container, and `cmd_clear` has already stopped it for daemon
+  final-sync race-safety. Resume is safe per se (CMD is `sleep
+  infinity`; startup commands are launched separately by
+  `cmd_start`), but adds two extra state transitions on the
+  agent's own container and invites the "does resume re-launch
+  agents" question every reader will ask.
+- **two one-shot side containers** (chosen):
+  1. **wipe contents as agent** — `docker run --rm -u agent
+     --entrypoint find -v <workspace>:/workspace <image>
+     /workspace -mindepth 1 -delete`. Deletes everything inside the
+     mount-point dir as the UID that owns the files.
+  2. **chown the empty mount-point to host UID:GID as root** —
+     `docker run --rm -u 0:0 --entrypoint chown -v
+     <workspace>:/workspace <image> <host_uid>:<host_gid>
+     /workspace`. Retags the dir so the next `alcatrazer start`'s
+     host-side `git init` can write into it. Without this, the dir
+     stays phantom-owned and blocks the next first-run with a
+     permission error.
+
+Why chown is safe in step 2 even though it was rejected as "chown-
+back" earlier: Principle 2 gates ownership shifts an active agent
+can observe. A one-shot side container has no agent process — the
+chown is invisible to anything that could fingerprint the host
+user. See memory entry "stealth-scope-is-observed-processes" for
+the general rule.
+
+Why our image rather than alpine (the pattern test_smoke uses for
+phantom-UID cleanup): no extra image pull, and the `agent` user is
+already defined in `/etc/passwd` of our image so `-u agent`
+resolves consistently against the file ownership in step 1.
+
+#### Ordering — keep "stop-first" race safety
+
+The current `cmd_clear` order — stop → daemon-final-sync → remove —
+guards against an agent committing AFTER the final sync but BEFORE
+removal. The side container is a separate process that bind-mounts
+the host path; it doesn't need the original container to be running,
+so no resume step is required.
+
+```
+1. (pre-checks: pin status + pending count — unchanged)
+2. prison.stop()                      # agents frozen
+3. shutdown_sync_daemon()             # final sync drains pending
+4. prison.wipe_workspace_contents()   # NEW — two one-shot side
+                                      # containers in sequence:
+                                      #   (a) find -mindepth 1
+                                      #       -delete (as agent)
+                                      #   (b) chown to host UID:GID
+                                      #       (as root)
+5. prison.remove()                    # original container gone
+6. (alcatraz_dir / "state.json").unlink(missing_ok=True)  # unpin
+```
+
+The workspace directory itself stays (empty, same name) as the bind-
+mount target for the next `start`, and after step 4(b) it's owned by
+the host user so `git init` succeeds. `.alcatrazer/config.toml` is
+preserved so identity + daemon settings carry over —
+`alcatrazer init` is not required between `clear` and `start`.
+
+#### Alcatraz port addition
+
+New abstract method on `Alcatraz` (`src/alcatrazer/alcatraz.py`):
+
+```python
+@abstractmethod
+def wipe_workspace_contents(self) -> None:
+    """Remove every file inside the workspace bind-mount, leaving
+    the mount-point directory itself in place.
+
+    Caller contract: the original container is stopped when this is
+    called. Backend chooses the removal mechanism (one-shot side
+    container, etc.) so long as no agent process observes foreign
+    UIDs or signals that betray the Alcatrazer machinery.
+    """
+```
+
+`DockerPrison.wipe_workspace_contents` implements via two one-shot
+side containers, in sequence:
+
+```
+# Step 1: wipe contents as agent.
+docker run --rm -u agent --entrypoint find \
+    -v <host_workspace>:/workspace <image_tag> \
+    /workspace -mindepth 1 -delete
+
+# Step 2: chown the now-empty mount-point to host UID:GID as root.
+docker run --rm -u 0:0 --entrypoint chown \
+    -v <host_workspace>:/workspace <image_tag> \
+    <host_uid>:<host_gid> /workspace
+```
+
+Step 1 bypasses the chown-and-drop entrypoint (`--entrypoint find`)
+and runs as the same UID the files are owned by (`-u agent`).
+`-mindepth 1` preserves the mount-point dir itself; only its
+contents are removed.
+
+Step 2 retags the empty mount-point dir from the phantom UID back to
+the host user's UID:GID so the next `alcatrazer start`'s host-side
+`git init` can write into it. Runs as root (`-u 0:0`) so chown has
+the necessary permission. Safe to perform here even though chown-
+back is forbidden in the original container — the side container
+has no agent process, so Principle 2 doesn't apply.
+
+#### Detailed Implementation Plan
+
+**Step 9.1** `[RED]` — Unit tests for the port-method contract:
+- `Alcatraz.__abstractmethods__` declares `wipe_workspace_contents`.
+- `DockerPrison.wipe_workspace_contents` invokes two side containers
+  in sequence: first `docker run --rm -u agent --entrypoint find ...
+  -mindepth 1 -delete` (wipe), then `docker run --rm -u 0:0
+  --entrypoint chown ... <host_uid>:<host_gid> /workspace` (retag).
+  Verified via mocked `docker_prison.subprocess.run` — the exact argv
+  shape of both calls is locked so future backends inherit a clear
+  spec.
+- Returns `None` on success (state-mutating contract, matches
+  `start`/`stop`/`remove`).
+- Raises `PrisonError` when either side container returns non-zero
+  (separate tests for the find-failed and chown-failed cases — both
+  cause cmd_clear to abort cleanly rather than leave the workspace
+  half-cleaned or wrong-owned), and also when
+  `.alcatrazer/workspace-dir` is missing (no host path to mount).
+
+**Step 9.2** `[RED]` — End-to-end integration test of the switch-
+branch flow. Lives in `src/alcatrazer/integration_tests/` next to
+`test_smoke.py` (different purpose: smoke covers security invariants
+and tooling availability; this covers a user-flow). Drives the real
+`alcatrazer init` / `start` / `clear` sequence against a real
+`DockerPrison` + real container — no mocks at the prison layer, no
+host-side simulation of the wipe.
+
+Phases in a single stateful test method (line number on failure
+points at which phase broke):
+
+  1. Outer on `feat/X`, `cmd_start` → assert `state.json.pinned_branch`
+     == `"feat/X"`.
+  2. Make an inner commit via `prison.query` (docker exec), wait for
+     the daemon to promote it to outer `feat/X` (the realistic
+     "agents have done work" precondition for clear).
+  3. `cmd_clear` → assert `state.json` is gone AND the workspace dir
+     exists but is empty (mount point preserved, all contents
+     including `.git/` removed by the wipe).
+  4. `git checkout -b other-branch`, second `cmd_start` → assert
+     `state.json.pinned_branch` == `"other-branch"` AND the previous
+     workspace's files (e.g. `agent.txt`) are absent.
+
+The choice not to write a parallel mocked unit-level test for
+`cmd_clear`'s post-state (an earlier draft of the plan called this
+out as Step 9.2): a `Mock(spec=Alcatraz)` whose
+`wipe_workspace_contents` is fed a Python side-effect doesn't verify
+that `find -mindepth 1 -delete` does what it promises inside a real
+container as agent UID — it verifies the mock setup. The integration
+test is the source of truth here; duplicating with mocks adds
+maintenance burden with no incremental verification.
+
+**Step 9.3** `[GREEN]` — Add `wipe_workspace_contents` to the
+`Alcatraz` ABC, implement on `DockerPrison` via the one-shot side
+container. Extend `cmd_clear` with the wipe → remove → unlink
+sequence (slotting the wipe in between `shutdown_sync_daemon` and
+`prison.remove`). Update `cmd_clear`'s post-success message to
+reflect the new teardown (drop the "workspace preserved on the host"
+line).
+
+**Step 9.4** `[BLUE]` — Update the upgrade-refusal message in
+`state._upgrade_message`: now that v0.1.1's `clear` handles teardown,
+the manual `sudo rm -rf $(cat .alcatrazer/workspace-dir)` step is
+only needed for users upgrading from v0.1.0 (whose `clear` doesn't
+wipe). Clarify the wording so the user knows step 2 is a one-time
+v0.1.0-upgrade step, not a general fresh-start procedure.
+
 ### Implementation Notes
 
-*(To be filled in during implementation — decisions made on the fly,
-surprises encountered, deviations from this plan.)*
+**Phase 7 retarget (v0.1.1 implementation).** While preparing
+Step 7.1's RED tests, two facts surfaced that the original Phase 7
+prose got wrong:
+
+- The doc attributed the `[promotion-daemon].mode` /
+  `[promotion-daemon].branches` removal to `coding-environment.toml`,
+  but those keys actually live in `.alcatrazer/config.toml` (verified
+  against the installed v0.1.0 source). `coding-environment.toml` has
+  no field changes between v0.1.0 and v0.1.1.
+- `.alcatrazer/config.toml` had no `schema_version` field in v0.1.0,
+  so a schema-version gate against it can't refuse legacy configs
+  directly — v0.1.1 introduces the field alongside the removal.
+- `.alcatrazer/state.json` was lazily created in v0.1.0 (only on the
+  first `alcatrazer stop` / `clear`). A user who only ran `init` +
+  `start` has no `state.json`, so a `state.json`-version gate alone
+  misses those workspaces.
+
+The revised plan keeps Step 7.1 unchanged (the pure schema-version
+validator), adds a workspace-level `require_compatible_workspace`
+gate that fires on multiple signals (state.json schema, config.toml
+schema or legacy keys, presence of v0.1.0 side files), and retargets
+the second half of the phase to `.alcatrazer/config.toml` instead of
+`coding-environment.toml`. The `coding_env` schema gets no v=2 entry
+in `schemas.json` for this release.
+
+The new infrastructure landed before Step 7.1 RED: schema-history
+JSON (`src/alcatrazer/schemas.json`), Python loader
+(`src/alcatrazer/schema.py`), the
+`docs/coding_conventions.md` rule "Schema changes must land in
+schemas.json + CHANGELOG before release", and a cross-check test
+suite that holds version constants and JSON entries in lockstep.
+
+**Phase 9 emerged from a Phase 8 manual test.** While drafting the
+README rewrite for Step 8.2, a draft paragraph claimed `alcatrazer
+clear` followed by `git checkout` + `alcatrazer start` would
+re-snapshot bound to the new branch. The user tested it: clear
+preserves the workspace dir + `state.json` (`pinned_branch` carries
+over), so the second start reuses the old pin and `alcatrazer status`
+shows ⚠ on hold on the new branch. The two paths the design intended
+to distinguish — `stop`/`start` for freeze-restart, `clear`/`start`
+for fresh-on-current-branch — collapsed into the same behavior because
+`clear` wasn't terminal enough.
+
+Phase 9 fixes this by extending `cmd_clear` to wipe the inner
+workspace contents via a new Alcatraz port method
+(`wipe_workspace_contents`) and unlink `state.json`, keeping
+`.alcatrazer/config.toml` so identity + daemon settings carry over.
+The wipe runs in a one-shot side container (built from this
+Alcatraz's own image, `--entrypoint find`, `-u agent`) — no agent
+process is involved anywhere, so Principle 2 trivially holds.
+
+**Phase 9 chown-back: required, and safe in a side container.**
+Right after Step 9.3 GREEN shipped, a fresh-install manual test
+showed the next `alcatrazer start` failing on `git init` after a
+`clear` cycle:
+
+```
+subprocess.CalledProcessError: Command '['git', 'init', '/tmp/
+.../.codelab-d13c']' returned non-zero exit status 1
+```
+
+Root cause: the side-container wipe (`find /workspace -mindepth 1
+-delete`) emptied the bind-mount's contents but left the mount-
+point dir itself owned by the phantom UID — the original
+container's entrypoint had chowned `/workspace` to agent on first
+start, and Step 9.3 deliberately did not chown back (per
+Principle 2). `git init` on the next first-run runs from the host
+shell as the host user, who cannot create `.git/` inside a
+foreign-UID-owned dir.
+
+The fix introduced a second one-shot side container right after
+the wipe: `docker run --rm -u 0:0 --entrypoint chown
+<host_uid>:<host_gid> /workspace`. This retags the empty mount-
+point dir back to host ownership so the next `git init` works.
+
+The chown-back was originally rejected during Phase 9 design as
+violating Principle 2, but that rejection was specifically about
+chowning inside the ORIGINAL running container where an active
+agent could observe the ownership shift. A one-shot side container
+has no agent process inside — Principle 2 gates ownership shifts
+the agent can observe, not ownership shifts performed in
+disposable contexts with no agent. The distinction is recorded as
+a memory entry (`feedback_stealth_scope_is_observed_processes`)
+so the rule doesn't have to be re-derived next time someone
+proposes a chown.
+
+The two-step side-container approach also pairs cleanly with the
+"side container vs exec-after-resume" choice already made: the
+chown is just a second `docker run --rm` with different flags, no
+new infrastructure.
+
+**Greenfield outer repo: pin to the unborn branch (post-v0.1.1
+follow-up).** A release-readiness manual test ran the first-run
+sequence `git init && alcatrazer init && alcatrazer start` *before
+making any commit*. The workspace came up dead: `pinned_branch` was
+recorded as `None`, the daemon held every cycle on a branch named
+`None`, and `alcatrazer status` advised the nonsense `git branch
+None`. The pin-at-start preconditions guarded against detached HEAD
+but not against an empty outer repo.
+
+Root cause: `snapshot.current_branch()` and `promote.check_pin()`
+both conflated *"no commits yet"* with *"no branch at all"*. A fresh
+`git init` leaves HEAD on an **unborn** branch — `git symbolic-ref
+--short HEAD` returns the name (`main`), but `git rev-parse HEAD`
+fails because no commit exists. `current_branch()` discarded the
+valid name via a `rev-parse HEAD` guard (→ `None`), and `check_pin()`
+read the missing `refs/heads/main` ref as `PIN_DELETED`.
+
+The key finding that decided the fix: the promotion machinery
+(`format-patch | am`) **already** handles an empty outer. `git am`
+prints *"applying to an empty history"* and creates the root commit
+on the unborn branch — verified empirically. So the right move is to
+**support** greenfield, not refuse it: a brand-new project can be
+started, scaffolded by agents from zero, and promoted onto `main`.
+
+This surfaced a clean two-axis taxonomy of HEAD states, probed by two
+orthogonal git commands:
+
+|                       | `symbolic-ref --short HEAD` (on a branch?) | `rev-parse --verify HEAD` (HEAD born?) |
+| --------------------- | ------------------------------------------ | -------------------------------------- |
+| Normal, on a branch   | ✓ name                                     | ✓ SHA                                  |
+| **Unborn branch**     | ✓ name                                     | ✗                                      |
+| **Detached HEAD**     | ✗                                          | ✓ SHA                                  |
+| Not a git repo        | ✗                                          | ✗                                      |
+
+`is_unborn_head` (branch, no commit) and `is_detached_head` (commit,
+no branch) are the two anomalies along opposite axes. Changes:
+
+- `current_branch()` returns the `symbolic-ref` name even for an
+  unborn branch (only detached / non-git yield `None`).
+- New `is_unborn_head()` predicate; `extract_snapshot()` no-ops on an
+  unborn branch (no tree to archive) instead of crashing on
+  `git archive <branch>`.
+- `check_pin()` returns `OK` (not `PIN_DELETED`) when the missing pin
+  ref is the *current* unborn branch — the first `git am` creates it
+  (without this it would be a chicken-and-egg hold: the ref only
+  exists after a promotion, but promotion is gated on the ref).
+
+Covered by snapshot/promote unit tests and an end-to-end
+`TestPromotionIntoGreenfieldOuterRepo` (real Docker daemon promoting
+the agent's first commit onto an unborn `main`).
