@@ -33,15 +33,15 @@ run = [
 
 [tasks.test]
 description = "Run unit + integration tests (no Docker)"
-run = ["python -m unittest discover -s src/alcatrazer/tests -v"]
-
-[tasks.test-fast]
-description = "Run unit tests only (skip slow integration tests)"
-run = ["python -m unittest discover -s src/alcatrazer/tests -v -k 'not TestDaemon and not TestConflict and not TestBranch and not TestAlcatraz and not TestLogRotation'"]
+run = ["PYTHONPATH=src python -m unittest discover -s src/alcatrazer/tests -v"]
 
 [tasks.test-smoke]
 description = "Run Docker smoke tests (requires initialized environment + built image)"
-run = ["python -m unittest discover -s src/alcatrazer/integration_tests -v"]
+run = ["PYTHONPATH=src python -m unittest src/alcatrazer/integration_tests/test_smoke.py -v"]
+
+[tasks.test-integration]
+description = "Run Docker integration tests (requires initialized environment + built image)"
+run = ["PYTHONPATH=src python -m unittest discover -s src/alcatrazer/integration_tests -v"]
 
 [tasks.lint]
 description = "Run linter"
@@ -59,19 +59,3 @@ run = ["ruff format src", "ruff check --fix src"]
 [tasks.build]
 description = "Build PyPI package"
 run = ["uv build"]
-
-[tasks.start]
-description = "Set up (first run) or start the alcatrazer workspace container"
-run = ["alcatrazer start"]
-
-[tasks.stop]
-description = "Stop the running alcatrazer workspace container"
-run = ["alcatrazer stop"]
-
-[tasks.start-promotion]
-description = "Start the promotion daemon"
-run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.daemon"]
-
-[tasks.tail-promotion-log]
-description = "Tail the promotion daemon log"
-run = ["PYTHONPATH=src .alcatrazer/python -m alcatrazer.inspect"]
