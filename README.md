@@ -48,6 +48,7 @@ Watch out developers community. Your paradigm has changed. You trust yourself - 
 ## Using it
 **You have to be in root of your repository** (where .git/ resides), otherwise following commands won't work.
 
+After [installation (or even without permanent installation)](1-set-up-the-cli) you can call:
 ```bash
 alcatrazer test                  # Run bundled tests to verify installation
 alcatrazer init                  # Answer few questions to configure tool
@@ -55,6 +56,7 @@ alcatrazer start --run-selftest  # start Alcatraz for AI agents (with security i
 alcatrazer visit                 # visit Alcatraz and tell agents what to do
 
 alcatrazer --help                # see all other possibilities
+# uvx alcatrazer ...               to run it without permanent installation
 ```
 
 ---
@@ -309,6 +311,9 @@ Both modes converge on the exact same package — the only difference is whether
 uvx alcatrazer init              # or: pipx run alcatrazer init
 uvx alcatrazer start             # …prefix every command with `uvx `
 uvx alcatrazer stop
+
+which alcatrazer                 # prove ephemeral
+alcatrazer not found
 ```
 
 Each call spins up (or reuses the cached) throwaway venv under `~/.cache/uv/`. **`which alcatrazer` stays empty — that is expected, not broken.** Nothing to uninstall later; the cache is GC'd automatically, or you can force it with `uv cache clean alcatrazer`.
@@ -323,8 +328,13 @@ alcatrazer --version
 
 Then call `alcatrazer <cmd>` directly, as the examples below do.
 
-- Upgrade:  `uv tool upgrade alcatrazer`  (or `pipx upgrade alcatrazer`)
-- Uninstall: `uv tool uninstall alcatrazer`  (or `pipx uninstall alcatrazer`)
+- Upgrade:  
+  - `uv tool upgrade alcatrazer` or
+  - `pipx upgrade alcatrazer`)
+- Uninstall: 
+  - `uv tool uninstall alcatrazer` or
+  - `uv pip uninstall alcatrazer` or
+  - `pipx uninstall alcatrazer`
 
 > The rest of this README uses the short `alcatrazer <cmd>` form. If
 > you're in Mode A, prefix every call with `uvx ` (or `pipx run `).
