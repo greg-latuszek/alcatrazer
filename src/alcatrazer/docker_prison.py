@@ -19,10 +19,17 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from alcatrazer import identity
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonError, PrisonStartError
+from alcatrazer.alcatraz import (
+    Alcatraz,
+    CopiedFile,
+    PrisonBuildError,
+    PrisonError,
+    PrisonStartError,
+)
 from alcatrazer.languages import AQUA_ATTESTATION_MISALIGNED, SUPPORTED_LANGUAGES
 
 # --- Per-repo identity (Phase 1.2.5) -----------------------------------------
@@ -593,6 +600,31 @@ class DockerPrison(Alcatraz):
             flags.append("-i")
         full = ["docker", "exec", *flags, self.container_name, *command]
         return subprocess.run(full, capture_output=True, text=True, input=input)
+
+    def copy_out(self, sandbox_path: str) -> CopiedFile | None:
+        """Read `sandbox_path` out of the container via `docker cp`.
+
+        `docker cp` works on a stopped (but not removed) container and
+        preserves the source file's mtime into the extracted copy — so this
+        works at teardown (container frozen) and reports the in-container
+        mtime, which credential copy-back compares against the host file.
+
+        Returns None when the container is absent or the file isn't there
+        (`docker cp` exits non-zero), so the caller can treat both as
+        "nothing to copy back".
+        """
+        if not self.exists():
+            return None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / "extracted"
+            result = subprocess.run(
+                ["docker", "cp", f"{self.container_name}:{sandbox_path}", str(dest)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0 or not dest.exists():
+                return None
+            return CopiedFile(content=dest.read_text(), mtime=dest.stat().st_mtime)
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""
