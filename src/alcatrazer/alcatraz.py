@@ -11,8 +11,23 @@ backends plug in without editing callers. See install_method.md — "Hexagonal
 sandboxing architecture" — for the design rationale.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import NamedTuple
+
+
+class CopiedFile(NamedTuple):
+    """A file read out of an Alcatraz instance by `copy_out`.
+
+    Carries the file's `content` and its `mtime` (epoch seconds). The mtime
+    is the in-sandbox modification time — credential copy-back compares it
+    against the host file to decide whether the sandbox copy is newer.
+    """
+
+    content: str
+    mtime: float
 
 
 class PrisonError(Exception):
@@ -126,13 +141,36 @@ class Alcatraz(ABC):
         """
 
     @abstractmethod
-    def query(self, command: list[str]):
+    def query(self, command: list[str], input: str | None = None):
         """Run a command inside the workspace and return the captured result.
 
         Unlike `exec` (which streams output for humans), `query` captures
         stdout / stderr / exit code and returns them as a
         `subprocess.CompletedProcess`-shaped object so programs can read
         and decide — security self-tests, health checks, diagnostics.
+
+        When `input` is given, it is fed to the command on stdin rather than
+        passed as an argument — so a secret (e.g. a credential token piped to
+        `cat >file`) never appears in argv / a process listing. Backends
+        implement this over their own stdin channel (DockerPrison adds
+        `docker exec -i`; a future VM backend pipes to the remote shell's
+        stdin), keeping credential provisioning backend-neutral.
+        """
+
+    @abstractmethod
+    def copy_out(self, sandbox_path: str) -> CopiedFile | None:
+        """Read a file OUT of the instance, returning its content + mtime.
+
+        Works even when the instance is STOPPED (but still present) — unlike
+        `exec` / `query`, which need a running container. This is what lets
+        credential copy-back run at teardown, where the container is already
+        frozen (stop happens before the daemon shutdown, by the non-
+        negotiable stop-first ordering). DockerPrison implements it with
+        `docker cp` (which reads stopped containers and preserves the source
+        mtime); a future VM backend reads the file off the stopped VM's disk.
+
+        Returns None when the instance is absent or the file does not exist
+        — the caller treats "nothing to read" as "nothing to copy back".
         """
 
     @abstractmethod

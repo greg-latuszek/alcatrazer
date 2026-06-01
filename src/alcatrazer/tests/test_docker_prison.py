@@ -761,6 +761,102 @@ class DockerPrisonQueryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, "boom")
 
+    def test_query_feeds_input_on_stdin_with_the_interactive_flag_when_given_input(self):
+        """When `input` is given, the secret rides stdin (never argv) and
+        `docker exec` gets `-i` so the container process sees the pipe.
+
+        Used by credential provisioning: a token must reach `cat >file`
+        inside the sandbox without ever appearing in a process listing."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(
+                ["sh", "-c", "cat > /home/agent/.claude/.credentials.json"],
+                input="SECRET-TOKEN",
+            )
+        cmd = mock_run.call_args.args[0]
+        ident = docker_prison._identity_for_project(self.project_dir)
+        self.assertIn("-i", cmd)
+        # -i is a flag to `docker exec`, so it must precede the container name.
+        self.assertLess(cmd.index("-i"), cmd.index(f"workspace-{ident}"))
+        self.assertEqual(mock_run.call_args.kwargs.get("input"), "SECRET-TOKEN")
+        # Security: the secret must travel on stdin, never as an argv element.
+        self.assertNotIn("SECRET-TOKEN", cmd)
+
+    def test_query_omits_the_interactive_flag_when_given_no_input(self):
+        """Default streaming/capture path stays unchanged — no `-i`, no
+        stdin pipe — so existing callers are unaffected."""
+        with patch.object(
+            docker_prison.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            DockerPrison(self.project_dir).query(["id"])
+        cmd = mock_run.call_args.args[0]
+        self.assertNotIn("-i", cmd)
+        self.assertIsNone(mock_run.call_args.kwargs.get("input"))
+
+
+class DockerPrisonCopyOutTests(unittest.TestCase):
+    """copy_out reads a file OUT of the instance via `docker cp`, which works
+    even when the container is stopped (but still present) — distinct from
+    query/exec, which need a running container. Used by credential copy-back
+    at teardown, where the container is already frozen."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_copy_out_returns_none_when_the_instance_does_not_exist(self):
+        with patch.object(docker_prison.DockerPrison, "exists", return_value=False):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertIsNone(result)
+
+    def test_copy_out_returns_the_file_content_and_its_preserved_mtime(self):
+        """`docker cp` preserves the source file's mtime into the extracted
+        copy, so copy_out reports the in-container mtime — the signal the
+        copy-back guard compares against the host file."""
+
+        def fake_cp(cmd, *args, **kwargs):
+            # docker cp <container>:<path> <dest> — emulate extraction.
+            dest = Path(cmd[-1])
+            dest.write_text("TOKEN-FROM-SANDBOX")
+            os.utime(dest, (1_700_000_000, 1_700_000_000))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            patch.object(docker_prison.DockerPrison, "exists", return_value=True),
+            patch.object(docker_prison.subprocess, "run", side_effect=fake_cp) as mock_run,
+        ):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertEqual(result.content, "TOKEN-FROM-SANDBOX")
+        self.assertEqual(result.mtime, 1_700_000_000)
+        cmd = mock_run.call_args.args[0]
+        container = f"workspace-{docker_prison._identity_for_project(self.project_dir)}"
+        self.assertEqual(cmd[:2], ["docker", "cp"])
+        self.assertIn(f"{container}:/home/agent/.claude/.credentials.json", cmd)
+
+    def test_copy_out_returns_none_when_the_file_is_absent_in_the_container(self):
+        with (
+            patch.object(docker_prison.DockerPrison, "exists", return_value=True),
+            patch.object(
+                docker_prison.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 1, "", "no such file or directory"),
+            ),
+        ):
+            result = DockerPrison(self.project_dir).copy_out(
+                "/home/agent/.claude/.credentials.json"
+            )
+        self.assertIsNone(result)
+
 
 class DockerPrisonStartTests(unittest.TestCase):
     """DockerPrison.start runs `docker run -d` with the workspace bind-mount,
@@ -807,17 +903,14 @@ class DockerPrisonStartTests(unittest.TestCase):
         expected = f"{self.project_dir / '.devspace-abcd'}:/workspace"
         self.assertIn(expected, cmd)
 
-    def test_claude_credentials_mounted_readonly_when_present(self):
+    def test_claude_credentials_are_never_bind_mounted_even_when_present_on_host(self):
+        """The agent runs as a phantom UID that can't own the host's 0600
+        token, so a read-only mount of it is unreadable from inside. start()
+        therefore never mounts it — injection (start.inject_claude_credentials)
+        writes the token in as the agent after the container is up."""
         claude = Path(self.fake_home.name) / ".claude"
         claude.mkdir()
         (claude / ".credentials.json").write_text("{}")
-        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
-            DockerPrison(self.project_dir).start()
-        cmd = mock_run.call_args.args[0]
-        expected = f"{claude / '.credentials.json'}:/home/agent/.claude/.credentials.json:ro"
-        self.assertIn(expected, cmd)
-
-    def test_claude_credentials_skipped_when_missing(self):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             DockerPrison(self.project_dir).start()
         cmd_str = " ".join(mock_run.call_args.args[0])

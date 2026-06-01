@@ -20,12 +20,14 @@ MVP) — this module stays backend-agnostic.
 """
 
 import hashlib
+import os
 import secrets
 import shutil
 import sys
 import textwrap
 import tomllib
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from alcatrazer import identity, promote, schema, selftest, snapshot, state
@@ -311,15 +313,132 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     return rc
 
 
+def _claude_creds_path() -> Path:
+    """The host's Claude Code credentials file, ~/.claude/.credentials.json.
+
+    Factored into one place so both the presence check and the injection
+    step read the same path — and so tests can redirect it to a synthetic
+    token without touching the real HOME.
+    """
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def _host_has_claude_creds() -> bool:
     """True if the host has Claude Code creds at ~/.claude/.credentials.json.
 
-    When present, `DockerPrison.start` mounts the file read-only into the
-    container — no `.env` auth needed. When absent, the user needs to
-    populate `ANTHROPIC_API_KEY` in `.env` before `alcatrazer start`.
-    Factored out so tests can patch it without touching the real HOME.
+    When present, `alcatrazer start` injects the token into the running
+    Alcatraz (see `inject_claude_credentials`) — no `.env` auth needed. When
+    absent, the user needs to populate `ANTHROPIC_API_KEY` in `.env` before
+    `alcatrazer start`.
     """
-    return (Path.home() / ".claude" / ".credentials.json").exists()
+    return _claude_creds_path().exists()
+
+
+def inject_claude_credentials(prison: Alcatraz) -> None:
+    """Copy the host's Claude credentials into the running Alcatraz.
+
+    Reads ~/.claude/.credentials.json on the host and writes it inside the
+    sandbox AS the agent user over the backend-neutral `query` port, fed on
+    stdin so the token never appears in argv (where the agent could read it
+    via /proc). A no-op when the host has no credentials — the user
+    authenticates via `.env` instead.
+
+    Why a copy and not the obvious read-only bind mount: the agent runs as a
+    phantom UID that can never equal the host token's owner, so a `0600`
+    host-owned file mounted in is unreadable from inside. Writing it as the
+    agent lands the right ownership and `0600` perms, and the host file is
+    read once rather than left attached to the container for the session.
+    """
+    creds_path = _claude_creds_path()
+    if not creds_path.exists():
+        return
+    token = creds_path.read_text()
+    # umask 077 → the freshly written file is 0600 (owner-only), matching
+    # Claude Code's own on-disk permissions. The token rides stdin, never argv.
+    result = prison.query(
+        ["sh", "-c", "umask 077; mkdir -p ~/.claude && cat > ~/.claude/.credentials.json"],
+        input=token,
+    )
+    if result.returncode != 0:
+        raise PrisonStartError(
+            "Failed to provision Claude credentials inside the Alcatraz.",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
+def _claude_creds_sidecar_path() -> Path:
+    """The sidecar where a refreshed token is offered for the user to apply.
+
+    Sits beside the real credentials file as `<name>.fresh` — e.g.
+    `~/.claude/.credentials.json.fresh`. Kept separate from the real file
+    on purpose: alcatrazer never overwrites the user's credentials, it
+    offers a copy the user reviews and applies themselves.
+    """
+    real = _claude_creds_path()
+    return real.with_name(real.name + ".fresh")
+
+
+def offer_refreshed_claude_credentials(prison: Alcatraz, project_dir: Path) -> None:
+    """Offer the user the Claude token as refreshed inside the sandbox.
+
+    Claude rotates its OAuth token while the agent works; that refreshed
+    token lives only in the sandbox copy and is wiped with the container at
+    `clear`, leaving the host login stale. This reads the sandbox token out
+    (works even though the container is already stopped at teardown) and,
+    when it is genuinely newer than the host's AND differs, writes it to a
+    `~/.claude/.credentials.json.fresh` sidecar and tells the user how to
+    apply it.
+
+    It deliberately does NOT overwrite `~/.claude/.credentials.json`:
+    alcatrazer makes a transparency promise and never silently mutates the
+    user's credentials. The mtime guard avoids offering a staler token as
+    "fresh" when the user refreshed on the host outside Alcatraz; the
+    content guard avoids offering an identical copy when nothing refreshed.
+    """
+    refreshed = prison.copy_out("/home/agent/.claude/.credentials.json")
+    if refreshed is None:
+        return
+
+    host_path = _claude_creds_path()
+    if host_path.exists():
+        host_is_newer = host_path.stat().st_mtime >= refreshed.mtime
+        same_content = host_path.read_text() == refreshed.content
+        if host_is_newer or same_content:
+            return
+
+    sidecar = _claude_creds_sidecar_path()
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(refreshed.content)
+    os.chmod(sidecar, 0o600)
+
+    print(
+        f"\nYour Claude login was refreshed while working in Alcatraz.\n"
+        f"The updated credentials were saved to:\n"
+        f"    {sidecar}\n"
+        f"Your host login at {host_path} is now older and may stop working.\n"
+        f"To keep using Claude on the host, review and replace it:\n"
+        f"    mv {sidecar} {host_path}"
+    )
+    _record_in_promotion_log(
+        project_dir, f"Refreshed Claude credentials offered at {sidecar}"
+    )
+
+
+def _record_in_promotion_log(project_dir: Path, message: str) -> None:
+    """Append a timestamped line to the promotion daemon's log file.
+
+    Matches the daemon's own `%(asctime)s %(message)s` line format so the
+    teardown copy-back shows up in the same log the user reads for sync
+    activity. The daemon is already down by the time this runs (shutdown
+    happens first), so this is a plain append with no writer contention.
+    """
+    log_file = project_dir / ".alcatrazer" / "promotion-daemon.log"
+    if not log_file.parent.exists():
+        return
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with log_file.open("a") as log:
+        log.write(f"{timestamp} {message}\n")
 
 
 def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
@@ -509,6 +628,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     print("Starting Alcatraz...")
     try:
         prison.start()
+        inject_claude_credentials(prison)
     except PrisonStartError as e:
         print("ERROR: Alcatraz start failed.", file=sys.stderr)
         if e.stdout:
@@ -1478,6 +1598,13 @@ def cmd_clear(
     result = shutdown_sync_daemon(project_dir)
     print_shutdown_result(result)
 
+    # Offer back any Claude token refreshed inside the sandbox BEFORE the
+    # container is removed below — clear discards the writable layer (and
+    # the freshest token with it), so this is the last chance to read it
+    # out. copy_out works on the stopped-but-present container; the host
+    # credential file is never overwritten.
+    offer_refreshed_claude_credentials(prison, project_dir)
+
     # Step 3 — Phase 9: wipe the inner workspace via a one-shot side
     # container (built from this Alcatraz's own image, runs as
     # `agent`, bind-mounts the host workspace at /workspace, runs
@@ -1615,6 +1742,11 @@ def cmd_stop(project_dir: Path, prison: Alcatraz | None = None) -> int:
     result = shutdown_sync_daemon(project_dir)
     print_shutdown_result(result)
 
+    # Offer back any Claude token refreshed inside the sandbox. The
+    # container is stopped but still present, so copy_out (docker cp) can
+    # still read it; this never overwrites the host file.
+    offer_refreshed_claude_credentials(prison, project_dir)
+
     if result.outcome in ("conflict", "failed", "timeout"):
         return 1
     return 0
@@ -1679,6 +1811,7 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
             prison.build()
         try:
             prison.start()
+            inject_claude_credentials(prison)
         except PrisonStartError as e:
             print("ERROR: Alcatraz start failed.", file=sys.stderr)
             if e.stdout:
@@ -1691,6 +1824,7 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
         print("Starting Alcatraz...")
         try:
             prison.start()
+            inject_claude_credentials(prison)
         except PrisonStartError as e:
             print("ERROR: Alcatraz start failed.", file=sys.stderr)
             if e.stdout:

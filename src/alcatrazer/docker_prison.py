@@ -19,10 +19,17 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from alcatrazer import identity
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonError, PrisonStartError
+from alcatrazer.alcatraz import (
+    Alcatraz,
+    CopiedFile,
+    PrisonBuildError,
+    PrisonError,
+    PrisonStartError,
+)
 from alcatrazer.languages import AQUA_ATTESTATION_MISALIGNED, SUPPORTED_LANGUAGES
 
 # --- Per-repo identity (Phase 1.2.5) -----------------------------------------
@@ -437,10 +444,16 @@ class DockerPrison(Alcatraz):
     def start(self) -> None:
         """Run the workspace container in detached mode.
 
-        Bind-mounts the workspace dir at /workspace, mounts the host's
-        Claude credentials read-only (when present), wires in `.env`, and
+        Bind-mounts the workspace dir at /workspace, wires in `.env`, and
         uses `sleep infinity` as the long-lived CMD so the container stays
         alive for later `docker exec` attaches.
+
+        The Claude credentials are NOT bind-mounted: the agent runs as a
+        phantom UID that can never own the host's `0600` token file, so a
+        read-only mount of it is unreadable from inside. They are instead
+        copied in after start by `start.inject_claude_credentials`, written
+        AS the agent over the `query` port. Keeping that out of here also
+        keeps the backend free of Claude-specific knowledge.
 
         **No named cache volumes** — mise / pip / npm caches live in the
         container's writable overlay layer, per the "Ephemeral caches —
@@ -461,7 +474,6 @@ class DockerPrison(Alcatraz):
             )
         workspace_path = self.project_dir / workspace_name
         env_file = self.project_dir / ".env"
-        claude_creds = Path.home() / ".claude" / ".credentials.json"
 
         cmd = [
             "docker",
@@ -472,11 +484,6 @@ class DockerPrison(Alcatraz):
             "-v",
             f"{workspace_path}:/workspace",
         ]
-        if claude_creds.exists():
-            cmd += [
-                "-v",
-                f"{claude_creds}:/home/agent/.claude/.credentials.json:ro",
-            ]
         if env_file.exists():
             cmd += ["--env-file", str(env_file)]
         cmd += [self.image_tag, "sleep", "infinity"]
@@ -576,14 +583,48 @@ class DockerPrison(Alcatraz):
         full = ["docker", "exec", "-u", "agent", self.container_name, *command]
         return subprocess.run(full).returncode
 
-    def query(self, command: list[str]) -> subprocess.CompletedProcess:
+    def query(self, command: list[str], input: str | None = None) -> subprocess.CompletedProcess:
         """Run `command` inside the workspace container as `agent` and return
         the captured result. stdout / stderr / returncode are inspectable
         on the returned object; non-zero exit does NOT raise — the caller
         decides (mirrors `exec`'s "return code, don't throw" contract).
+
+        When `input` is given, it is piped to the command on stdin (with
+        `docker exec -i` so the container process sees the pipe) instead of
+        being passed as an argument — used by credential provisioning so a
+        token never lands in argv where the agent could read it via
+        `/proc/<pid>/cmdline`.
         """
-        full = ["docker", "exec", "-u", "agent", self.container_name, *command]
-        return subprocess.run(full, capture_output=True, text=True)
+        flags = ["-u", "agent"]
+        if input is not None:
+            flags.append("-i")
+        full = ["docker", "exec", *flags, self.container_name, *command]
+        return subprocess.run(full, capture_output=True, text=True, input=input)
+
+    def copy_out(self, sandbox_path: str) -> CopiedFile | None:
+        """Read `sandbox_path` out of the container via `docker cp`.
+
+        `docker cp` works on a stopped (but not removed) container and
+        preserves the source file's mtime into the extracted copy — so this
+        works at teardown (container frozen) and reports the in-container
+        mtime, which credential copy-back compares against the host file.
+
+        Returns None when the container is absent or the file isn't there
+        (`docker cp` exits non-zero), so the caller can treat both as
+        "nothing to copy back".
+        """
+        if not self.exists():
+            return None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / "extracted"
+            result = subprocess.run(
+                ["docker", "cp", f"{self.container_name}:{sandbox_path}", str(dest)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0 or not dest.exists():
+                return None
+            return CopiedFile(content=dest.read_text(), mtime=dest.stat().st_mtime)
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""

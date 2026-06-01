@@ -30,7 +30,7 @@ from unittest.mock import Mock, patch
 
 from alcatrazer import __version__, cli, identity, languages, schema, selftest, start, state
 from alcatrazer import status as status_mod
-from alcatrazer.alcatraz import Alcatraz, PrisonBuildError
+from alcatrazer.alcatraz import Alcatraz, PrisonBuildError, PrisonStartError
 from alcatrazer.daemon_lifecycle import ShutdownResult
 
 GIT_REPO_ROOT_ERROR = "alcatrazer must be run from a git repository root."
@@ -2505,6 +2505,10 @@ class SubsequentRunTests(unittest.TestCase):
             contextlib.redirect_stderr(stderr),
             patch.object(start, "env_file_changed", return_value=env_changed),
             patch.object(start, "launch_daemon_and_print") as self._launch_mock,
+            # Injection is exercised in InjectClaudeCredentialsTests; here we
+            # only assert WHICH branches reach for it (recreate / fresh start,
+            # not the resume or fast-path branches).
+            patch.object(start, "inject_claude_credentials") as self._inject_mock,
         ):
             rc = start._subsequent_run(self.project_dir, prison=prison)
         return rc, stdout.getvalue(), stderr.getvalue()
@@ -2626,6 +2630,23 @@ class SubsequentRunTests(unittest.TestCase):
         prison.resume.assert_not_called()
         prison.start.assert_called_once()
         prison.exec.assert_called()
+        # A fresh container has no token yet — injection must run.
+        self._inject_mock.assert_called_once_with(prison)
+
+    def test_recreate_injects_claude_credentials_but_resume_does_not(self):
+        """A recreated container is brand-new and needs the token written
+        in; a resumed one already carries it in its preserved writable
+        layer (and re-injecting could clobber a token Claude refreshed
+        mid-session), so resume must NOT inject."""
+        self._seed_last(match=True)
+        recreated = self._prison(running=True, rebuild=True, exists=True)
+        self._run(recreated)
+        self._inject_mock.assert_called_once_with(recreated)
+
+        self._inject_mock.reset_mock()
+        resumed = self._prison(running=False, rebuild=False, exists=True)
+        self._run(resumed)
+        self._inject_mock.assert_not_called()
 
     # --- Snapshot refreshes (both coding-env and env.hash.last) -----------
 
@@ -2701,6 +2722,172 @@ class SubsequentRunTests(unittest.TestCase):
         prison = self._prison(running=True, rebuild=True, exec_rc=7, exists=True)
         self._run(prison)
         self._launch_mock.assert_not_called()
+
+
+class InjectClaudeCredentialsTests(unittest.TestCase):
+    """`inject_claude_credentials` copies the host's Claude Code token into
+    the running Alcatraz over the backend-neutral `query` port.
+
+    Why a copy rather than the old read-only bind mount: the agent runs as a
+    phantom UID that can never equal the host token owner, so a `0600`
+    host-owned file mounted in is unreadable from inside. Injection writes
+    the file AS the agent, so ownership and permissions land correctly — and
+    the host file is read once, never attached to the container."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.creds = Path(self.tmp.name) / ".credentials.json"
+        self.prison = Mock(spec=Alcatraz)
+        self.prison.query.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+
+    def _patch_creds_path(self):
+        return patch.object(start, "_claude_creds_path", return_value=self.creds)
+
+    def test_nothing_is_injected_when_the_host_has_no_credentials(self):
+        # creds file deliberately not created → nothing to inject.
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        self.prison.query.assert_not_called()
+
+    def test_the_host_token_is_written_into_the_sandbox_over_the_query_port(self):
+        self.creds.write_text('{"token": "abc123"}')
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        self.prison.query.assert_called_once()
+        args, kwargs = self.prison.query.call_args
+        command = args[0]
+        # The token rides stdin, and the command lands it at the standard
+        # Claude Code path under the agent's own home.
+        self.assertEqual(kwargs.get("input"), '{"token": "abc123"}')
+        self.assertIn(".claude/.credentials.json", " ".join(command))
+
+    def test_the_token_never_appears_in_the_command_arguments(self):
+        """The token must travel on stdin only — argv is visible via
+        /proc/<pid>/cmdline to any process the agent can observe."""
+        self.creds.write_text("SUPER-SECRET-TOKEN")
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        command = self.prison.query.call_args.args[0]
+        self.assertNotIn("SUPER-SECRET-TOKEN", " ".join(command))
+
+    def test_the_written_credentials_file_is_locked_to_its_owner_via_umask(self):
+        """The write must produce a 0600 file — the command sets umask 077
+        so the token isn't group/other-readable inside the box."""
+        self.creds.write_text("{}")
+        with self._patch_creds_path():
+            start.inject_claude_credentials(self.prison)
+        command = " ".join(self.prison.query.call_args.args[0])
+        self.assertIn("077", command)
+
+    def test_a_start_error_is_raised_when_the_sandbox_write_fails(self):
+        self.creds.write_text("{}")
+        self.prison.query.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no such directory"
+        )
+        with self._patch_creds_path(), self.assertRaises(PrisonStartError) as cm:
+            start.inject_claude_credentials(self.prison)
+        self.assertIn("no such directory", cm.exception.stderr)
+
+
+class OfferRefreshedClaudeCredentialsTests(unittest.TestCase):
+    """`offer_refreshed_claude_credentials` reads the (possibly refreshed)
+    token out of the sandbox at teardown and, when it is genuinely newer
+    than the host's, writes it to a `~/.claude/.credentials.json.fresh`
+    sidecar and tells the user — it NEVER overwrites the real credential
+    file. Transparency: alcatrazer doesn't silently mutate user secrets,
+    even to help; the user applies the sidecar themselves."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project_dir = Path(self.tmp.name)
+        self.claude_dir = self.project_dir / ".claude"
+        self.claude_dir.mkdir()
+        self.host = self.claude_dir / ".credentials.json"
+        self.sidecar = self.claude_dir / ".credentials.json.fresh"
+        self.prison = Mock(spec=Alcatraz)
+
+    def _patch_creds_path(self):
+        return patch.object(start, "_claude_creds_path", return_value=self.host)
+
+    def _host_token(self, content: str, mtime: int) -> None:
+        self.host.write_text(content)
+        os.utime(self.host, (mtime, mtime))
+
+    def _sandbox_token(self, content: str, mtime: int):
+        # Duck-typed stand-in for the CopiedFile the real copy_out returns.
+        self.prison.copy_out.return_value = Mock(content=content, mtime=mtime)
+
+    def _run(self):
+        # The creds-path patch is essential, not incidental: without it the
+        # call would read/write the developer's REAL ~/.claude.
+        with self._patch_creds_path(), contextlib.redirect_stdout(io.StringIO()) as out:
+            start.offer_refreshed_claude_credentials(self.prison, self.project_dir)
+        return out.getvalue()
+
+    def test_nothing_is_offered_when_the_sandbox_has_no_credentials(self):
+        self.prison.copy_out.return_value = None
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_a_refreshed_sandbox_token_is_saved_to_a_fresh_sidecar(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.read_text(), "NEW-REFRESHED")
+
+    def test_the_real_host_credential_file_is_never_modified(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        # The user's real file is left exactly as it was — only the sidecar
+        # carries the refreshed token.
+        self.assertEqual(self.host.read_text(), "OLD")
+        self.assertEqual(int(self.host.stat().st_mtime), 1000)
+
+    def test_the_fresh_sidecar_is_locked_to_its_owner(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.stat().st_mode & 0o777, 0o600)
+
+    def test_no_sidecar_is_offered_when_the_host_copy_is_newer(self):
+        # The user refreshed on the host (outside Alcatraz) more recently —
+        # offering the staler sandbox token as "fresh" would mislead.
+        self._host_token("HOST-NEWER", mtime=5000)
+        self._sandbox_token("SANDBOX-OLDER", mtime=2000)
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_no_sidecar_is_offered_when_the_sandbox_token_is_byte_identical(self):
+        # Never refreshed inside — the file is just our start-time injection.
+        self._host_token("SAME", mtime=1000)
+        self._sandbox_token("SAME", mtime=2000)
+        self._run()
+        self.assertFalse(self.sidecar.exists())
+
+    def test_a_sidecar_is_offered_when_the_host_has_no_credentials_yet(self):
+        # Host never logged in; the user authenticated inside the sandbox.
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        self.assertEqual(self.sidecar.read_text(), "NEW-REFRESHED")
+
+    def test_the_user_is_told_where_to_find_the_refreshed_credentials(self):
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        output = self._run()
+        self.assertIn(".credentials.json.fresh", output)
+
+    def test_the_offer_is_recorded_in_the_promotion_log(self):
+        (self.project_dir / ".alcatrazer").mkdir()
+        self._host_token("OLD", mtime=1000)
+        self._sandbox_token("NEW-REFRESHED", mtime=2000)
+        self._run()
+        log = (self.project_dir / ".alcatrazer" / "promotion-daemon.log").read_text()
+        self.assertIn(".credentials.json.fresh", log)
 
 
 class CmdInitIntegrationTests(unittest.TestCase):
@@ -2960,6 +3147,10 @@ class FirstRunAfterInitTests(unittest.TestCase):
             (start, "save_coding_environment_snapshot", None),
             (start, "save_env_snapshot", None),
             (start, "launch_daemon_and_print", None),
+            # Credential injection is its own concern (covered by
+            # InjectClaudeCredentialsTests); neutralize it here so these
+            # build/workspace/start tests don't depend on host token state.
+            (start, "inject_claude_credentials", None),
             (identity, "load_workspace_dir", ".devspace-abcd"),
         ]
         for mod, name, rv in to_patch:
@@ -2990,6 +3181,17 @@ class FirstRunAfterInitTests(unittest.TestCase):
         names = [c[0] for c in parent.mock_calls]
         self.assertLess(names.index("build"), names.index("create_workspace"))
         self.assertLess(names.index("create_workspace"), names.index("start"))
+
+    def test_first_run_injects_claude_credentials_right_after_starting_the_alcatraz(self):
+        """The token can only be written into a running container, so
+        injection must follow start — never precede it."""
+        parent = Mock()
+        parent.attach_mock(self.prison.start, "start")
+        parent.attach_mock(self.mocks["inject_claude_credentials"], "inject")
+        self._run()
+        names = [c[0] for c in parent.mock_calls]
+        self.assertIn("inject", names)
+        self.assertLess(names.index("start"), names.index("inject"))
 
     def test_does_not_re_run_wizards_or_writers(self):
         """cmd_init already collected the user's answers and wrote the
@@ -3549,6 +3751,11 @@ class CmdStopTests(unittest.TestCase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
 
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
@@ -3604,6 +3811,24 @@ class CmdStopTests(unittest.TestCase):
 
         names = [call[0] for call in parent.mock_calls]
         self.assertLess(names.index("prison_stop"), names.index("shutdown_daemon"))
+
+    def test_offers_refreshed_credentials_after_the_daemon_finishes(self):
+        """A token refreshed while the agent worked is offered back at stop.
+        It runs after the daemon shutdown — by then the container is stopped
+        but still present, which is all copy_out needs."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+        parent.attach_mock(self.mock_offer, "offer_credentials")
+
+        self._run(prison=prison)
+
+        self.mock_offer.assert_called_once_with(prison, self.project_dir)
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("shutdown_daemon"), names.index("offer_credentials"))
 
     def test_conflict_outcome_returns_nonzero(self):
         """Conflict during final sync — exit non-zero so the user knows
@@ -3682,6 +3907,11 @@ class CmdClearTests(unittest.TestCase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
 
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
@@ -3740,6 +3970,28 @@ class CmdClearTests(unittest.TestCase):
         # Abstract-layer naming rule (feedback_alcatraz_naming.md):
         # CLI-visible output must not leak Docker-specific vocabulary.
         self.assertNotIn("container", out.lower())
+
+    def test_offers_refreshed_credentials_after_shutdown_but_before_removal(self):
+        """clear discards the writable layer (and the freshest token) on
+        remove, so the offer must run after the daemon shutdown yet before
+        remove — the last moment copy_out can still read the stopped
+        container."""
+        self._setup_workspace()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+        parent.attach_mock(self.mock_offer, "offer_credentials")
+        parent.attach_mock(prison.remove, "prison_remove")
+
+        self._run(prison=prison)
+
+        self.mock_offer.assert_called_once_with(prison, self.project_dir)
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("shutdown_daemon"), names.index("offer_credentials"))
+        self.assertLess(names.index("offer_credentials"), names.index("prison_remove"))
 
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
@@ -4370,6 +4622,11 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4505,6 +4762,11 @@ class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4575,6 +4837,11 @@ class CmdClearDiscardPendingTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4651,6 +4918,11 @@ class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
             outcome="synced", synced_count=3, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         # Real print_shutdown_result so the user-facing message
         # composition (which IS the contract) is exercised.
 
