@@ -311,15 +311,58 @@ def cmd_start(project_dir: Path, prison: Alcatraz | None = None) -> int:
     return rc
 
 
+def _claude_creds_path() -> Path:
+    """The host's Claude Code credentials file, ~/.claude/.credentials.json.
+
+    Factored into one place so both the presence check and the injection
+    step read the same path — and so tests can redirect it to a synthetic
+    token without touching the real HOME.
+    """
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def _host_has_claude_creds() -> bool:
     """True if the host has Claude Code creds at ~/.claude/.credentials.json.
 
-    When present, `DockerPrison.start` mounts the file read-only into the
-    container — no `.env` auth needed. When absent, the user needs to
-    populate `ANTHROPIC_API_KEY` in `.env` before `alcatrazer start`.
-    Factored out so tests can patch it without touching the real HOME.
+    When present, `alcatrazer start` injects the token into the running
+    Alcatraz (see `inject_claude_credentials`) — no `.env` auth needed. When
+    absent, the user needs to populate `ANTHROPIC_API_KEY` in `.env` before
+    `alcatrazer start`.
     """
-    return (Path.home() / ".claude" / ".credentials.json").exists()
+    return _claude_creds_path().exists()
+
+
+def inject_claude_credentials(prison: Alcatraz) -> None:
+    """Copy the host's Claude credentials into the running Alcatraz.
+
+    Reads ~/.claude/.credentials.json on the host and writes it inside the
+    sandbox AS the agent user over the backend-neutral `query` port, fed on
+    stdin so the token never appears in argv (where the agent could read it
+    via /proc). A no-op when the host has no credentials — the user
+    authenticates via `.env` instead.
+
+    Why a copy and not the obvious read-only bind mount: the agent runs as a
+    phantom UID that can never equal the host token's owner, so a `0600`
+    host-owned file mounted in is unreadable from inside. Writing it as the
+    agent lands the right ownership and `0600` perms, and the host file is
+    read once rather than left attached to the container for the session.
+    """
+    creds_path = _claude_creds_path()
+    if not creds_path.exists():
+        return
+    token = creds_path.read_text()
+    # umask 077 → the freshly written file is 0600 (owner-only), matching
+    # Claude Code's own on-disk permissions. The token rides stdin, never argv.
+    result = prison.query(
+        ["sh", "-c", "umask 077; mkdir -p ~/.claude && cat > ~/.claude/.credentials.json"],
+        input=token,
+    )
+    if result.returncode != 0:
+        raise PrisonStartError(
+            "Failed to provision Claude credentials inside the Alcatraz.",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
 
 
 def cmd_init(project_dir: Path, prison: Alcatraz | None = None) -> int:
@@ -509,6 +552,7 @@ def _first_run_after_init(project_dir: Path, prison: Alcatraz | None = None) -> 
     print("Starting Alcatraz...")
     try:
         prison.start()
+        inject_claude_credentials(prison)
     except PrisonStartError as e:
         print("ERROR: Alcatraz start failed.", file=sys.stderr)
         if e.stdout:
@@ -1679,6 +1723,7 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
             prison.build()
         try:
             prison.start()
+            inject_claude_credentials(prison)
         except PrisonStartError as e:
             print("ERROR: Alcatraz start failed.", file=sys.stderr)
             if e.stdout:
@@ -1691,6 +1736,7 @@ def _subsequent_run(project_dir: Path, prison: Alcatraz | None = None) -> int:
         print("Starting Alcatraz...")
         try:
             prison.start()
+            inject_claude_credentials(prison)
         except PrisonStartError as e:
             print("ERROR: Alcatraz start failed.", file=sys.stderr)
             if e.stdout:

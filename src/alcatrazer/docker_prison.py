@@ -437,10 +437,16 @@ class DockerPrison(Alcatraz):
     def start(self) -> None:
         """Run the workspace container in detached mode.
 
-        Bind-mounts the workspace dir at /workspace, mounts the host's
-        Claude credentials read-only (when present), wires in `.env`, and
+        Bind-mounts the workspace dir at /workspace, wires in `.env`, and
         uses `sleep infinity` as the long-lived CMD so the container stays
         alive for later `docker exec` attaches.
+
+        The Claude credentials are NOT bind-mounted: the agent runs as a
+        phantom UID that can never own the host's `0600` token file, so a
+        read-only mount of it is unreadable from inside. They are instead
+        copied in after start by `start.inject_claude_credentials`, written
+        AS the agent over the `query` port. Keeping that out of here also
+        keeps the backend free of Claude-specific knowledge.
 
         **No named cache volumes** — mise / pip / npm caches live in the
         container's writable overlay layer, per the "Ephemeral caches —
@@ -461,7 +467,6 @@ class DockerPrison(Alcatraz):
             )
         workspace_path = self.project_dir / workspace_name
         env_file = self.project_dir / ".env"
-        claude_creds = Path.home() / ".claude" / ".credentials.json"
 
         cmd = [
             "docker",
@@ -472,11 +477,6 @@ class DockerPrison(Alcatraz):
             "-v",
             f"{workspace_path}:/workspace",
         ]
-        if claude_creds.exists():
-            cmd += [
-                "-v",
-                f"{claude_creds}:/home/agent/.claude/.credentials.json:ro",
-            ]
         if env_file.exists():
             cmd += ["--env-file", str(env_file)]
         cmd += [self.image_tag, "sleep", "infinity"]
@@ -576,14 +576,23 @@ class DockerPrison(Alcatraz):
         full = ["docker", "exec", "-u", "agent", self.container_name, *command]
         return subprocess.run(full).returncode
 
-    def query(self, command: list[str]) -> subprocess.CompletedProcess:
+    def query(self, command: list[str], input: str | None = None) -> subprocess.CompletedProcess:
         """Run `command` inside the workspace container as `agent` and return
         the captured result. stdout / stderr / returncode are inspectable
         on the returned object; non-zero exit does NOT raise — the caller
         decides (mirrors `exec`'s "return code, don't throw" contract).
+
+        When `input` is given, it is piped to the command on stdin (with
+        `docker exec -i` so the container process sees the pipe) instead of
+        being passed as an argument — used by credential provisioning so a
+        token never lands in argv where the agent could read it via
+        `/proc/<pid>/cmdline`.
         """
-        full = ["docker", "exec", "-u", "agent", self.container_name, *command]
-        return subprocess.run(full, capture_output=True, text=True)
+        flags = ["-u", "agent"]
+        if input is not None:
+            flags.append("-i")
+        full = ["docker", "exec", *flags, self.container_name, *command]
+        return subprocess.run(full, capture_output=True, text=True, input=input)
 
     def remove(self) -> None:
         """Remove the container (force, so running containers go too). No-op if absent."""

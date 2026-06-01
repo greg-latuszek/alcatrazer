@@ -844,17 +844,14 @@ class DockerPrisonStartTests(unittest.TestCase):
         expected = f"{self.project_dir / '.devspace-abcd'}:/workspace"
         self.assertIn(expected, cmd)
 
-    def test_claude_credentials_mounted_readonly_when_present(self):
+    def test_claude_credentials_are_never_bind_mounted_even_when_present_on_host(self):
+        """The agent runs as a phantom UID that can't own the host's 0600
+        token, so a read-only mount of it is unreadable from inside. start()
+        therefore never mounts it — injection (start.inject_claude_credentials)
+        writes the token in as the agent after the container is up."""
         claude = Path(self.fake_home.name) / ".claude"
         claude.mkdir()
         (claude / ".credentials.json").write_text("{}")
-        with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
-            DockerPrison(self.project_dir).start()
-        cmd = mock_run.call_args.args[0]
-        expected = f"{claude / '.credentials.json'}:/home/agent/.claude/.credentials.json:ro"
-        self.assertIn(expected, cmd)
-
-    def test_claude_credentials_skipped_when_missing(self):
         with patch.object(docker_prison.subprocess, "run", return_value=self._ok()) as mock_run:
             DockerPrison(self.project_dir).start()
         cmd_str = " ".join(mock_run.call_args.args[0])

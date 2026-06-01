@@ -2505,6 +2505,10 @@ class SubsequentRunTests(unittest.TestCase):
             contextlib.redirect_stderr(stderr),
             patch.object(start, "env_file_changed", return_value=env_changed),
             patch.object(start, "launch_daemon_and_print") as self._launch_mock,
+            # Injection is exercised in InjectClaudeCredentialsTests; here we
+            # only assert WHICH branches reach for it (recreate / fresh start,
+            # not the resume or fast-path branches).
+            patch.object(start, "inject_claude_credentials") as self._inject_mock,
         ):
             rc = start._subsequent_run(self.project_dir, prison=prison)
         return rc, stdout.getvalue(), stderr.getvalue()
@@ -2626,6 +2630,23 @@ class SubsequentRunTests(unittest.TestCase):
         prison.resume.assert_not_called()
         prison.start.assert_called_once()
         prison.exec.assert_called()
+        # A fresh container has no token yet — injection must run.
+        self._inject_mock.assert_called_once_with(prison)
+
+    def test_recreate_injects_claude_credentials_but_resume_does_not(self):
+        """A recreated container is brand-new and needs the token written
+        in; a resumed one already carries it in its preserved writable
+        layer (and re-injecting could clobber a token Claude refreshed
+        mid-session), so resume must NOT inject."""
+        self._seed_last(match=True)
+        recreated = self._prison(running=True, rebuild=True, exists=True)
+        self._run(recreated)
+        self._inject_mock.assert_called_once_with(recreated)
+
+        self._inject_mock.reset_mock()
+        resumed = self._prison(running=False, rebuild=False, exists=True)
+        self._run(resumed)
+        self._inject_mock.assert_not_called()
 
     # --- Snapshot refreshes (both coding-env and env.hash.last) -----------
 
@@ -3028,6 +3049,10 @@ class FirstRunAfterInitTests(unittest.TestCase):
             (start, "save_coding_environment_snapshot", None),
             (start, "save_env_snapshot", None),
             (start, "launch_daemon_and_print", None),
+            # Credential injection is its own concern (covered by
+            # InjectClaudeCredentialsTests); neutralize it here so these
+            # build/workspace/start tests don't depend on host token state.
+            (start, "inject_claude_credentials", None),
             (identity, "load_workspace_dir", ".devspace-abcd"),
         ]
         for mod, name, rv in to_patch:
@@ -3058,6 +3083,17 @@ class FirstRunAfterInitTests(unittest.TestCase):
         names = [c[0] for c in parent.mock_calls]
         self.assertLess(names.index("build"), names.index("create_workspace"))
         self.assertLess(names.index("create_workspace"), names.index("start"))
+
+    def test_first_run_injects_claude_credentials_right_after_starting_the_alcatraz(self):
+        """The token can only be written into a running container, so
+        injection must follow start — never precede it."""
+        parent = Mock()
+        parent.attach_mock(self.prison.start, "start")
+        parent.attach_mock(self.mocks["inject_claude_credentials"], "inject")
+        self._run()
+        names = [c[0] for c in parent.mock_calls]
+        self.assertIn("inject", names)
+        self.assertLess(names.index("start"), names.index("inject"))
 
     def test_does_not_re_run_wizards_or_writers(self):
         """cmd_init already collected the user's answers and wrote the

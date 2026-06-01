@@ -126,13 +126,20 @@ class Alcatraz(ABC):
         """
 
     @abstractmethod
-    def query(self, command: list[str]):
+    def query(self, command: list[str], input: str | None = None):
         """Run a command inside the workspace and return the captured result.
 
         Unlike `exec` (which streams output for humans), `query` captures
         stdout / stderr / exit code and returns them as a
         `subprocess.CompletedProcess`-shaped object so programs can read
         and decide — security self-tests, health checks, diagnostics.
+
+        When `input` is given, it is fed to the command on stdin rather than
+        passed as an argument — so a secret (e.g. a credential token piped to
+        `cat >file`) never appears in argv / a process listing. Backends
+        implement this over their own stdin channel (DockerPrison adds
+        `docker exec -i`; a future VM backend pipes to the remote shell's
+        stdin), keeping credential provisioning backend-neutral.
         """
 
     @abstractmethod
