@@ -2822,7 +2822,9 @@ class OfferRefreshedClaudeCredentialsTests(unittest.TestCase):
         self.prison.copy_out.return_value = Mock(content=content, mtime=mtime)
 
     def _run(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        # The creds-path patch is essential, not incidental: without it the
+        # call would read/write the developer's REAL ~/.claude.
+        with self._patch_creds_path(), contextlib.redirect_stdout(io.StringIO()) as out:
             start.offer_refreshed_claude_credentials(self.prison, self.project_dir)
         return out.getvalue()
 
@@ -3749,6 +3751,11 @@ class CmdStopTests(unittest.TestCase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
 
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
@@ -3804,6 +3811,24 @@ class CmdStopTests(unittest.TestCase):
 
         names = [call[0] for call in parent.mock_calls]
         self.assertLess(names.index("prison_stop"), names.index("shutdown_daemon"))
+
+    def test_offers_refreshed_credentials_after_the_daemon_finishes(self):
+        """A token refreshed while the agent worked is offered back at stop.
+        It runs after the daemon shutdown — by then the container is stopped
+        but still present, which is all copy_out needs."""
+        (self.project_dir / ".alcatrazer").mkdir()
+        prison = Mock(spec=Alcatraz)
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+        parent.attach_mock(self.mock_offer, "offer_credentials")
+
+        self._run(prison=prison)
+
+        self.mock_offer.assert_called_once_with(prison, self.project_dir)
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("shutdown_daemon"), names.index("offer_credentials"))
 
     def test_conflict_outcome_returns_nonzero(self):
         """Conflict during final sync — exit non-zero so the user knows
@@ -3882,6 +3907,11 @@ class CmdClearTests(unittest.TestCase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
 
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
@@ -3940,6 +3970,28 @@ class CmdClearTests(unittest.TestCase):
         # Abstract-layer naming rule (feedback_alcatraz_naming.md):
         # CLI-visible output must not leak Docker-specific vocabulary.
         self.assertNotIn("container", out.lower())
+
+    def test_offers_refreshed_credentials_after_shutdown_but_before_removal(self):
+        """clear discards the writable layer (and the freshest token) on
+        remove, so the offer must run after the daemon shutdown yet before
+        remove — the last moment copy_out can still read the stopped
+        container."""
+        self._setup_workspace()
+        prison = Mock(spec=Alcatraz)
+        prison.exists.return_value = True
+        prison.is_running.return_value = True
+
+        parent = Mock()
+        parent.attach_mock(self.mock_shutdown, "shutdown_daemon")
+        parent.attach_mock(self.mock_offer, "offer_credentials")
+        parent.attach_mock(prison.remove, "prison_remove")
+
+        self._run(prison=prison)
+
+        self.mock_offer.assert_called_once_with(prison, self.project_dir)
+        names = [call[0] for call in parent.mock_calls]
+        self.assertLess(names.index("shutdown_daemon"), names.index("offer_credentials"))
+        self.assertLess(names.index("offer_credentials"), names.index("prison_remove"))
 
     def test_removes_stopped_alcatraz_without_calling_stop(self):
         """A stopped Alcatraz still exists and still has writable state
@@ -4570,6 +4622,11 @@ class CmdClearBlocksOffPinPendingTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4705,6 +4762,11 @@ class CmdClearBlocksWhenPausedTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4775,6 +4837,11 @@ class CmdClearDiscardPendingTests(_CmdStatusTestBase):
             outcome="no_daemon", synced_count=0, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         print_patcher = patch.object(start, "print_shutdown_result")
         self.mock_print_shutdown = print_patcher.start()
         self.addCleanup(print_patcher.stop)
@@ -4851,6 +4918,11 @@ class CmdClearProceedsOnPinWithPendingTests(_CmdStatusTestBase):
             outcome="synced", synced_count=3, conflict_branches=[]
         )
         self.addCleanup(shutdown_patcher.stop)
+        # Credential copy-back is its own concern (OfferRefreshedClaudeCredentialsTests);
+        # neutralize it so these teardown tests don't reach for a real token.
+        offer_patcher = patch.object(start, "offer_refreshed_claude_credentials")
+        self.mock_offer = offer_patcher.start()
+        self.addCleanup(offer_patcher.stop)
         # Real print_shutdown_result so the user-facing message
         # composition (which IS the contract) is exercised.
 

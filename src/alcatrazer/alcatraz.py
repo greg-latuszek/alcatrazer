@@ -11,6 +11,8 @@ backends plug in without editing callers. See install_method.md — "Hexagonal
 sandboxing architecture" — for the design rationale.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import NamedTuple
@@ -156,7 +158,7 @@ class Alcatraz(ABC):
         """
 
     @abstractmethod
-    def copy_out(self, sandbox_path: str) -> "CopiedFile | None":
+    def copy_out(self, sandbox_path: str) -> CopiedFile | None:
         """Read a file OUT of the instance, returning its content + mtime.
 
         Works even when the instance is STOPPED (but still present) — unlike
